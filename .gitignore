@@ -1,0 +1,8 @@
+.build/
+build/
+vendor/
+samples/
+*.xmp
+.DS_Store
+__pycache__/
+*.log

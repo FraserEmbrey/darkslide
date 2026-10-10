@@ -1,0 +1,457 @@
+import CoreGraphics
+import Foundation
+
+/// Runs darkroom-helper (the darktable engine) as a child process.
+///
+/// Requests go out as JSON lines on the helper's stdin and replies come back
+/// in order on its stdout, so a FIFO of continuations is all the matching
+/// needed. Pixels don't travel through the pipe: the helper writes BGRA8 into
+/// a shared frame file that we read after each render.
+actor Engine {
+    private let process = Process()
+    private let input = Pipe()
+    private let output = Pipe()
+    private let frameURL: URL
+    private var pending: [CheckedContinuation<Data, Error>] = []
+    private var exited = false
+
+    /// Called on the main actor if the helper dies, so the UI can recover.
+    private let onExit: @Sendable (Int32) -> Void
+
+    /// `workflow` is darktable's default tone mapper for unedited photos, e.g.
+    /// "scene-referred (filmic)". darktable fixes it at startup.
+    init(workflow: String, backend: GPUBackend, onExit: @escaping @Sendable (Int32) -> Void) throws {
+        let fm = FileManager.default
+        let support = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                  appropriateFor: nil, create: true)
+            .appendingPathComponent("Develop/darktable", isDirectory: true)
+        let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true)
+            .appendingPathComponent("Develop", isDirectory: true)
+        try fm.createDirectory(at: support, withIntermediateDirectories: true)
+        try fm.createDirectory(at: caches, withIntermediateDirectories: true)
+
+        frameURL = caches.appendingPathComponent("frame-\(ProcessInfo.processInfo.processIdentifier).bin")
+        self.onExit = onExit
+
+        process.executableURL = try Engine.helperURL()
+        process.arguments = [
+            "--frame", frameURL.path,
+            "--configdir", support.path,
+            "--cachedir", caches.appendingPathComponent("darktable").path,
+            "--workflow", workflow,
+            // darktable's own settings for its GPU path follow "--"
+            "--",
+        ] + Engine.gpuArguments(backend)
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.standardError
+    }
+
+    /// darktable settings for the chosen GPU backend. Metal is MetalCL, which
+    /// darktable loads in place of Apple's OpenCL library (Engine/metalcl).
+    private static func gpuArguments(_ backend: GPUBackend) -> [String] {
+        switch backend {
+        case .cpu:
+            return ["--conf", "opencl=FALSE"]
+        case .openCL:
+            return ["--conf", "opencl=TRUE"]
+        case .metal:
+            guard let helper = try? helperURL() else { return ["--conf", "opencl=TRUE"] }
+            // engine/bin/darkroom-helper -> engine/lib/libMetalCL.dylib
+            let lib = helper.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("lib/libMetalCL.dylib")
+            guard FileManager.default.fileExists(atPath: lib.path) else { return ["--conf", "opencl=TRUE"] }
+            return ["--conf", "opencl=TRUE", "--conf", "opencl_library=\(lib.path)"]
+        }
+    }
+
+    /// The bundled helper, or DEVELOP_ENGINE for running from a dev checkout.
+    private static func helperURL() throws -> URL {
+        if let path = ProcessInfo.processInfo.environment["DEVELOP_ENGINE"] {
+            return URL(fileURLWithPath: path)
+        }
+        if let url = Bundle.main.resourceURL?.appendingPathComponent("engine/bin/darkroom-helper"),
+           FileManager.default.isExecutableFile(atPath: url.path) {
+            return url
+        }
+        throw EngineError(message: "The darktable engine is missing from the app bundle.")
+    }
+
+    /// Launches the helper and waits for its ready event.
+    func start() async throws {
+        let ready = try await withCheckedThrowingContinuation { (c: CheckedContinuation<Data, Error>) in
+            pending.append(c)
+            process.terminationHandler = { [weak self] p in
+                Task { await self?.handleExit(p.terminationStatus) }
+            }
+            do { try process.run() } catch {
+                pending.removeAll()
+                c.resume(throwing: error)
+                return
+            }
+            let handle = output.fileHandleForReading
+            Task.detached { [weak self] in
+                do {
+                    for try await line in handle.bytes.lines {
+                        await self?.deliver(Data(line.utf8))
+                    }
+                } catch {}
+            }
+        }
+        _ = ready
+    }
+
+    /// Asks the helper to quit and waits for it (up to 3 s, then terminates
+    /// it), so a replacement can take darktable's database lock.
+    func stop() async {
+        guard process.isRunning else { return }
+        try? send(raw: ["cmd": "quit"])
+        for _ in 0..<30 where process.isRunning {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if process.isRunning { process.terminate() }
+        try? FileManager.default.removeItem(at: frameURL)
+    }
+
+    // MARK: Commands
+
+    func open(_ url: URL) async throws -> OpenReply {
+        // the last photo's frame mustn't stand in for this one
+        lastHDRSource = nil
+        lastSDRBase = nil
+        return try await request(["cmd": "open", "path": url.path], as: OpenReply.self)
+    }
+
+    func set(module: String, field: String, value: FieldValue) async throws {
+        _ = try await request(["cmd": "set", "module": module, "field": field, "value": value.json])
+    }
+
+    /// several settings in one round trip
+    func setMany(_ items: [(module: String, field: String, value: FieldValue)]) async throws {
+        guard !items.isEmpty else { return }
+        _ = try await request(["cmd": "set_many",
+                               "items": items.map { ["module": $0.module, "field": $0.field, "value": $0.value.json] }])
+    }
+
+    func enable(module: String, on: Bool) async throws {
+        _ = try await request(["cmd": "enable", "module": module, "on": on])
+    }
+
+    func reset(module: String) async throws -> [EngineModule] {
+        try await request(["cmd": "reset", "module": module], as: ModulesReply.self).modules
+    }
+
+    func styles() async throws -> [String] {
+        try await request(["cmd": "styles"], as: StylesReply.self).styles
+    }
+
+    /// Appends a style to the current edit, as darktable's default apply mode does.
+    struct StyleReply: Decodable { let historyEndBefore: Int; let modules: [EngineModule] }
+
+    func applyStyle(_ name: String) async throws -> StyleReply {
+        try await request(["cmd": "apply_style", "name": name], as: StyleReply.self)
+    }
+
+    /// steps the edit's history to `end` items (darktable's history stack)
+    func setHistoryEnd(_ end: Int) async throws -> [EngineModule] {
+        try await request(["cmd": "history_end", "end": end], as: ModulesReply.self).modules
+    }
+
+    /// Fits the tone equalizer's mask to the photo, as darktable's two wand
+    /// buttons do. Returns the updated modules.
+    func fitToneEqualizer() async throws -> [EngineModule] {
+        try await request(["cmd": "toneequal_fit"], as: ModulesReply.self).modules
+    }
+
+    struct ExportReply: Decodable { let file: String; let ms: Int }
+
+    /// Exports through darktable's own export path. `path` has no extension;
+    /// darktable adds the format's. `maxEdge` 0 keeps the full size.
+    /// `profile` is darktable's colour profile type, or nil for the edit's own.
+    func export(path: String, format: String, quality: Int, bitDepth: Int, maxEdge: Int,
+                profile: Int?) async throws -> URL {
+        let reply = try await request(["cmd": "export", "path": path, "format": format, "quality": quality,
+                                       "bpp": bitDepth, "max": maxEdge, "icc": profile ?? -1], as: ExportReply.self)
+        return URL(fileURLWithPath: reply.file)
+    }
+
+    /// filmic's "auto tune levels": white and black relative exposure from the photo
+    func filmicAutoTune() async throws -> [EngineModule] {
+        try await request(["cmd": "filmic_autotune"], as: ModulesReply.self).modules
+    }
+
+    /// discards the edit; darktable re-applies its defaults for a new photo
+    func resetAll() async throws -> [EngineModule] {
+        try await request(["cmd": "reset_all"], as: ModulesReply.self).modules
+    }
+
+    /// Geotags a photo (open or not) in its XMP sidecar, as darktable's map
+    /// view does; nil removes the location.
+    func setLocation(path: String, latitude: Double?, longitude: Double?) async throws {
+        var body: [String: Any] = ["cmd": "set_location", "path": path]
+        if let latitude, let longitude { body["lat"] = latitude; body["lon"] = longitude }
+        _ = try await request(body)
+    }
+
+    /// Sets a photo's title and/or star rating (0-5, -1 rejected) in its sidecar.
+    func setInfo(path: String, title: String? = nil, caption: String? = nil, addKeyword: String? = nil,
+                 removeKeyword: String? = nil, rating: Int? = nil) async throws {
+        var body: [String: Any] = ["cmd": "set_info", "path": path]
+        if let title { body["title"] = title }
+        if let caption { body["caption"] = caption }
+        if let addKeyword { body["addTag"] = addKeyword }
+        if let removeKeyword { body["removeTag"] = removeKeyword }
+        if let rating { body["rating"] = rating }
+        _ = try await request(body)
+    }
+
+    struct CurveReply: Decodable {
+        let enabled: Bool
+        let compensated: Bool
+        let linked: Bool
+        let nodes: [[[Double]]]   // per channel: [x, y] points
+        let histogram: [Int]      // the curve's input, 256 bins on its scale
+    }
+
+    /// an rgb curve's points and the histogram of its input (from the last render)
+    func curve(module: String) async throws -> CurveReply {
+        try await request(["cmd": "curve", "module": module], as: CurveReply.self)
+    }
+
+    private struct AutoExposureReply: Decodable { let exposure: Double }
+
+    /// the manual exposure darktable's automatic mode would give this photo,
+    /// worked out for any file (darktable's own only runs on mosaic raws);
+    /// `standard` uses darktable's default rule, else the module's own settings
+    func autoExposure(module: String, standard: Bool = true) async throws -> Double {
+        try await request(["cmd": "auto_exposure", "module": module, "standard": standard], as: AutoExposureReply.self).exposure
+    }
+
+    /// sets one channel of an rgb curve; points on the middle-grey-compensated scale
+    func setCurve(module: String, channel: Int, nodes: [CGPoint], linked: Bool) async throws {
+        _ = try await request(["cmd": "set_curve", "module": module, "channel": channel, "linked": linked,
+                               "nodes": nodes.map { [Double($0.x), Double($0.y)] }])
+    }
+
+    func save() async throws {
+        _ = try await request(["cmd": "save"])
+    }
+
+    /// A rendered frame. HDR frames carry their analysis and an overlay
+    /// marking pixels brighter than the display can show.
+    struct Frame: Sendable {
+        let image: CGImage
+        let isHDR: Bool
+        let analysis: HDRAnalysis?
+        let overlay: CGImage?
+        let histogram: RGBHistogram?   // SDR frames only; HDR has its own analysis
+        let ms: Int
+        /// SDR: BGRA8 sRGB. HDR: RGBA float32, linear, on the EDR scale.
+        let pixels: Data
+        let width: Int, height: Int
+        /// the full-size output, which crop and rotation change
+        var processedSize: CGSize = .zero
+        /// the size reaching rotate and perspective, for its crop margins
+        var rotateInSize: CGSize?
+    }
+
+    /// Renders to fit within `maxPixels` on the long edge.
+    /// `before` renders the photo as it was when opened, for comparison.
+    /// A region of the image at a given scale (1 = full resolution), in pixels
+    /// of the scaled image: what the zoomed canvas shows.
+    struct Crop: Sendable, Equatable {
+        var scale: Double
+        var x: Int, y: Int, w: Int, h: Int
+    }
+
+    /// A setting changed for one render only, e.g. an SDR target white.
+    struct Override: Sendable {
+        let module: String, field: String, value: Double
+        var enable = false
+    }
+
+    func render(maxPixels: Int, hdr: Bool, displayHeadroom: Double, wantOverlay: Bool,
+                before: Bool = false, crop: Crop? = nil, overrides: [Override] = [],
+                hdrLimit: Double? = nil, keepForRefresh: Bool = false) async throws -> Frame {
+        var body: [String: Any] = ["cmd": "render", "max": maxPixels, "hdr": hdr, "before": before]
+        if !overrides.isEmpty {
+            body["overrides"] = overrides.map {
+                ["module": $0.module, "field": $0.field, "value": $0.value, "enable": $0.enable] as [String: Any]
+            }
+        }
+        if let crop {
+            body.merge(["scale": crop.scale, "x": crop.x, "y": crop.y, "w": crop.w, "h": crop.h]) { $1 }
+        }
+        let reply = try await request(body, as: RenderReply.self)
+        var frame = try frame(from: reply, hdr: hdr, keepForRefresh: keepForRefresh,
+                              displayHeadroom: displayHeadroom, wantOverlay: wantOverlay, hdrLimit: hdrLimit)
+        frame.processedSize = CGSize(width: reply.processedWidth, height: reply.processedHeight)
+        if let w = reply.rotateInWidth, let h = reply.rotateInHeight { frame.rotateInSize = CGSize(width: w, height: h) }
+        return frame
+    }
+
+    private func frame(from reply: RenderReply, hdr: Bool, keepForRefresh: Bool,
+                       displayHeadroom: Double, wantOverlay: Bool, hdrLimit: Double?) throws -> Frame {
+        let (w, h) = (reply.width, reply.height)
+        // map rather than read: the HDR pass reads it once, straight from the page cache
+        let mapped = try Data(contentsOf: frameURL, options: .alwaysMapped)
+        let bytes = w * h * (hdr ? 16 : 4)
+        guard mapped.count >= bytes else { throw EngineError(message: "Could not read the rendered frame.") }
+        guard hdr else {
+            // copied, because the helper overwrites the frame file on the next render
+            let pixels = Data(mapped.prefix(bytes))
+            return Frame(image: try makeImage(pixels, width: w, height: h, space: CGColorSpace.sRGB, hdr: false),
+                         isHDR: false, analysis: nil, overlay: nil,
+                         histogram: RGBHistogram(bgra: pixels, width: w, height: h), ms: reply.ms,
+                         pixels: pixels, width: w, height: h)
+        }
+        let target = HDRTarget(darktableProfile: reply.outputProfile)
+        if keepForRefresh {
+            // the photo as the main view shows it, kept so the peak limit and
+            // headroom preview can change without a render
+            lastHDRSource = HDRSource(data: Data(mapped.prefix(bytes)), width: w, height: h, target: target)
+            lastSDRBase = nil
+        }
+        let (pixels, analysis, overlay) = mapped.withUnsafeBytes { src in
+            HDRAnalysis.process(source: UnsafeRawBufferPointer(rebasing: src[0..<bytes]), width: w, height: h,
+                                target: target, displayHeadroom: displayHeadroom, wantOverlay: wantOverlay,
+                                limit: hdrLimit)
+        }
+        let space = target.primaries == .p3 ? CGColorSpace.extendedLinearDisplayP3
+                                            : CGColorSpace.extendedLinearITUR_2020
+        // tag the image with its headroom: without it macOS 26 shows it as SDR
+        let headroom = Float(max(analysis.peak, 1))
+        return Frame(image: try makeImage(pixels, width: w, height: h, space: space, hdr: true, headroom: headroom),
+                     isHDR: true, analysis: analysis, overlay: overlay, histogram: nil, ms: reply.ms,
+                     pixels: pixels, width: w, height: h)
+    }
+
+    /// The edit's position in darktable's history after the last reply; the
+    /// undo stack records it.
+    private(set) var historyEnd = 0
+
+    /// The last HDR render's pipe output, before the app's HDR pass.
+    private struct HDRSource { let data: Data; let width: Int, height: Int; let target: HDRTarget }
+    private var lastHDRSource: HDRSource?
+    /// the SDR base rendered for the last HDR frame's headroom preview
+    private var lastSDRBase: Frame?
+
+    /// Redoes the app's HDR pass on the last HDR render with a new limit or
+    /// preview headroom: no engine round trip, so these controls can follow a
+    /// slider. Nil when there's nothing to reuse and a render is needed.
+    func reprocessLastHDR(displayHeadroom: Double, wantOverlay: Bool, limit: Double?,
+                          previewStops: Double?, darktableBase: Bool) throws -> Frame? {
+        guard let src = lastHDRSource else { return nil }
+        if previewStops != nil, darktableBase, lastSDRBase == nil { return nil }
+        let (pixels, analysis, overlay) = src.data.withUnsafeBytes { raw in
+            HDRAnalysis.process(source: raw, width: src.width, height: src.height, target: src.target,
+                                displayHeadroom: displayHeadroom, wantOverlay: wantOverlay, limit: limit)
+        }
+        let space = src.target.primaries == .p3 ? CGColorSpace.extendedLinearDisplayP3
+                                                : CGColorSpace.extendedLinearITUR_2020
+        var frame = Frame(image: try makeImage(pixels, width: src.width, height: src.height, space: space, hdr: true,
+                                               headroom: Float(max(analysis.peak, 1))),
+                          isHDR: true, analysis: analysis, overlay: overlay, histogram: nil, ms: 0,
+                          pixels: pixels, width: src.width, height: src.height)
+        if let stops = previewStops {
+            frame = Frame(image: try gainMapPreview(hdr: frame, sdr: darktableBase ? lastSDRBase : nil, stops: stops),
+                          isHDR: true, analysis: analysis, overlay: nil, histogram: nil, ms: 0,
+                          pixels: frame.pixels, width: src.width, height: src.height)
+        }
+        return frame
+    }
+
+    /// What a gain map viewer shows on a display with `stops` of headroom:
+    /// the SDR base and the HDR rendition blended per pixel in log space, by
+    /// the ISO 21496-1 weight (display headroom over the HDR headroom, in
+    /// stops). `sdr` is the SDR base frame, nil for the automatic base.
+    func gainMapPreview(hdr: Frame, sdr: Frame?, stops: Double) throws -> CGImage {
+        if let sdr { lastSDRBase = sdr }
+        guard let analysis = hdr.analysis else { return hdr.image }
+        let hdrStops = log2(max(analysis.peak, 1))
+        let weight = hdrStops > 0 ? Float(min(max(stops / hdrStops, 0), 1)) : 1
+        let primaries = analysis.target.primaries
+        let space = primaries == .p3 ? CGColorSpace.extendedLinearDisplayP3 : CGColorSpace.extendedLinearITUR_2020
+        guard weight < 1 else { return hdr.image }
+        let base = try sdr.map { try GainMapPreview.linearize(sdr: $0, primaries: primaries) }
+            ?? GainMapPreview.toneMapped(hdr: hdr.image, peak: analysis.peak, space: space)
+        let pixels = GainMapPreview.blend(sdr: base, hdr: hdr.pixels, weight: weight)
+        return try makeImage(pixels, width: hdr.width, height: hdr.height, space: space, hdr: true,
+                             headroom: Float(max(pow(2, Double(weight) * hdrStops), 1)))
+    }
+
+    // MARK: Plumbing
+
+    private func request<T: Decodable>(_ body: [String: Any], as type: T.Type) async throws -> T {
+        let data = try await request(body)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func request(_ body: [String: Any]) async throws -> Data {
+        if exited { throw EngineError(message: "The engine has stopped.") }
+        let data = try await withCheckedThrowingContinuation { (c: CheckedContinuation<Data, Error>) in
+            pending.append(c)
+            do { try send(raw: body) } catch {
+                pending.removeLast()
+                c.resume(throwing: error)
+            }
+        }
+        if let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if status["ok"] as? Bool == false {
+                throw EngineError(message: status["error"] as? String ?? "Unknown engine error")
+            }
+            if let end = status["historyEnd"] as? Int { historyEnd = end }
+        }
+        return data
+    }
+
+    private func send(raw body: [String: Any]) throws {
+        var line = try JSONSerialization.data(withJSONObject: body)
+        line.append(0x0A)
+        try input.fileHandleForWriting.write(contentsOf: line)
+    }
+
+    private func deliver(_ line: Data) {
+        guard !pending.isEmpty else { return }
+        pending.removeFirst().resume(returning: line)
+    }
+
+    private func handleExit(_ status: Int32) {
+        exited = true
+        let waiting = pending
+        pending.removeAll()
+        waiting.forEach { $0.resume(throwing: EngineError(message: "The engine stopped (status \(status)).")) }
+        onExit(status)
+    }
+
+    private func makeImage(_ data: Data, width: Int, height: Int, space name: CFString, hdr: Bool,
+                           headroom: Float = 0) throws -> CGImage {
+        // SDR: darktable's backbuf is BGRA8 sRGB (little-endian, alpha byte unused).
+        // HDR: RGBA float32, linear, on the EDR scale (see HDRAnalysis); values
+        // above 1.0 are shown as highlights on displays with headroom.
+        let space = CGColorSpace(name: name)!
+        let info: UInt32 = hdr
+            ? CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+              | CGImageAlphaInfo.noneSkipLast.rawValue
+            : CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
+        let bpp = hdr ? 128 : 32
+        guard let provider = CGDataProvider(data: data as CFData) else {
+            throw EngineError(message: "Could not build an image from the rendered frame.")
+        }
+        let image: CGImage?
+        if hdr, headroom >= 1, #available(macOS 15.0, *) {
+            image = CGImage(headroom: headroom, width: width, height: height,
+                            bitsPerComponent: 32, bitsPerPixel: bpp, bytesPerRow: width * bpp / 8,
+                            space: space, bitmapInfo: CGBitmapInfo(rawValue: info),
+                            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        } else {
+            image = CGImage(width: width, height: height,
+                            bitsPerComponent: hdr ? 32 : 8, bitsPerPixel: bpp, bytesPerRow: width * bpp / 8,
+                            space: space, bitmapInfo: CGBitmapInfo(rawValue: info),
+                            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        }
+        guard let image else { throw EngineError(message: "Could not build an image from the rendered frame.") }
+        return image
+    }
+}

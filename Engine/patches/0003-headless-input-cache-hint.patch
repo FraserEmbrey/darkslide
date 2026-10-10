@@ -1,0 +1,50 @@
+diff -ru a/src/develop/pixelpipe_hb.c b/src/develop/pixelpipe_hb.c
+--- a/src/develop/pixelpipe_hb.c	2026-10-09 21:03:24
++++ b/src/develop/pixelpipe_hb.c	2026-10-09 21:03:24
+@@ -2724,11 +2724,13 @@
+         const gboolean cachewrite = dt_pipe_no_mask_display(pipe)
+                                 && dt_pipe_is_screen(pipe)
+                                 && !dt_pipe_is_fast(pipe)
+-                                && dev->gui_attached;
++                                && (dev->gui_attached || pipe->input_hint);
+ 
+         important_cl_input = cachewrite
+-            && ((module == dt_dev_gui_module())
+-                || darktable.develop->history_last_module == module
++            && ((pipe->input_hint && module == pipe->input_hint)
++                || (dev->gui_attached
++                    && ((module == dt_dev_gui_module())
++                        || darktable.develop->history_last_module == module))
+                 || (module->flags() & IOP_FLAGS_WRITE_PIPECACHE_IN));
+ 
+         if(important_cl_input)
+@@ -2912,6 +2914,15 @@
+ 
+   // in case we get this buffer from the cache in the future, cache some stuff:
+   **out_format = piece->dsc_out = pipe->dsc;
++
++  // headless: keep the hinted module's input, as the focused module's is kept below
++  if(module
++     && module == pipe->input_hint
++     && module->enabled
++     && dt_pipe_is_screen(pipe)
++     && dt_pipe_no_mask_display(pipe))
++    dt_dev_pixelpipe_important_cacheline(pipe, input,
++                                         roi_in.width * roi_in.height * in_bpp);
+ 
+   // special cases for active modules with available gui
+   if(module
+diff -ru a/src/develop/pixelpipe_hb.h b/src/develop/pixelpipe_hb.h
+--- a/src/develop/pixelpipe_hb.h	2026-10-09 21:03:24
++++ b/src/develop/pixelpipe_hb.h	2026-10-09 21:03:24
+@@ -264,6 +264,10 @@
+   // reusable ping-pong buffers for mask distortion walks
+   float *mask_distort_buf[2];
+   size_t mask_distort_buf_size[2];
++  // Develop (headless): the module being edited. darktable keeps the input
++  // of the module focused in its interface in the cache; with no interface
++  // this hint does the same, so a slider only reruns the pipe from there.
++  const struct dt_iop_module_t *input_hint;
+ } dt_dev_pixelpipe_t;
+ 
+ struct dt_develop_t;

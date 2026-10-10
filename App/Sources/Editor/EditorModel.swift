@@ -1,0 +1,1872 @@
+import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
+import Observation
+import Vision
+import ImageIO
+import UniformTypeIdentifiers
+import CoreLocation
+
+@MainActor
+@Observable
+final class EditorModel {
+    enum Filter: String, CaseIterable, Identifiable {
+        case essentials = "Essentials"
+        case active = "Active"
+        case all = "All"
+        var id: String { rawValue }
+    }
+
+    // Document
+    private(set) var url: URL?
+    private(set) var camera = ""
+    private(set) var sensor = "bayer"
+    private(set) var image: CGImage?
+
+    // Before and after: the photo as opened on the left of a movable divider
+    // StartComparing: launch argument (-StartComparing YES) for testing
+    var comparing = UserDefaults.standard.bool(forKey: "StartComparing") { didSet { if comparing != oldValue, comparing, url != nil { requestRender() } } }
+    var compareSplit: Double = 0.5
+    private(set) var beforeImage: CGImage?
+    private var beforeKey = ""   // size and mode the before image was rendered for
+    private(set) var imageIsHDR = false
+    private(set) var imageIsZoomed = false   // the image is a crop at the zoom scale
+    private(set) var frameID = 0               // counts frames shown, so views can wait for the next one
+    /// the crop the current zoomed frame shows
+    private(set) var shownCrop: Engine.Crop?
+    /// canvas size in screen pixels
+    var canvasPixelSize: CGSize { canvasSizePx }
+    private(set) var hdrAnalysis: HDRAnalysis?
+    private(set) var rgbHistogram: RGBHistogram?
+    private(set) var headroomOverlay: CGImage?
+    private(set) var modules: [EngineModule] = []
+    private(set) var hasUnsavedChanges = false
+
+    private static var testLibraryRan = false
+    private static var decoderSwitchTested = false
+
+    /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
+    /// which darktable is editing (see AppleRawFallback)
+    private(set) var decodedTIFF: URL?
+    /// the photo held HDR (a gain map, HLG or PQ) and was opened with it
+    private(set) var openedAsHDR = false
+    /// the photo opened with an edit in its sidecar, not yet reset
+    private var openedWithEdit = false
+    /// Reset is for photos with something to reset: an edit from the sidecar,
+    /// or edits since opening (the new-photo defaults don't count)
+    var canReset: Bool { url != nil && (openedWithEdit || !undoStack.isEmpty) }
+    fileprivate var reopening = false
+
+    /// opens the same photo again, as when its decoder changes
+    func reopen() async {
+        guard let photo = url else { return }
+        reopening = true
+        defer { reopening = false }
+        await open(photo)
+    }
+
+    /// the lens as the photo's EXIF records it, for the lens correction card
+    struct LensInfo: Sendable { var model: String?; var focal: Double?; var maxAperture: Double? }
+    private(set) var lensInfo = LensInfo()
+
+    /// which raw decoder read the open photo: "darktable" or "Apple RAW 9" etc.
+    private(set) var decoderInUse: String?
+    /// Apple raw engine versions offered for the open raw, newest first
+    private(set) var appleDecoderVersions: [String] = []
+    private(set) var canDecodeWithApple = false
+    /// a passing note for the window's subtitle
+    var statusNote: String?
+
+    // Library (see the Library extension at the end)
+    let library = Library(catalog: Catalog())
+    var catalog: Catalog { library.catalog }
+    /// the grid of the folder's photos, instead of the photo being edited
+    var showingLibrary = false
+    /// the latest whole-photo frame, which becomes the photo's thumbnail
+    fileprivate var thumbnailFrame: CGImage?
+    fileprivate var editedSinceOpen = false
+
+    /// bumped when a photo's title or rating changes, so the Info window rereads it
+    var infoRevision = 0
+
+    // Curves (see the Curves extension at the end)
+    /// the rgb curve whose editor is showing, so renders collect its histogram
+    var curveEditorModule: String? {
+        didSet { if curveEditorModule != oldValue, curveEditorModule != nil, url != nil { requestRender() } }
+    }
+    private(set) var curveInfo: Engine.CurveReply?
+    /// the latest curve edit, sent before the next render
+    private var pendingCurve: (module: String, channel: Int, nodes: [CGPoint], linked: Bool)?
+
+    // Crop and straighten (see the Crop extension at the end)
+    private(set) var isCropping = false
+    /// the crop being edited, 0...1 in the straightened photo
+    var cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    var cropAspect: CropAspect = .free { didSet { if cropAspect != oldValue { fitCropToAspect() } } }
+    var cropPortrait = false { didSet { if cropPortrait != oldValue { fitCropToAspect() } } }
+    /// the size reaching rotate and perspective
+    private var rotateInSize: CGSize?
+    /// the straighten angle the frame on screen was rendered with; the canvas
+    /// turns that frame by the difference until the new render arrives
+    private(set) var frameStraighten = 0.0
+    /// straighten and crop as they were when cropping began, for Cancel
+    private var cropStart: (rotation: Double, rect: CGRect, cropEnabled: Bool)?
+
+    // Undo (see the Undo extension at the end)
+    private(set) var undoStack: [UndoStep] = []
+    private(set) var redoStack: [UndoStep] = []
+    /// while above zero, edits join the step already recorded (Auto, opening a photo)
+    private var undoGroupDepth = 0
+    private var restoringUndo = false
+    private var lastGesture: (key: String, time: ContinuousClock.Instant)?
+    private var nextUndoID = 0
+
+    // Styles
+    private(set) var styles: [StyleInfo] = []
+    private(set) var suggestedStyle: StyleInfo?
+    /// shown as a banner for unedited photos when the mode is "suggest"
+    var offerSuggestedStyle = false
+    private(set) var appliedStyles: [String] = []
+    /// history length before each applied style, for undo
+    private var styleHistoryEnds: [Int] = []
+    /// edits since the last style; undo is only offered while this is zero
+    private(set) var editsSinceStyle = 0
+    /// the exposure Auto sets for the open photo (darktable's automatic rule)
+    private(set) var autoExposure: Double?
+
+    // Settings
+    var toneMapper = ToneMapper(rawValue: UserDefaults.standard.string(forKey: SettingsKey.toneMapper) ?? "")
+        ?? .filmic {
+        didSet {
+            guard toneMapper != oldValue else { return }
+            UserDefaults.standard.set(toneMapper.rawValue, forKey: SettingsKey.toneMapper)
+            Task { await restartEngineForSettings() }
+        }
+    }
+    /// The Essentials tab: the user's own modules, in their order.
+    var essentials = EditorModel.loadEssentials() {
+        didSet { UserDefaults.standard.set(essentials, forKey: SettingsKey.essentials) }
+    }
+
+    /// Lists saved before Scene white existed get White balance swapped for it,
+    /// and lists saved before the recommended order get put in that order
+    /// (anything the user added stays, after the standard modules). Once each.
+    private static func loadEssentials() -> [String] {
+        let d = UserDefaults.standard
+        guard var list = d.stringArray(forKey: SettingsKey.essentials) else { return Presentation.defaultEssentials }
+        if !d.bool(forKey: "EssentialsRecommendedOrder") {
+            d.set(true, forKey: "EssentialsRecommendedOrder")
+            let rank = Dictionary(uniqueKeysWithValues: Presentation.defaultEssentials.enumerated().map { ($1, $0) })
+            list = list.enumerated().sorted { a, b in
+                (rank[a.element] ?? 1000 + a.offset, a.offset) < (rank[b.element] ?? 1000 + b.offset, b.offset)
+            }.map(\.element)
+            if !list.contains("agx"), let i = list.firstIndex(of: "sigmoid") { list.insert("agx", at: i + 1) }
+            d.set(list, forKey: SettingsKey.essentials)
+        }
+        if !d.bool(forKey: "EssentialsCurveAdded") {
+            d.set(true, forKey: "EssentialsCurveAdded")
+            if !list.contains("rgbcurve") {
+                let at = list.firstIndex(of: "colorbalancergb").map { $0 + 1 } ?? list.count
+                list.insert("rgbcurve", at: at)
+                d.set(list, forKey: SettingsKey.essentials)
+            }
+        }
+        if !d.bool(forKey: "EssentialsSceneWhiteMigrated") {
+            d.set(true, forKey: "EssentialsSceneWhiteMigrated")
+            if let i = list.firstIndex(of: "temperature"), !list.contains("channelmixerrgb") {
+                list[i] = "channelmixerrgb"
+                d.set(list, forKey: SettingsKey.essentials)
+            }
+        }
+        return list
+    }
+    /// on unless switched off: darktable leaves lens correction off by default
+    var lensCorrectionForNewPhotos = UserDefaults.standard.object(forKey: SettingsKey.lensCorrection) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(lensCorrectionForNewPhotos, forKey: SettingsKey.lensCorrection) }
+    }
+    var autoExposureForNewPhotos = UserDefaults.standard.bool(forKey: SettingsKey.autoExposure) {
+        didSet { UserDefaults.standard.set(autoExposureForNewPhotos, forKey: SettingsKey.autoExposure) }
+    }
+    var gpuBackend = GPUBackend(rawValue: UserDefaults.standard.string(forKey: SettingsKey.gpuBackend) ?? "") ?? .metal {
+        didSet {
+            guard gpuBackend != oldValue else { return }
+            UserDefaults.standard.set(gpuBackend.rawValue, forKey: SettingsKey.gpuBackend)
+            Task { await restartEngineForSettings() }
+        }
+    }
+    var canvasBackground = CanvasBackground(rawValue: UserDefaults.standard.string(forKey: SettingsKey.canvasBackground) ?? "")
+        ?? .dark {
+        didSet { UserDefaults.standard.set(canvasBackground.rawValue, forKey: SettingsKey.canvasBackground) }
+    }
+    var cameraStyleMode = CameraStyleMode(rawValue: UserDefaults.standard.string(forKey: SettingsKey.cameraStyleMode) ?? "")
+        ?? .suggest {
+        didSet { UserDefaults.standard.set(cameraStyleMode.rawValue, forKey: SettingsKey.cameraStyleMode) }
+    }
+
+    // Status
+    private(set) var engineReady = false
+    private(set) var isOpening = false
+    /// time from request to frame on screen, including the app's HDR pass
+    private(set) var lastRenderMs: Int?
+    private(set) var lastRenderWasDraft = false
+    var errorMessage: String?
+
+    // HDR viewing
+    // StartInHDR: launch argument (-StartInHDR YES) for testing
+    var viewHDR = UserDefaults.standard.bool(forKey: "StartInHDR") {
+        didSet {
+            guard viewHDR != oldValue else { return }
+            watchHeadroom()
+            if viewHDR { useHDRProfileIfSDR() }
+            if url != nil { requestRender() }
+        }
+    }
+    var showHeadroomOverlay = false { didSet { if showHeadroomOverlay != oldValue, viewHDR, url != nil { requestRender() } } }
+
+    /// Caps how far above reference white the HDR rendition goes, in stops
+    /// (0 = no limit). Applied to the HDR view and the gain map export alike;
+    /// darktable writes HEIF and JPEG XL itself, so those aren't capped.
+    var hdrLimitStops = UserDefaults.standard.double(forKey: SettingsKey.hdrLimitStops) {
+        didSet {
+            guard hdrLimitStops != oldValue else { return }
+            UserDefaults.standard.set(hdrLimitStops, forKey: SettingsKey.hdrLimitStops)
+            refreshHDRDisplay()
+        }
+    }
+    var hdrLimit: Double? { hdrLimitStops > 0 ? pow(2, hdrLimitStops) : nil }
+
+    /// Shows the HDR view as a gain map viewer would on a display with this
+    /// many stops of headroom; nil shows this display's full range.
+    /// Adjustments to the SDR rendition only; see SDRVersion.
+    var sdrVersion = SDRVersion() {
+        didSet {
+            guard sdrVersion != oldValue, let url else { return }
+            recordUndoStep(label: "SDR Version", gesture: "sdr", sdrBefore: oldValue)
+            sdrVersion.save(for: url)
+            if showsSDRVersion { requestRender() }
+        }
+    }
+    /// The SDR view of an HDR edit shows its SDR rendition, as a gain map
+    /// JPEG's base and displays without HDR would.
+    var showsSDRVersion: Bool { !viewHDR && exportTarget.isHDR }
+
+    /// StartPreviewHeadroom: launch argument (-StartPreviewHeadroom 2) for testing
+    var previewHeadroomStops: Double? = UserDefaults.standard.object(forKey: "StartPreviewHeadroom").flatMap { Double("\($0)") } {
+        didSet { if previewHeadroomStops != oldValue { refreshHDRDisplay() } }
+    }
+
+    private var hdrRefreshing = false
+    private var hdrRefreshAgain = false
+
+    /// After a change to the peak limit, preview headroom or display headroom:
+    /// redoes only the app's HDR pass on the last frame, coalescing changes
+    /// that arrive while one is running. Falls back to a render when the frame
+    /// can't be reused (an edit is pending, or the view is zoomed, where the
+    /// histogram needs the whole photo).
+    private func refreshHDRDisplay() {
+        guard viewHDR, url != nil, let engine else { return }
+        guard !pumping, !renderRequested, pendingSets.isEmpty, shownCrop == nil else {
+            if shownCrop != nil { hdrAnalysis = nil }   // so the zoomed render redoes the whole-photo one
+            requestRender()
+            return
+        }
+        if hdrRefreshing { hdrRefreshAgain = true; return }
+        hdrRefreshing = true
+        Task {
+            defer { hdrRefreshing = false }
+            repeat {
+                hdrRefreshAgain = false
+                let stops = previewHeadroomStops
+                let start = ContinuousClock.now
+                defer {
+                    if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+                        FileHandle.standardError.write("Develop HDR refresh \(ContinuousClock.now - start), limit \(hdrLimitStops), preview \(stops.map { "\($0)" } ?? "off"), peak \(hdrAnalysis?.peak ?? 0)\n".data(using: .utf8)!)
+                    }
+                }
+                let frame = try? await engine.reprocessLastHDR(
+                    displayHeadroom: displayHeadroom, wantOverlay: showHeadroomOverlay && stops == nil,
+                    limit: hdrLimit, previewStops: stops, darktableBase: ExportSettings.load().sdrBase == .darktable)
+                guard let frame, viewHDR, !pumping else { requestRender(); return }
+                image = frame.image
+                hdrAnalysis = frame.analysis
+                headroomOverlay = frame.overlay
+                isSimulatingHeadroom = stops != nil
+                frameID += 1
+            } while hdrRefreshAgain
+        }
+    }
+    /// the preview is simulating a dimmer display
+    private(set) var isSimulatingHeadroom = false
+
+    /// Brightest value the display can show right now, × its SDR white. It
+    /// drops as screen brightness goes up, so it's polled while viewing HDR
+    /// (EDRImageView's probe layer makes macOS report the true figure).
+    private(set) var displayHeadroom = Double(NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
+    private var headroomWatch: Task<Void, Never>?
+
+    private func watchHeadroom() {
+        headroomWatch?.cancel()
+        guard viewHDR else { return }
+        headroomWatch = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                let now = Double(NSScreen.main?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
+                // ignore tiny drift; re-analyse when it moves by more than ~1/20 stop
+                if abs(log2(max(now, 1)) - log2(max(displayHeadroom, 1))) > 0.05 {
+                    displayHeadroom = now
+                    refreshHDRDisplay()   // only the app's HDR pass reruns
+                }
+            }
+        }
+    }
+
+    // Inspector state
+    var filter: Filter = .essentials
+    // StartSearch: launch argument (-StartSearch text) for testing
+    var search = UserDefaults.standard.string(forKey: "StartSearch") ?? ""
+    // StartExpanded: launch argument (-StartExpanded lens:0,rgbcurve:0) for testing
+    var expanded: Set<String> = UserDefaults.standard.string(forKey: "StartExpanded").map { Set($0.split(separator: ",").map(String.init)) }
+        ?? ["exposure:0", "channelmixerrgb:0", "toneequal:0", "colorbalancergb:0", "filmicrgb:0", "sigmoid:0"]
+
+    private var engine: Engine?
+    private var canvasPixels = 1600
+    private var canvasSizePx = CGSize(width: 1600, height: 1000)
+
+    // Zoom: fit the whole photo, or a crop at a scale where 1 = one image pixel
+    // per screen pixel. darktable runs its full-quality demosaic at 100%.
+    enum Zoom: Equatable { case fit, scale(Double) }
+    var zoom: Zoom = .fit {
+        didSet { if zoom != oldValue, url != nil { requestRender() } }
+    }
+    /// the point of the photo at the centre of the view while zoomed, 0...1
+    var zoomCenter = CGPoint(x: 0.5, y: 0.5) {
+        didSet { if case .scale = zoom, zoomCenter != oldValue { requestRender() } }
+    }
+    /// full size of the processed photo, in pixels
+    private(set) var imageSize = CGSize(width: 1, height: 1)
+
+    static let zoomSteps: [Double] = [0.25, 0.5, 1, 2, 4]
+
+    func zoomIn() {
+        let s = { if case .scale(let s) = zoom { return s } else { return fitScale } }()
+        zoom = .scale(Self.zoomSteps.first { $0 > s + 0.001 } ?? 4)
+    }
+
+    func zoomOut() {
+        guard case .scale(let s) = zoom else { return }
+        let next = Self.zoomSteps.last { $0 < s - 0.001 }
+        zoom = next.map { $0 > fitScale ? .scale($0) : .fit } ?? .fit
+    }
+
+    /// the scale at which the whole photo fits, for zoom steps
+    var fitScale: Double {
+        min(canvasSizePx.width / imageSize.width, canvasSizePx.height / imageSize.height)
+    }
+
+    /// the crop the canvas needs at the current zoom, clamped to the photo
+    var currentCrop: Engine.Crop? {
+        guard case .scale(let s) = zoom else { return nil }
+        let iw = imageSize.width * s, ih = imageSize.height * s
+        let w = min(Int(canvasSizePx.width), Int(iw)), h = min(Int(canvasSizePx.height), Int(ih))
+        let x = Int(zoomCenter.x * iw) - w / 2, y = Int(zoomCenter.y * ih) - h / 2
+        return Engine.Crop(scale: s, x: max(0, min(x, Int(iw) - w)), y: max(0, min(y, Int(ih) - h)), w: w, h: h)
+    }
+
+    /// pan by a distance in screen pixels
+    func pan(byPixels d: CGSize) {
+        guard case .scale(let s) = zoom else { return }
+        let nx = zoomCenter.x - d.width / (imageSize.width * s)
+        let ny = zoomCenter.y - d.height / (imageSize.height * s)
+        zoomCenter = CGPoint(x: min(max(nx, 0), 1), y: min(max(ny, 0), 1))
+    }
+    private var openWhenReady: URL?
+    private var restarting = false
+    private var restartPending = false
+
+    // Edits are coalesced: a slider can fire far faster than the engine
+    // renders, so only the latest value per field is sent, then one render.
+    private var pendingSets: [(module: String, field: String, value: FieldValue)] = []
+    /// Undo steps waiting for their history position: each is resolved once
+    /// the sets queued before it (`position` of them) have reached the engine.
+    private var pendingCheckpoints: [(position: Int, id: Int)] = []
+    private var renderRequested = false
+    private var pumping = false
+    private var settleTask: Task<Void, Never>?
+    /// recent full-resolution render times, to decide whether drafts are needed
+    private var fullRenderMs: Double = 0
+    private var framesSinceOpen = 0
+
+    // MARK: Engine lifecycle
+
+    // only the current engine's exit counts; starts never overlap
+    private var engineGeneration = 0
+    private var startingEngine = false
+    private var failedStarts = 0
+
+    func startEngine() async {
+        // the window's start-up task can run again (opening a file can bring
+        // it back), and a second helper would fail on darktable's database lock
+        guard !startingEngine, engine == nil else { return }
+        startingEngine = true
+        defer { startingEngine = false }
+        engineGeneration += 1
+        let generation = engineGeneration
+        do {
+            let engine = try Engine(workflow: toneMapper.workflow, backend: gpuBackend) { [weak self] status in
+                Task { @MainActor in self?.engineDidExit(status, generation: generation) }
+            }
+            try await engine.start()
+            self.engine = engine
+            engineReady = true
+            failedStarts = 0
+            watchHeadroom()
+            styles = (try? await engine.styles())?.map(StyleInfo.init(name:)) ?? []
+            if let url = openWhenReady {
+                openWhenReady = nil
+                await open(url)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func stopEngine() async {
+        await engine?.stop()
+    }
+
+    /// darktable reads the default tone mapper at startup, so a change needs a
+    /// fresh engine. Unsaved edits are never discarded: with edits pending,
+    /// the restart waits until the next photo is opened.
+    private func restartEngineForSettings() async {
+        guard !hasUnsavedChanges else { restartPending = true; return }
+        await restartEngine()
+        if let url { await open(url) }
+    }
+
+    private func restartEngine() async {
+        restarting = true
+        engineReady = false
+        await engine?.stop()
+        engine = nil
+        restarting = false
+        restartPending = false
+        await startEngine()
+    }
+
+    /// Restarts a crashed engine, backing off (1, 2, 4, 8 s) and giving up
+    /// after five failures in a row, rather than looping. Exits of engines that
+    /// were already replaced are ignored.
+    private func engineDidExit(_ status: Int32, generation: Int) {
+        guard !restarting, generation == engineGeneration else { return }
+        engineReady = false
+        engine = nil
+        failedStarts += 1
+        guard failedStarts <= 5 else {
+            errorMessage = "The darktable engine keeps stopping (status \(status)). Another copy of Develop may still be running; quit it and reopen Develop."
+            return
+        }
+        if failedStarts == 1 {
+            errorMessage = "The darktable engine stopped unexpectedly (status \(status)). Restarting it."
+        }
+        let delay = min(1 << (failedStarts - 1), 8)
+        Task {
+            try? await Task.sleep(for: .seconds(delay))
+            await startEngine()
+            if engineReady, let url { await open(url) }
+        }
+    }
+
+    // MARK: Document
+
+    /// darktable hides deprecated modules unless the photo uses one, and
+    /// modules that can't work on this image (raw-only ones on a non-raw)
+    private var usableModules: [EngineModule] {
+        modules.filter { ($0.applicable ?? true) && (!($0.deprecated ?? false) || $0.enabled || $0.inHistory) }
+    }
+
+    var visibleModules: [EngineModule] {
+        let base: [EngineModule] = switch filter {
+        case .active: usableModules.filter { $0.enabled || $0.inHistory }
+        case .essentials:
+            // only the tone mapper in use, when one is
+            essentials.compactMap { op in usableModules.first { $0.op == op } }
+                .filter { m in
+                    !Presentation.toneMappers.contains(m.op) || m.enabled
+                        || !modules.contains { Presentation.toneMappers.contains($0.op) && $0.enabled }
+                }
+        case .all: usableModules
+        }
+        guard !search.isEmpty else { return base }
+        // search covers every module, whichever tab is showing
+        return usableModules.filter { Presentation.matches($0, search: search) }
+    }
+
+    func open(_ url: URL) async {
+        if restartPending { await restartEngine() }
+        guard let engine else { openWhenReady = url; return }
+        if !reopening, let current = self.url, current.standardizedFileURL == url.standardizedFileURL {
+            showingLibrary = false
+            return
+        }
+        await leaveCurrentPhoto()
+        isOpening = true
+        defer { isOpening = false }
+        // stay in the folder or collection being worked through if it has this photo
+        if !library.contains(url) { library.show(folder: url.deletingLastPathComponent()) }
+        showingLibrary = false
+        do {
+            decodedTIFF = nil
+            openedAsHDR = false
+            decoderInUse = nil
+            let reply: OpenReply
+            let isRaw = UTType(filenameExtension: url.pathExtension)?.conforms(to: .rawImage) ?? false
+            if !isRaw, await Task.detached(operation: { AppleRawFallback.isHDR(url) }).value {
+                // a gain map or HLG/PQ image: darktable would read only the SDR
+                // base, so edit macOS's HDR decode of it
+                statusNote = "Decoding HDR with macOS…"
+                defer { statusNote = nil }
+                let tiff = try await Task.detached(priority: .userInitiated) { try AppleRawFallback.decodedHDR(for: url) }.value
+                AppleRawFallback.sidecarToDecoded(original: url, decoded: tiff, raw: false)
+                reply = try await engine.open(tiff)
+                decodedTIFF = tiff
+                openedAsHDR = true
+            } else if isRaw, case .apple(let version) = RawDecoderChoice.stored(for: url) {
+                // chosen in Image › Raw Decoder
+                reply = try await openWithApple(url, version: version, engine: engine)
+            } else { do {
+                reply = try await engine.open(url)
+                decoderInUse = isRaw ? "darktable" : nil
+            } catch let error as EngineError where error.message.contains("could not decode") && AppleRawFallback.canDecode(url) {
+                // darktable can't read this raw, but macOS can: edit Apple's decode of it
+                reply = try await openWithApple(url, version: nil, engine: engine)
+            } }
+            appleDecoderVersions = isRaw ? await Task.detached { AppleRawFallback.decoderVersions(url) }.value : []
+            canDecodeWithApple = isRaw && (!appleDecoderVersions.isEmpty || decodedTIFF != nil || AppleRawFallback.canDecode(url))
+            undoGroupDepth += 1
+            defer { undoGroupDepth -= 1 }
+            self.url = url
+            clearUndo()
+            sdrVersion = SDRVersion.load(for: url)
+            camera = reply.camera
+            imageSize = CGSize(width: reply.width, height: reply.height)
+            zoomCenter = CGPoint(x: 0.5, y: 0.5)
+            // StartZoom: launch argument (-StartZoom 1) for testing
+            let startZoom = UserDefaults.standard.double(forKey: "StartZoom")
+            zoom = startZoom > 0 ? .scale(startZoom) : .fit
+            // TestExport: launch arguments (-TestExport /path/file.jpg -TestExportFormat jpegGainMap) for testing
+            if let path = UserDefaults.standard.string(forKey: "TestExport") {
+                FileHandle.standardError.write("Develop test export to \(path)\n".data(using: .utf8)!)
+                var t = ExportSettings()
+                t.format = ExportFormat(rawValue: UserDefaults.standard.string(forKey: "TestExportFormat") ?? "") ?? .jpeg
+                t.longEdge = 3000
+                Task { await export(t, to: URL(fileURLWithPath: path), remember: false) }
+            }
+            // TestSDREdits: launch argument (-TestSDREdits YES) for testing, steps SDR brightness a few times
+            if UserDefaults.standard.bool(forKey: "TestSDREdits") {
+                Task { @MainActor in
+                    for i in 1...6 {
+                        try? await Task.sleep(for: .seconds(2))
+                        sdrVersion.brightness = Double(i) / 10
+                    }
+                }
+            }
+            // TestHDRControls: launch argument (-TestHDRControls YES) for testing: steps the
+            // peak limit and preview headroom, then switches to SDR and back
+            if UserDefaults.standard.bool(forKey: "TestHDRControls") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    for l in [2.0, 1.5, 1.0, 0] { hdrLimitStops = l; try? await Task.sleep(for: .milliseconds(400)) }
+                    previewHeadroomStops = 0.2
+                    try? await Task.sleep(for: .seconds(2))
+                    for p in [0.1, 0.05, 0] { previewHeadroomStops = p; try? await Task.sleep(for: .milliseconds(400)) }
+                    previewHeadroomStops = nil
+                    try? await Task.sleep(for: .seconds(1))
+                    viewHDR = false
+                    try? await Task.sleep(for: .seconds(2))
+                    viewHDR = true
+                }
+            }
+            // TestUndo: launch argument (-TestUndo YES) for testing: a drag, a toggle and
+            // another module's edit, then undo three times and redo once, logging each
+            if UserDefaults.standard.bool(forKey: "TestUndo") {
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Develop undo test: \(s), steps \(undoStack.map(\.label)), redo \(redoStack.map(\.label))\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    log("start")
+                    guard let exposure = modules.first(where: { $0.op == "exposure" }) else { return }
+                    let ev = exposure.fields.first { $0.name == "exposure" }?.value.number ?? 0
+                    for i in 1...10 {   // a drag
+                        setValue(.number(ev + Double(i) / 10), module: exposure.key, field: "exposure")
+                        try? await Task.sleep(for: .milliseconds(50))
+                    }
+                    try? await Task.sleep(for: .seconds(2)); log("after drag")
+                    if let lens = modules.first(where: { $0.op == "lens" }) { setEnabled(!lens.enabled, module: lens.key) }
+                    try? await Task.sleep(for: .seconds(2)); log("after toggle")
+                    if let cb = modules.first(where: { $0.op == "colorbalancergb" }) {
+                        setValue(.number(0.5), module: cb.key, field: "saturation_global")
+                    }
+                    try? await Task.sleep(for: .seconds(2)); log("after saturation")
+                    for _ in 0..<3 { await undo(); try? await Task.sleep(for: .seconds(2)); log("after undo") }
+                    await redo(); try? await Task.sleep(for: .seconds(2)); log("after redo")
+                }
+            }
+            // TestLibrary: launch argument (-TestLibrary YES) for testing: step past a photo
+            // without editing, then edit one and move on, logging which sidecars exist
+            if UserDefaults.standard.bool(forKey: "TestLibrary"), !Self.testLibraryRan {
+                Self.testLibraryRan = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let xmps = library.items.filter { FileManager.default.fileExists(atPath: $0.url.path + ".xmp") }.map(\.name)
+                        FileHandle.standardError.write("Develop library test: \(s): at \(self.url?.lastPathComponent ?? "-"), sidecars \(xmps), thumbnails \(library.thumbnails.count)\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(3)); log("start")
+                    await openNeighbour(1); try? await Task.sleep(for: .seconds(3)); log("after next, no edit")
+                    if let e = modules.first(where: { $0.op == "exposure" }) {
+                        setValue(.number((e.fields.first { $0.name == "exposure" }?.value.number ?? 0) + 0.5), module: e.key, field: "exposure")
+                    }
+                    try? await Task.sleep(for: .seconds(2))
+                    await openNeighbour(1); try? await Task.sleep(for: .seconds(3)); log("after editing and next")
+                }
+            }
+            // SwitchDecoderToApple: launch argument (-SwitchDecoderToApple YES) for testing, once
+            if UserDefaults.standard.bool(forKey: "SwitchDecoderToApple"), !Self.decoderSwitchTested {
+                Self.decoderSwitchTested = true
+                Task { @MainActor in try? await Task.sleep(for: .seconds(5)); await setRawDecoder(.apple(nil)) }
+            }
+            // SwitchToHDR: launch argument (-SwitchToHDR YES) for testing, switches to HDR after opening
+            if UserDefaults.standard.bool(forKey: "SwitchToHDR") {
+                Task { @MainActor in try? await Task.sleep(for: .seconds(5)); viewHDR = true }
+            }
+            // StartLibrary: launch argument (-StartLibrary YES) for testing, shows the grid;
+            // with -StartLibraryAdd YES the folder is added to the library too
+            if UserDefaults.standard.bool(forKey: "StartLibrary") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    if UserDefaults.standard.bool(forKey: "StartLibraryAdd") { catalog.addFolders([url.deletingLastPathComponent().deletingLastPathComponent()]) }
+                    await showLibrary()
+                    // -StartMap YES: the sidebar's Map
+                    if UserDefaults.standard.bool(forKey: "StartMap") { showSource(.map) }
+                }
+            }
+            // StartCropping: launch argument (-StartCropping YES, optionally -StartStraighten 3) for testing
+            if UserDefaults.standard.bool(forKey: "StartCropping") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    beginCrop()
+                    try? await Task.sleep(for: .seconds(1))
+                    setStraighten(UserDefaults.standard.double(forKey: "StartStraighten"))
+                    if UserDefaults.standard.bool(forKey: "TestStraightenPreview") {
+                        try? await Task.sleep(for: .seconds(4))
+                        setStraighten(15)
+                        FileHandle.standardError.write("Develop straighten preview now\n".data(using: .utf8)!)
+                        return
+                    }
+                    cropAspect = .r3x2
+                    cropRect = CGRect(x: 0.1, y: 0.15, width: 0.6, height: 0.6)
+                    fitCropToAspect()
+                }
+            }
+            // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
+            if UserDefaults.standard.bool(forKey: "TestLevel") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    beginCrop()
+                    for deg in [0.0, 4, -3, 7] {
+                        try? await Task.sleep(for: .seconds(1))
+                        let frame = frameID
+                        setStraighten(deg)
+                        for _ in 0..<150 where frameID == frame { try? await Task.sleep(for: .milliseconds(30)) }
+                        try? await Task.sleep(for: .seconds(1))
+                        await autoStraighten()
+                        FileHandle.standardError.write("Develop level test: from \(deg) -> \(straighten)\n".data(using: .utf8)!)
+                    }
+                }
+            }
+            // TestCrop: launch argument (-TestCrop YES) for testing: straighten 5°, check the
+            // frame's shape and corners, auto straighten, then commit a centred half crop
+            if UserDefaults.standard.bool(forKey: "TestCrop") {
+                Task { @MainActor in
+                    @MainActor func corners() -> String {
+                        guard let img = image, let data = img.dataProvider?.data as Data? else { return "?" }
+                        let (w, h, row) = (img.width, img.height, img.bytesPerRow)
+                        let pts = [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3)]
+                        return pts.map { (x, y) in
+                            let i = y * row + x * 4
+                            return "\(data[i])/\(data[i + 1])/\(data[i + 2])"
+                        }.joined(separator: " ")
+                    }
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Develop crop test: \(s): size \(imageSize), frame \(image.map { "\($0.width)x\($0.height)" } ?? "-"), straighten \(straighten), corners \(corners())\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4)); log("start")
+                    beginCrop()
+                    try? await Task.sleep(for: .seconds(2)); log("cropping")
+                    setStraighten(5)
+                    try? await Task.sleep(for: .seconds(3)); log("straightened 5")
+                    await autoStraighten()
+                    try? await Task.sleep(for: .seconds(3)); log("auto straightened")
+                    setStraighten(5)
+                    try? await Task.sleep(for: .seconds(2))
+                    cropRect = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+                    commitCrop()
+                    try? await Task.sleep(for: .seconds(3)); log("committed")
+                    await undo()
+                    try? await Task.sleep(for: .seconds(3)); log("undone crop")
+                }
+            }
+            // StartExport: launch argument (-StartExport YES) for testing, opens as ⌘E would
+            if UserDefaults.standard.bool(forKey: "StartExport") {
+                Task { @MainActor in ExportPanel.present(model: self) }
+            }
+            sensor = reply.sensor ?? "bayer"
+            modules = reply.modules
+            hasUnsavedChanges = false
+            image = nil
+            beforeImage = nil
+            beforeKey = ""
+            hdrAnalysis = nil
+            headroomOverlay = nil
+            appliedStyles = []
+            styleHistoryEnds = []
+            editsSinceStyle = 0
+            fullRenderMs = 0
+            framesSinceOpen = 0
+            // camera looks are for raws: a JPEG or HEIC already has the camera's look
+            suggestedStyle = isRaw ? CameraStyles.suggestion(in: styles, maker: reply.maker,
+                                                             model: reply.model, alias: reply.alias) : nil
+            // only unedited photos get the new-photo defaults; an existing
+            // sidecar is the user's edit
+            offerSuggestedStyle = false
+            if viewHDR { useHDRProfileIfSDR() }
+            openedWithEdit = reply.hadSidecar
+            lensInfo = await Task.detached { Self.readLens(url) }.value
+            await measureAutoExposure()
+            if !reply.hadSidecar { await applyNewPhotoDefaults() }
+            requestRender()
+        } catch {
+            errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    func save() async {
+        guard let engine, url != nil else { return }
+        do {
+            try await engine.save()
+            hasUnsavedChanges = false
+            if let tiff = decodedTIFF, let url { AppleRawFallback.sidecarToOriginal(original: url, decoded: tiff, raw: !openedAsHDR) }
+            if let url {
+                catalog.recordEdit(url)
+                library.noteEdited(url)
+            }
+        } catch {
+            errorMessage = "Couldn't save the XMP sidecar: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Essentials
+
+    func isEssential(_ op: String) -> Bool { essentials.contains(op) }
+
+    func toggleEssential(_ op: String) {
+        if let i = essentials.firstIndex(of: op) { essentials.remove(at: i) } else { essentials.append(op) }
+    }
+
+    /// Moves `op` to just before `target` (drag and drop in the Essentials tab).
+    func moveEssential(_ op: String, before target: String) {
+        guard op != target, let from = essentials.firstIndex(of: op) else { return }
+        essentials.remove(at: from)
+        let to = essentials.firstIndex(of: target) ?? essentials.endIndex
+        essentials.insert(op, at: to)
+    }
+
+    func resetEssentials() { essentials = Presentation.defaultEssentials }
+
+    // MARK: Tone equalizer
+
+    var toneEqualizerIsFitted: Bool {
+        guard let te = modules.first(where: { $0.op == "toneequal" }) else { return false }
+        let boost = { (n: String) in te.fields.first { $0.name == n }?.value.number ?? 0 }
+        return boost("exposure_boost") != 0 || boost("contrast_boost") != 0
+    }
+
+    private var toneFitTask: Task<Void, Never>?
+
+    /// Fits the tone equalizer once: callers arriving while a fit runs wait for
+    /// that one instead of starting another.
+    func ensureToneEqualizerFitted() async {
+        if toneEqualizerIsFitted { return }
+        if let toneFitTask { return await toneFitTask.value }
+        let task = Task { await fitToneEqualizer() }
+        toneFitTask = task
+        await task.value
+        toneFitTask = nil
+    }
+
+    func fitToneEqualizer() async {
+        guard let engine else { return }
+        recordUndoStep(label: "Tone Equalizer", gesture: modules.first { $0.op == "toneequal" }?.key)
+        // any pending zone edits go first, so they land in the same history
+        await settleEdits()
+        do {
+            modules = try await engine.fitToneEqualizer()
+            hasUnsavedChanges = true
+            requestRender()
+        } catch {
+            errorMessage = "Couldn't fit the tone equalizer: \(error.localizedDescription)"
+        }
+    }
+
+    func autoTuneFilmic() async {
+        guard let engine else { return }
+        recordUndoStep(label: "Auto-Tune Filmic")
+        await settleEdits()
+        do {
+            modules = try await engine.filmicAutoTune()
+            hasUnsavedChanges = true
+            requestRender()
+        } catch {
+            errorMessage = "Couldn't auto-tune filmic: \(error.localizedDescription)"
+        }
+    }
+
+    /// Settings Develop applies to a photo without an edit: lens correction,
+    /// optionally automatic exposure, and the camera style per the settings.
+    private func applyNewPhotoDefaults() async {
+        if lensCorrectionForNewPhotos, let lens = modules.first(where: { $0.op == "lens" }), !lens.enabled {
+            // darktable picks the camera's embedded correction data if the raw
+            // has it (Sony, Fujifilm, Olympus...), otherwise the Lensfun database
+            setEnabled(true, module: lens.key)
+        }
+        if autoExposureForNewPhotos, let exposure = modules.first(where: { $0.op == "exposure" }) {
+            setAuto(true, module: exposure)
+        }
+        if let style = suggestedStyle {
+            switch cameraStyleMode {
+            case .automatic: await applyStyle(style)
+            case .suggest: offerSuggestedStyle = true
+            case .off: break
+            }
+        }
+    }
+
+    /// Back to the photo as darktable would first show it, plus Develop's
+    /// new-photo defaults. Not undoable, so the button asks first.
+    func resetAll() async {
+        guard let engine else { return }
+        do {
+            modules = try await engine.resetAll()
+            appliedStyles = []
+            styleHistoryEnds = []
+            editsSinceStyle = 0
+            pendingSets.removeAll()
+            pendingCheckpoints.removeAll()
+            undoGroupDepth += 1
+            sdrVersion = SDRVersion()
+            await applyNewPhotoDefaults()
+            undoGroupDepth -= 1
+            clearUndo()
+            editedSinceOpen = true
+            openedWithEdit = false
+            if viewHDR { useHDRProfileIfSDR() }
+            hasUnsavedChanges = true
+            requestRender()
+        } catch {
+            errorMessage = "Couldn't reset: \(error.localizedDescription)"
+        }
+    }
+
+    /// Everything automatic darktable can do for this photo: the camera style,
+    /// automatic exposure, filmic's auto-tune and the tone equalizer's fit.
+    var canAuto: Bool { url != nil }
+    var confirmingReset = false
+
+    func autoAll() async {
+        recordUndoStep(label: "Auto")
+        // one undo step for everything Auto does
+        undoGroupDepth += 1
+        defer { undoGroupDepth -= 1 }
+        await matchCamera()
+        if let filmic = modules.first(where: { $0.op == "filmicrgb" }), filmic.enabled { await autoTuneFilmic() }
+        if let te = modules.first(where: { $0.op == "toneequal" }), te.enabled { await fitToneEqualizer() }
+    }
+
+    // MARK: Automatic modes
+
+    /// Auto exposure sets the Exposure slider to a measured value, as
+    /// Lightroom's does, rather than switching on darktable's automatic mode:
+    /// that only runs on mosaic raws (silently doing nothing on monochrome raws,
+    /// linear DNGs and other images) and hides the slider behind a percentile
+    /// and a target level. The value is darktable's own rule, measured by the
+    /// engine for any file. A photo saved in darktable's automatic mode is
+    /// switched to the same value as a manual one when opened; for a raw that
+    /// darktable could measure, the photo looks the same.
+    private func measureAutoExposure() async {
+        autoExposure = nil
+        guard let engine, let m = modules.firstIndex(where: { $0.op == "exposure" }) else { return }
+        let module = modules[m]
+        autoExposure = try? await engine.autoExposure(module: module.key)
+        // an edit in darktable's automatic mode keeps its own percentile and target
+        guard let mode = module.fields.firstIndex(where: { $0.name == "mode" }),
+              Int(module.fields[mode].value.number) == 1,
+              let value = try? await engine.autoExposure(module: module.key, standard: false),
+              let ev = module.fields.firstIndex(where: { $0.name == "exposure" }) else { return }
+        // not an edit of the user's: no undo step, nothing to save on its own
+        modules[m].fields[mode].value = .number(0)
+        modules[m].fields[ev].value = .number(value)
+        pendingSets.append((module.key, "mode", .number(0)))
+        pendingSets.append((module.key, "exposure", .number(value)))
+    }
+
+    func isAuto(_ module: EngineModule) -> Bool {
+        if module.op == "exposure" {
+            let mode = module.fields.first { $0.name == "mode" }?.value.number ?? 0
+            let ev = module.fields.first { $0.name == "exposure" }?.value.number
+            if mode == 1 { return true }
+            guard let auto = autoExposure, let ev else { return false }
+            return abs(ev - auto) < 0.005
+        }
+        guard let rule = Presentation.autoModes[module.op],
+              let field = module.fields.first(where: { $0.name == rule.field }) else { return false }
+        return Int(field.value.number) == rule.auto
+    }
+
+    func setAuto(_ on: Bool, module: EngineModule) {
+        if module.op == "exposure" {
+            // on: the measured value; off: darktable's default for the photo
+            let ev = on ? autoExposure : module.fields.first { $0.name == "exposure" }?.defaultValue.number
+            guard let ev else { return }
+            setValue(.number(0), module: module.key, field: "mode")
+            setValue(.number((ev * 100).rounded() / 100), module: module.key, field: "exposure")
+            return
+        }
+        guard let rule = Presentation.autoModes[module.op] else { return }
+        setValue(.number(Double(on ? rule.auto : rule.manual)), module: module.key, field: rule.field)
+    }
+
+    // MARK: Edits
+
+    func applyStyle(_ style: StyleInfo) async {
+        guard let engine else { return }
+        recordUndoStep(label: "Apply \(style.title)")
+        await settleEdits()
+        do {
+            let reply = try await engine.applyStyle(style.name)
+            modules = reply.modules
+            appliedStyles.append(style.name)
+            styleHistoryEnds.append(reply.historyEndBefore)
+            editsSinceStyle = 0
+            offerSuggestedStyle = false
+            hasUnsavedChanges = true
+            requestRender()
+        } catch {
+            errorMessage = "Couldn't apply \(style.title): \(error.localizedDescription)"
+        }
+    }
+
+    /// Removes the most recent style: with no edits since, that's the top undo step.
+    func undoLastStyle() async {
+        guard editsSinceStyle == 0, !appliedStyles.isEmpty else { return }
+        await undo()
+    }
+
+    func setValue(_ value: FieldValue, module: String, field: String) {
+        guard let m = modules.firstIndex(where: { $0.key == module }),
+              let f = modules[m].fields.firstIndex(where: { $0.name == field }) else { return }
+        modules[m].fields[f].value = value
+        modules[m].enabled = true
+        hasUnsavedChanges = true
+        // by module, so controls that set several fields (tone equalizer zones,
+        // scene white) make one step
+        recordUndoStep(label: Presentation.title(of: modules[m]), gesture: module)
+        editsSinceStyle += 1
+        // only the latest value per field is sent, but never merged across an undo checkpoint
+        let floor = pendingCheckpoints.last?.position ?? 0
+        if let i = pendingSets.indices.last(where: { $0 >= floor && pendingSets[$0].module == module && pendingSets[$0].field == field }) {
+            pendingSets.remove(at: i)
+        }
+        pendingSets.append((module, field, value))
+        requestRender()
+    }
+
+    func setEnabled(_ on: Bool, module: String) {
+        guard let m = modules.firstIndex(where: { $0.key == module }) else { return }
+        modules[m].enabled = on
+        hasUnsavedChanges = true
+        recordUndoStep(label: "\(on ? "Turn On" : "Turn Off") \(Presentation.title(of: modules[m]))")
+        // queued behind pending sets so the undo step resolves before it
+        Task {
+            await settleEdits()
+            try? await engine?.enable(module: module, on: on)
+            requestRender()
+        }
+    }
+
+    func reset(module: String) {
+        recordUndoStep(label: "Reset \(modules.first { $0.key == module }.map(Presentation.title) ?? "Module")")
+        Task {
+            guard let engine else { return }
+            await settleEdits()
+            do {
+                modules = try await engine.reset(module: module)
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: Rendering
+
+    func canvasDidResize(toSize size: CGSize, displayScale: CGFloat) {
+        let px = CGSize(width: size.width * displayScale, height: size.height * displayScale)
+        let changed = abs(px.width - canvasSizePx.width) > 32 || abs(px.height - canvasSizePx.height) > 32
+        canvasSizePx = px
+        if changed, case .scale = zoom, url != nil { requestRender() }
+        canvasDidResize(toPixels: Int(max(px.width, px.height)))
+    }
+
+    func canvasDidResize(toPixels px: Int) {
+        // re-render only for meaningful size changes
+        let clamped = max(400, min(px, 4096))
+        guard abs(clamped - canvasPixels) > 64 else { return }
+        canvasPixels = clamped
+        if url != nil { requestRender() }
+    }
+
+    private func requestRender() {
+        renderRequested = true
+        pump()
+    }
+
+    /// While edits are arriving (a slider being dragged), frames render at full
+    /// resolution if that's fast enough to keep up. Only when full renders are
+    /// slow (heavy modules such as denoise) are they drafted at two-thirds size,
+    /// with one full-resolution frame once edits pause.
+    private func pump() {
+        guard !pumping, let engine else { return }
+        pumping = true
+        Task {
+            defer { pumping = false }
+            while !pendingSets.isEmpty || !pendingCheckpoints.isEmpty || pendingCurve != nil || renderRequested {
+                let sets = pendingSets
+                let checkpoints = pendingCheckpoints
+                pendingSets.removeAll()
+                pendingCheckpoints.removeAll()
+                renderRequested = false
+                // ~110 ms is about where dragging starts to feel laggy; zoomed
+                // crops are small already and must stay sharp, so never drafted
+                let crop = currentCrop
+                let renderStraighten = straighten
+                let curve = pendingCurve
+                pendingCurve = nil
+                let draft = (!sets.isEmpty || curve != nil) && fullRenderMs > 110 && crop == nil
+                let pixels = draft ? max(640, canvasPixels * 2 / 3) : canvasPixels
+                let start = ContinuousClock.now
+                do {
+                    // sets go in segments split at undo checkpoints, so each
+                    // checkpoint records the history position where it falls
+                    var sent = 0
+                    for c in checkpoints {
+                        try await engine.setMany(Array(sets[sent..<c.position]))
+                        sent = c.position
+                        resolveUndoStep(c.id, end: await engine.historyEnd)
+                    }
+                    try await engine.setMany(Array(sets[sent...]))
+                    if let c = curve {
+                        try await engine.setCurve(module: c.module, channel: c.channel, nodes: c.nodes, linked: c.linked)
+                    }
+                    let simulate = viewHDR ? previewHeadroomStops : nil
+                    let frame = try await engine.render(maxPixels: pixels, hdr: viewHDR,
+                                                        displayHeadroom: displayHeadroom,
+                                                        wantOverlay: showHeadroomOverlay && simulate == nil, crop: crop,
+                                                        overrides: (showsSDRVersion ? sdrOverrides : []) + cropOverrides + curveOverrides,
+                                                        hdrLimit: viewHDR ? hdrLimit : nil,
+                                                        keepForRefresh: crop == nil)
+                    if frame.processedSize.width > 0 { imageSize = frame.processedSize }
+                    // the curve's histogram is of the module's input, which a curve edit
+                    // doesn't change; and the points on screen are newer than the engine's
+                    if let key = curveEditorModule, crop == nil, curve == nil, pendingCurve == nil {
+                        curveInfo = try? await engine.curve(module: key)
+                    }
+                    frameStraighten = renderStraighten
+                    if crop == nil, !isCropping, !isSimulatingHeadroom { thumbnailFrame = frame.image }
+                    if let r = frame.rotateInSize { rotateInSize = r }
+                    if let simulate, frame.isHDR {
+                        image = try await gainMapPreview(frame, stops: simulate, maxPixels: pixels, crop: crop, engine: engine)
+                    } else {
+                        image = frame.image
+                    }
+                    isSimulatingHeadroom = simulate != nil && frame.isHDR
+                    if isSimulatingHeadroom, let img = image {
+                        FileHandle.standardError.write("Develop preview at +\(simulate!) stops: headroom \(img.contentHeadroom), frame peak \(frame.analysis?.peak ?? 0)\n".data(using: .utf8)!)
+                    }
+                    imageIsZoomed = crop != nil
+                    shownCrop = crop
+                    frameID += 1
+                    imageIsHDR = frame.isHDR
+                    if crop == nil {
+                        hdrAnalysis = frame.analysis
+                        if let h = frame.histogram { rgbHistogram = h }
+                    } else if !sets.isEmpty || (viewHDR ? hdrAnalysis == nil : rgbHistogram == nil) {
+                        // while zoomed the histograms describe the whole photo, so after
+                        // an edit render a small full frame just for them
+                        let whole = try await engine.render(maxPixels: 600, hdr: viewHDR,
+                                                            displayHeadroom: displayHeadroom, wantOverlay: false,
+                                                            overrides: (showsSDRVersion ? sdrOverrides : []) + cropOverrides,
+                                                            hdrLimit: viewHDR ? hdrLimit : nil)
+                        hdrAnalysis = whole.analysis
+                        if let h = whole.histogram { rgbHistogram = h }
+                    }
+                    headroomOverlay = frame.overlay
+                    let elapsed = ContinuousClock.now - start
+                    lastRenderMs = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
+                    lastRenderWasDraft = draft
+                    // LogRenderTimes: launch argument (-LogRenderTimes YES) for testing
+                    if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+                        // mean of the first channel, to check edits reach the frame
+                        let mean = frame.pixels.withUnsafeBytes { raw -> Double in
+                            if frame.isHDR {
+                                let f = raw.bindMemory(to: Float.self)
+                                let n = Double(f.count / (4 * 97))
+                                let rgb = (0..<3).map { c in stride(from: c, to: f.count, by: 4 * 97).reduce(0) { $0 + Double(f[$1]) } / n }
+                                FileHandle.standardError.write("Develop HDR frame RGB means \(rgb.map { String(format: "%.3f", $0) })\n".data(using: .utf8)!)
+                                return rgb[0]
+                            }
+                            let b = raw.bindMemory(to: UInt8.self)
+                            return stride(from: 0, to: b.count, by: 4 * 97).reduce(0) { $0 + Double(b[$1]) } / Double(b.count / (4 * 97))
+                        }
+                        FileHandle.standardError.write("Develop frame \(lastRenderMs ?? 0) ms (engine \(frame.ms) ms), mean \(String(format: "%.3f", mean))\n".data(using: .utf8)!)
+                    }
+                    framesSinceOpen += 1
+                    // the first frame after opening fills the cache and is always slow
+                    if !draft, crop == nil, framesSinceOpen > 1 {
+                        // smoothed, so one slow frame doesn't flip the mode
+                        let ms = Double(lastRenderMs ?? 0)
+                        fullRenderMs = fullRenderMs == 0 ? ms : fullRenderMs * 0.6 + ms * 0.4
+                    }
+                } catch {
+                    errorMessage = error.localizedDescription
+                    return
+                }
+                if draft { settleAfterEdits() }
+                await renderBeforeIfNeeded(engine)
+            }
+        }
+    }
+
+    /// The before image never changes with edits, so it's rendered once per
+    /// canvas size and SDR/HDR mode, at full size.
+    private func renderBeforeIfNeeded(_ engine: Engine) async {
+        let crop = currentCrop
+        let key = "\(canvasPixels)-\(viewHDR)-\(String(describing: crop))"
+        guard comparing, key != beforeKey else { return }
+        do {
+            let frame = try await engine.render(maxPixels: canvasPixels, hdr: viewHDR,
+                                                displayHeadroom: displayHeadroom, wantOverlay: false,
+                                                before: true, crop: crop, hdrLimit: viewHDR ? hdrLimit : nil)
+            beforeImage = frame.image
+            beforeKey = key
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// The HDR frame as a gain map viewer would show it with `stops` of
+    /// headroom, using the SDR base the export is set to make.
+    private func gainMapPreview(_ frame: Engine.Frame, stops: Double, maxPixels: Int, crop: Engine.Crop?,
+                                engine: Engine) async throws -> CGImage {
+        var sdr: Engine.Frame?
+        if ExportSettings.load().sdrBase == .darktable {
+            let f = try await engine.render(maxPixels: maxPixels, hdr: false, displayHeadroom: 1, wantOverlay: false,
+                                            crop: crop, overrides: sdrOverrides)
+            if f.width == frame.width, f.height == frame.height { sdr = f }
+        }
+        return try await engine.gainMapPreview(hdr: frame, sdr: sdr, stops: stops)
+    }
+
+    // MARK: Export
+
+    private(set) var isExporting = false
+    private(set) var lastExport: URL? {
+        didSet { if lastExport != nil { showExportDone = true } }
+    }
+    var showExportDone = false
+
+    /// the edit's export profile, as the HDR card describes it
+    var exportTarget: HDRTarget { HDRTarget(darktableProfile: outputProfileType ?? 1) }
+
+    /// pixel size of an export at the given long edge (0 = original)
+    func exportSize(longEdge: Int) -> CGSize {
+        let long = max(imageSize.width, imageSize.height)
+        let scale = longEdge > 0 ? min(1, Double(longEdge) / long) : 1
+        return CGSize(width: (imageSize.width * scale).rounded(), height: (imageSize.height * scale).rounded())
+    }
+
+    func export(_ settings: ExportSettings, to url: URL, remember: Bool = true) async {
+        guard let engine else { return }
+        isExporting = true
+        defer { isExporting = false }
+        if remember { settings.save() }
+        do {
+            if settings.format == .jpegGainMap {
+                try await exportGainMapJPEG(settings, to: url, engine: engine)
+                lastExport = url
+                FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+            } else {
+                // darktable adds the extension itself
+                lastExport = try await engine.export(
+                    path: url.deletingPathExtension().path, format: settings.format.darktableName ?? "jpeg",
+                    quality: settings.quality, bitDepth: settings.bitDepth, maxEdge: settings.longEdge,
+                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue)
+            }
+            if let photo = self.url, let file = lastExport {
+                catalog.recordExport(photo, file: file, format: settings.format.title)
+            }
+        } catch {
+            FileHandle.standardError.write("Develop export failed: \(error)\n".data(using: .utf8)!)
+            errorMessage = "Couldn't export: \(error.localizedDescription)"
+        }
+    }
+
+    /// A JPEG with an ISO 21496-1 HDR gain map, written by Core Image.
+    /// The HDR image is exactly what the HDR preview shows: darktable's output
+    /// in the edit's HDR profile, on the EDR scale. The SDR base is, by default,
+    /// darktable's own SDR rendering of the edit (the tone mapper's target white
+    /// back at 100%); Core Image computes the gain map between the two. Viewers
+    /// without HDR, or with little headroom, mostly see that SDR base.
+    private func exportGainMapJPEG(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
+        var target = exportTarget
+        if settings.profile != .fromEdit { target = HDRTarget(darktableProfile: settings.profile.rawValue) }
+        guard target.isHDR else {
+            throw EngineError(message: "A gain map needs an HDR edit: choose an HLG or PQ export format in the HDR card, or an HDR colour profile here.")
+        }
+        if settings.profile != .fromEdit { setOutputProfile(settings.profile.rawValue) }
+        let size = exportSize(longEdge: settings.longEdge)
+        let maxPixels = Int(max(size.width, size.height))
+
+        let hdrFrame = try await engine.render(maxPixels: maxPixels, hdr: true, displayHeadroom: 16, wantOverlay: false,
+                                               hdrLimit: hdrLimit)
+        let hdr = CIImage(cgImage: hdrFrame.image)
+
+        let sdr: CIImage
+        switch settings.sdrBase {
+        case .darktable:
+            let sdrFrame = try await engine.render(maxPixels: maxPixels, hdr: false, displayHeadroom: 1, wantOverlay: false,
+                                                   overrides: sdrOverrides)
+            sdr = CIImage(cgImage: sdrFrame.image)
+        case .automatic:
+            let toneMap = CIFilter.toneMapHeadroom()
+            toneMap.inputImage = hdr
+            toneMap.sourceHeadroom = Float(max(hdrFrame.analysis?.peak ?? 1, 1))
+            toneMap.targetHeadroom = 1
+            guard let out = toneMap.outputImage else { throw EngineError(message: "Couldn't make the SDR base image.") }
+            sdr = out
+        }
+
+        let options: [CIImageRepresentationOption: Any] = [
+            CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): Double(settings.quality) / 100,
+            .hdrImage: hdr,
+        ]
+        try CIContext().writeJPEGRepresentation(of: sdr, to: url, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
+                                                options: options)
+        // render the preview again at its own size (the frame file was reused)
+        requestRender()
+    }
+
+    /// settings that turn the edit into its SDR rendition: tone mappers back to
+    /// 100% white, plus the SDR version's own adjustments
+    private var sdrOverrides: [Engine.Override] {
+        var overrides = modules.compactMap { m -> Engine.Override? in
+            switch m.op {
+            case "sigmoid": Engine.Override(module: m.key, field: "display_white_target", value: 100)
+            case "filmicrgb": Engine.Override(module: m.key, field: "white_point_target", value: 100)
+            default: nil
+            }
+        }
+        func current(_ m: EngineModule, _ field: String) -> Double? {
+            m.fields.first { $0.name == field }?.value.number
+        }
+        let v = sdrVersion
+        if v.brightness != 0, let exposure = modules.first(where: { $0.op == "exposure" && $0.enabled }) {
+            // in automatic mode darktable sets exposure from its target level
+            let field = current(exposure, "mode") == 1 ? "deflicker_target_level" : "exposure"
+            if let value = current(exposure, field) {
+                overrides.append(.init(module: exposure.key, field: field, value: value + v.brightness))
+            }
+        }
+        if v.contrast != 0 {
+            let fields = ["sigmoid": "middle_grey_contrast", "filmicrgb": "contrast", "agx": "curve_contrast_around_pivot"]
+            for m in modules where m.enabled {
+                if let field = fields[m.op], let value = current(m, field) {
+                    overrides.append(.init(module: m.key, field: field, value: value * pow(2, v.contrast / 2)))
+                }
+            }
+        }
+        if v.saturation != 0, let balance = modules.first(where: { $0.op == "colorbalancergb" }),
+           let value = current(balance, "saturation_global") {
+            overrides.append(.init(module: balance.key, field: "saturation_global",
+                                   value: min(max(value + v.saturation, -1), 1), enable: true))
+        }
+        return overrides
+    }
+
+    // MARK: Output profile
+
+    /// darktable's export profile (output color profile module), as its enum value.
+    var outputProfileType: Int? {
+        modules.first { $0.key == "colorout:0" }?.fields.first { $0.name == "type" }.map { Int($0.value.number) }
+    }
+
+    /// Viewing HDR with an SDR export profile shows nothing above white, so
+    /// switch to HLG P3, the most widely supported HDR format. It's an edit like
+    /// any other: saved with the photo and undone by choosing SDR again.
+    private func useHDRProfileIfSDR() {
+        guard url != nil, let type = outputProfileType, !HDRTarget(darktableProfile: type).isHDR else { return }
+        setOutputProfile(25)   // HLG P3
+    }
+
+    func setOutputProfile(_ type: Int) {
+        setValue(.number(Double(type)), module: "colorout:0", field: "type")
+    }
+
+    // MARK: Match Camera
+
+    /// Camera style plus darktable's automatic exposure: roughly what the
+    /// camera's own JPEG would look like. Nothing here analyses the content.
+    var canMatchCamera: Bool {
+        guard url != nil else { return false }
+        let styleDone = suggestedStyle.map { appliedStyles.contains($0.name) } ?? true
+        let exposureDone = modules.first { $0.op == "exposure" }.map(isAuto) ?? true
+        return !(styleDone && exposureDone)
+    }
+
+    func matchCamera() async {
+        if let style = suggestedStyle, !appliedStyles.contains(style.name) { await applyStyle(style) }
+        if let exposure = modules.first(where: { $0.op == "exposure" }), !isAuto(exposure) {
+            setAuto(true, module: exposure)
+        }
+    }
+
+    private func settleAfterEdits() {
+        settleTask?.cancel()
+        settleTask = Task {
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled, pendingSets.isEmpty else { return }
+            requestRender()
+        }
+    }
+}
+
+// MARK: - Undo
+
+/// A point to return to: darktable's history position, plus the app-side
+/// state that isn't in darktable's history.
+struct UndoStep {
+    let id: Int
+    let label: String
+    var end: Int?             // nil until the edits queued before it reach the engine
+    let sdr: SDRVersion
+    let styles: [String]
+    let styleEnds: [Int]
+    let editsSinceStyle: Int
+}
+
+/// Undo and redo step darktable's history position back and forward, as its
+/// own history stack does; the next edit after an undo discards what's above.
+/// A slider drag (changes to one module less than a second apart) is one step.
+extension EditorModel {
+    var undoTitle: String? { undoStack.last.map { "Undo \($0.label)" } }
+    var redoTitle: String? { redoStack.last.map { "Redo \($0.label)" } }
+
+    fileprivate func recordUndoStep(label: String, gesture: String? = nil, sdrBefore: SDRVersion? = nil) {
+        guard url != nil, undoGroupDepth == 0, !restoringUndo else { return }
+        // anything recordable is the user's own edit (opening a photo's defaults aren't)
+        editedSinceOpen = true
+        let now = ContinuousClock.now
+        if let gesture, let last = lastGesture, last.key == gesture, now - last.time < .seconds(1) {
+            lastGesture = (gesture, now)
+            return
+        }
+        lastGesture = gesture.map { ($0, now) }
+        nextUndoID += 1
+        undoStack.append(snapshot(id: nextUndoID, label: label, end: nil, sdr: sdrBefore ?? sdrVersion))
+        redoStack.removeAll()
+        pendingCheckpoints.append((pendingSets.count, nextUndoID))
+        pump()
+    }
+
+    fileprivate func resolveUndoStep(_ id: Int, end: Int) {
+        if let i = undoStack.lastIndex(where: { $0.id == id }) { undoStack[i].end = end }
+    }
+
+    fileprivate func clearUndo() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+        pendingCheckpoints.removeAll()
+        lastGesture = nil
+    }
+
+    /// Waits until queued edits have reached the engine (and with them any
+    /// undo checkpoints), so a direct engine command lands after them.
+    fileprivate func settleEdits() async {
+        for _ in 0..<500 where pumping || !pendingSets.isEmpty || !pendingCheckpoints.isEmpty {
+            if engine == nil { return }
+            if !pumping { pump() }
+            try? await Task.sleep(for: .milliseconds(15))
+        }
+    }
+
+    private func snapshot(id: Int, label: String, end: Int?, sdr: SDRVersion) -> UndoStep {
+        UndoStep(id: id, label: label, end: end, sdr: sdr, styles: appliedStyles,
+                 styleEnds: styleHistoryEnds, editsSinceStyle: editsSinceStyle)
+    }
+
+    func undo() async { await step(back: true) }
+    func redo() async { await step(back: false) }
+
+    private func step(back: Bool) async {
+        guard let engine, !restoringUndo, !(back ? undoStack : redoStack).isEmpty else { return }
+        restoringUndo = true
+        defer { restoringUndo = false }
+        await settleEdits()
+        guard let target = (back ? undoStack : redoStack).last, let end = target.end else { return }
+        // where we are now becomes the step in the other direction
+        let here = snapshot(id: target.id, label: target.label, end: await engine.historyEnd, sdr: sdrVersion)
+        do {
+            modules = try await engine.setHistoryEnd(end)
+        } catch {
+            errorMessage = "Couldn't \(back ? "undo" : "redo"): \(error.localizedDescription)"
+            return
+        }
+        if back {
+            undoStack.removeLast()
+            redoStack.append(here)
+        } else {
+            redoStack.removeLast()
+            undoStack.append(here)
+        }
+        sdrVersion = target.sdr
+        appliedStyles = target.styles
+        styleHistoryEnds = target.styleEnds
+        editsSinceStyle = target.editsSinceStyle
+        lastGesture = nil
+        hasUnsavedChanges = true
+        editedSinceOpen = true
+        requestRender()
+    }
+}
+
+// MARK: - Crop and straighten
+
+/// Crop aspect ratios, as long side to short side.
+enum CropAspect: String, CaseIterable, Identifiable {
+    case free, original, square, r5x4, r7x5, r3x2, r16x9
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .free: "Freeform"
+        case .original: "Original"
+        case .square: "Square"
+        case .r5x4: "5:4"
+        case .r7x5: "7:5"
+        case .r3x2: "3:2"
+        case .r16x9: "16:9"
+        }
+    }
+
+    /// long side over short side; nil for freeform, and the photo's own for original
+    func ratio(original: Double) -> Double? {
+        switch self {
+        case .free: nil
+        case .original: original
+        case .square: 1
+        case .r5x4: 5.0 / 4
+        case .r7x5: 7.0 / 5
+        case .r3x2: 3.0 / 2
+        case .r16x9: 16.0 / 9
+        }
+    }
+}
+
+/// Straighten is darktable's rotate and perspective module (ashift): its
+/// rotation, with crop margins that keep the photo's shape and cut off the
+/// corners rotation brings in, as its "original format" automatic cropping
+/// would (that fit runs in darktable's interface, so it's worked out here).
+/// The crop is darktable's crop module, which comes after it, so the crop is
+/// relative to the straightened photo. While cropping, renders open the crop
+/// out so the whole straightened photo shows under the crop box.
+extension EditorModel {
+    private var cropModule: EngineModule? { modules.first { $0.op == "crop" } }
+    private var rotateModule: EngineModule? { modules.first { $0.op == "ashift" } }
+
+    /// How far to turn the frame on screen, and how much to enlarge it so it
+    /// still fills its frame: the instant preview while straightening.
+    var straightenPreview: (degrees: Double, scale: Double) {
+        let d = straighten - frameStraighten
+        guard abs(d) > 0.001, let image else { return (0, 1) }
+        let a = abs(d) * .pi / 180
+        let (w, h) = (Double(image.width), Double(image.height))
+        return (d, max(cos(a) + h / w * sin(a), w / h * sin(a) + cos(a)))
+    }
+
+    private func number(_ m: EngineModule?, _ field: String) -> Double? {
+        m?.fields.first { $0.name == field }?.value.number
+    }
+
+    /// degrees; positive turns the photo anticlockwise, as darktable does
+    var straighten: Double {
+        guard let m = rotateModule, m.enabled else { return 0 }
+        return number(m, "rotation") ?? 0
+    }
+
+    fileprivate var cropOverrides: [Engine.Override] {
+        guard isCropping, let m = cropModule, m.enabled else { return [] }
+        return [.init(module: m.key, field: "cx", value: 0), .init(module: m.key, field: "cy", value: 0),
+                .init(module: m.key, field: "cw", value: 1), .init(module: m.key, field: "ch", value: 1)]
+    }
+
+    /// the straightened photo's aspect (width over height) while cropping
+    var croppingImageAspect: Double { imageSize.width / max(imageSize.height, 1) }
+
+    func beginCrop() {
+        guard url != nil, !isCropping, !showingLibrary else { return }
+        let crop = cropModule
+        let enabled = crop?.enabled ?? false
+        if enabled, let cx = number(crop, "cx"), let cy = number(crop, "cy"),
+           let cw = number(crop, "cw"), let ch = number(crop, "ch"), cw > cx, ch > cy {
+            cropRect = CGRect(x: cx, y: cy, width: cw - cx, height: ch - cy)
+        } else {
+            cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
+        cropStart = (straighten, cropRect, enabled)
+        cropAspect = .free
+        comparing = false
+        zoom = .fit
+        isCropping = true
+        requestRender()
+    }
+
+    func commitCrop() {
+        guard isCropping else { return }
+        isCropping = false
+        cropStart = nil
+        let r = cropRect.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let full = r.width > 0.999 && r.height > 0.999
+        if let m = cropModule {
+            if full {
+                if m.enabled { setEnabled(false, module: m.key) }
+            } else {
+                setValue(.number(r.minX), module: m.key, field: "cx")
+                setValue(.number(r.minY), module: m.key, field: "cy")
+                setValue(.number(r.maxX), module: m.key, field: "cw")
+                setValue(.number(r.maxY), module: m.key, field: "ch")
+            }
+        }
+        requestRender()
+    }
+
+    func cancelCrop() {
+        guard isCropping, let start = cropStart else { return }
+        isCropping = false
+        cropStart = nil
+        if abs(straighten - start.rotation) > 0.001 { setStraighten(start.rotation) }
+        requestRender()
+    }
+
+    func resetCrop() {
+        cropAspect = .free
+        cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        if straighten != 0 { setStraighten(0) }
+    }
+
+    /// Turns the photo by `degrees` and crops off the corners that brings in,
+    /// keeping its shape: the largest rectangle of the photo's proportions
+    /// inside it, centred, as margins of the rotated bounding box.
+    func setStraighten(_ degrees: Double) {
+        guard let m = rotateModule, let size = rotateInSize, size.width > 0, size.height > 0 else { return }
+        let (w, h) = (size.width, size.height)
+        let a = abs(degrees) * .pi / 180
+        let (c, s) = (cos(a), sin(a))
+        let boxW = w * c + h * s, boxH = w * s + h * c
+        let k = min(w / boxW, h / boxH)     // scale of the photo-shaped rectangle that fits
+        let mx = 0.5 - k * w / (2 * boxW), my = 0.5 - k * h / (2 * boxH)
+        setValue(.number(degrees), module: m.key, field: "rotation")
+        setValue(.number(degrees == 0 ? 0 : mx), module: m.key, field: "cl")
+        setValue(.number(degrees == 0 ? 1 : 1 - mx), module: m.key, field: "cr")
+        setValue(.number(degrees == 0 ? 0 : my), module: m.key, field: "ct")
+        setValue(.number(degrees == 0 ? 1 : 1 - my), module: m.key, field: "cb")
+        setValue(.number(2), module: m.key, field: "cropmode")   // "original format", as computed here
+    }
+
+    /// Levels the photo, the way Lightroom's and Photomator's levelling do:
+    /// from its straight lines (LevelDetector), or failing those from Vision's
+    /// horizon detection. It always measures the same picture, the photo
+    /// unrotated and uncropped at a fixed size, in one pass, so the answer
+    /// depends only on the photo: pressing it again gives the same angle.
+    func autoStraighten() async {
+        guard let engine, url != nil else { return }
+        await settleEdits()
+        var overrides: [Engine.Override] = []
+        if let r = rotateModule, r.enabled {
+            overrides += [("rotation", 0.0), ("cl", 0), ("cr", 1), ("ct", 0), ("cb", 1)].map {
+                .init(module: r.key, field: $0.0, value: $0.1)
+            }
+        }
+        if let c = cropModule, c.enabled {
+            overrides += [("cx", 0.0), ("cy", 0), ("cw", 1), ("ch", 1)].map { .init(module: c.key, field: $0.0, value: $0.1) }
+        }
+        guard let frame = try? await engine.render(maxPixels: 1200, hdr: false, displayHeadroom: 1, wantOverlay: false,
+                                                   overrides: overrides) else { return }
+        let image = frame.image
+        let degrees = await Task.detached(priority: .userInitiated) { () -> Double? in
+            if let tilt = LevelDetector.tilt(of: image) { return tilt }
+            let request = VNDetectHorizonRequest()
+            try? VNImageRequestHandler(cgImage: image).perform([request])
+            return request.results?.first.map { Double($0.angle) * 180 / .pi }
+        }.value
+        guard let degrees else {
+            errorMessage = "No horizon or straight lines found in this photo."
+            return
+        }
+        // measured on the unrotated photo, so the tilt is the rotation that levels it
+        let target = (degrees.clamped(to: -45...45) * 10).rounded() / 10
+        if abs(target - straighten) >= 0.05 { setStraighten(target) }
+    }
+
+    /// Keeps the crop box's centre and fits the largest box of the chosen
+    /// ratio inside it (or inside the photo, if it was full).
+    func fitCropToAspect() {
+        let imageAspect = croppingImageAspect
+        guard let ratio = cropAspect.ratio(original: max(imageAspect, 1 / imageAspect)) else { return }
+        let landscape = cropAspect == .original ? imageAspect >= 1 : !cropPortrait
+        let target = landscape ? ratio : 1 / ratio        // width over height, in pixels
+        let normalised = target / imageAspect             // width over height, in 0...1 units
+        let r = cropRect
+        var w = r.width, h = w / normalised
+        if h > r.height { h = r.height; w = h * normalised }
+        cropRect = CGRect(x: r.midX - w / 2, y: r.midY - h / 2, width: w, height: h)
+    }
+
+    /// width over height of the crop box in 0...1 units, when a ratio is chosen
+    var cropNormalisedRatio: Double? {
+        let imageAspect = croppingImageAspect
+        guard let ratio = cropAspect.ratio(original: max(imageAspect, 1 / imageAspect)) else { return nil }
+        let landscape = cropAspect == .original ? imageAspect >= 1 : !cropPortrait
+        return (landscape ? ratio : 1 / ratio) / imageAspect
+    }
+}
+
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self { min(max(self, range.lowerBound), range.upperBound) }
+}
+
+// MARK: - Library
+
+extension EditorModel {
+    /// Before moving to another photo: finish any crop, save unsaved edits to
+    /// the sidecar (as darktable and Lightroom do), and make the last render
+    /// the photo's thumbnail if it was edited.
+    fileprivate func leaveCurrentPhoto() async {
+        guard let current = url else { return }
+        if isCropping { commitCrop() }
+        await settleEdits()
+        // only the user's own edits are saved: a photo just looked at keeps no sidecar
+        if editedSinceOpen, hasUnsavedChanges { await save() }
+        if editedSinceOpen, let frame = thumbnailFrame {
+            library.updateThumbnail(for: current, from: frame)
+        }
+        editedSinceOpen = false
+        thumbnailFrame = nil
+    }
+
+    /// Anything dropped on the window or the Dock icon, or opened from Finder:
+    /// a folder shows in the library, a photo opens, anything else is ignored.
+    func openDropped(_ urls: [URL]) async {
+        for url in urls {
+            let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            if isFolder {
+                showFolder(url.standardizedFileURL)
+                return
+            }
+        }
+        if let photo = urls.first(where: Library.isPhoto) { await open(photo) }
+    }
+
+    func showFolder(_ folder: URL) {
+        library.show(folder: folder)
+        showingLibrary = true
+    }
+
+    /// View › as Grid or as Map: the sidebar's Map has no grid, so asking
+    /// for one goes back to the folder last shown
+    func showLibrary(as mode: Library.ViewMode) {
+        if mode == .grid, library.source == .map, let folder = library.lastFolder { library.show(folder: folder) }
+        library.viewMode = mode
+        if !showingLibrary { Task { await showLibrary() } }
+    }
+
+    /// Places a photo on the map, or takes it off with nil. The location goes
+    /// in the photo's sidecar, through darktable, so its map view agrees.
+    func setLocation(_ coordinate: CLLocationCoordinate2D?, for photo: URL) async {
+        guard let engine else { return }
+        do {
+            try await engine.setLocation(path: photo.path, latitude: coordinate?.latitude, longitude: coordinate?.longitude)
+            library.setLocation(coordinate, for: photo)
+        } catch {
+            errorMessage = "Couldn't save the location of \(photo.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    /// Sets a photo's title, caption, keywords or rating in its sidecar, through darktable.
+    func setInfo(_ photo: URL, title: String? = nil, caption: String? = nil, addKeyword: String? = nil,
+                 removeKeyword: String? = nil, rating: Int? = nil) async {
+        guard let engine else { return }
+        do {
+            try await engine.setInfo(path: photo.path, title: title, caption: caption, addKeyword: addKeyword,
+                                     removeKeyword: removeKeyword, rating: rating)
+            library.noteEdited(photo)
+            infoRevision += 1
+        } catch {
+            errorMessage = "Couldn't save to \(photo.lastPathComponent)'s sidecar: \(error.localizedDescription)"
+        }
+    }
+
+    func showSource(_ source: LibrarySource) {
+        library.show(source)
+        if !showingLibrary { Task { await showLibrary() } }
+    }
+
+    /// the next or previous photo in the folder
+    func openNeighbour(_ offset: Int) async {
+        guard let next = library.neighbour(of: url, offset: offset) else { return }
+        await open(next)
+    }
+
+    func toggleLibrary() {
+        // after a relaunch, the last folder is still there to go back to
+        if library.source == nil, let folder = library.lastFolder { library.show(folder: folder) }
+        guard library.source != nil else { return }
+        if showingLibrary {
+            if url != nil { showingLibrary = false }
+        } else {
+            Task { await showLibrary() }
+        }
+    }
+
+    func showLibrary() async {
+        // the grid shows this photo's latest look
+        if let current = url, editedSinceOpen, let frame = thumbnailFrame {
+            library.updateThumbnail(for: current, from: frame)
+        }
+        if isCropping { commitCrop() }
+        showingLibrary = true
+    }
+}
+
+// MARK: - Raw decoder choice
+
+/// Which decoder reads a raw: darktable's (rawspeed, then LibRaw), or
+/// Apple's raw engine at a given version (nil, the newest). Kept per photo.
+enum RawDecoderChoice: Hashable {
+    case darktable
+    case apple(String?)
+
+    private static let key = "RawDecoders"
+
+    static func stored(for photo: URL) -> RawDecoderChoice {
+        guard let value = (UserDefaults.standard.dictionary(forKey: key) as? [String: String])?[photo.path] else { return .darktable }
+        if value == "darktable" { return .darktable }
+        let version = value.dropFirst("apple:".count)
+        return .apple(version.isEmpty ? nil : String(version))
+    }
+
+    func store(for photo: URL) {
+        var all = UserDefaults.standard.dictionary(forKey: Self.key) as? [String: String] ?? [:]
+        switch self {
+        case .darktable: all[photo.path] = nil
+        case .apple(let v): all[photo.path] = "apple:" + (v ?? "")
+        }
+        UserDefaults.standard.set(all, forKey: Self.key)
+    }
+}
+
+extension EditorModel {
+    fileprivate func openWithApple(_ url: URL, version: String?, engine: Engine) async throws -> OpenReply {
+        statusNote = "Decoding with macOS…"
+        defer { statusNote = nil }
+        let decoded = try await Task.detached(priority: .userInitiated) {
+            try AppleRawFallback.decodedTIFF(for: url, version: version)
+        }.value
+        AppleRawFallback.sidecarToDecoded(original: url, decoded: decoded.url, raw: true)
+        let reply = try await engine.open(decoded.url)
+        decodedTIFF = decoded.url
+        decoderInUse = AppleRawFallback.versionName(decoded.version)
+        return reply
+    }
+
+    var rawDecoderChoice: RawDecoderChoice {
+        guard let url else { return .darktable }
+        return RawDecoderChoice.stored(for: url)
+    }
+
+    /// Image › Raw Decoder: saves any edits, then reopens the photo with the decoder chosen.
+    func setRawDecoder(_ choice: RawDecoderChoice) async {
+        guard let photo = url, choice != rawDecoderChoice else { return }
+        await settleEdits()
+        if hasUnsavedChanges { await save() }
+        choice.store(for: photo)
+        await reopen()
+    }
+}
+
+// MARK: - Curves
+
+extension EditorModel {
+    /// While the curve editor shows an rgb curve that's off, the preview runs
+    /// it as it is (a flat curve changes nothing) so its input histogram is
+    /// collected; that's not an edit.
+    fileprivate var curveOverrides: [Engine.Override] {
+        guard let key = curveEditorModule, let m = modules.first(where: { $0.key == key }), !m.enabled else { return [] }
+        return [Engine.Override(module: key, field: "", value: 0, enable: true)]
+    }
+
+    /// A curve edit from the editor: shown at once, sent with the next render,
+    /// one undo step per drag.
+    func setCurve(module key: String, channel: Int, nodes: [CGPoint], linked: Bool = true) {
+        guard let m = modules.firstIndex(where: { $0.key == key }) else { return }
+        recordUndoStep(label: Presentation.title(of: modules[m]), gesture: key)
+        // only what changes is set, so a drag doesn't redraw the whole inspector each step
+        if editsSinceStyle == 0 { editsSinceStyle = 1 }
+        if !modules[m].enabled { modules[m].enabled = true }
+        if !hasUnsavedChanges { hasUnsavedChanges = true }
+        if var info = curveInfo {
+            var nodesByChannel = info.nodes
+            if nodesByChannel.indices.contains(channel) { nodesByChannel[channel] = nodes.map { [Double($0.x), Double($0.y)] } }
+            info = Engine.CurveReply(enabled: true, compensated: true, linked: linked, nodes: nodesByChannel, histogram: info.histogram)
+            curveInfo = info
+        }
+        pendingCurve = (key, channel, nodes, linked)
+        requestRender()
+    }
+}
+
+extension EditorModel {
+    nonisolated static func readLens(_ url: URL) -> LensInfo {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { return LensInfo() }
+        let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
+        let aux = props[kCGImagePropertyExifAuxDictionary] as? [CFString: Any] ?? [:]
+        let model = (exif[kCGImagePropertyExifLensModel] as? String ?? aux[kCGImagePropertyExifAuxLensModel] as? String)?
+            .trimmingCharacters(in: .whitespaces)
+        // MaxApertureValue is APEX: ƒ = √2 ^ value
+        let apex = exif[kCGImagePropertyExifMaxApertureValue] as? Double
+        return LensInfo(model: model?.isEmpty == false ? model : nil,
+                        focal: exif[kCGImagePropertyExifFocalLength] as? Double,
+                        maxAperture: apex.map { pow(2.0.squareRoot(), $0) })
+    }
+}

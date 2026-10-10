@@ -1,0 +1,177 @@
+# Develop
+
+A native macOS front end for the darktable raw engine. Proof of concept.
+
+SwiftUI interface, darktable 5.6.2 doing all the processing, and edits stored in darktable's own XMP sidecars, so a photo can move between this app and darktable at any point.
+
+## Architecture
+
+```
+Develop.app (Swift, SwiftUI)              darkroom-helper (C, links libdarktable)
+  EditorModel ── JSON lines on stdin ──▶    dt_init (headless, in-memory library)
+              ◀── JSON lines on stdout ──   one image, one long-lived pixelpipe
+  Canvas      ◀── shared frame file ─────   BGRA8 (SDR) or float RGBA (HDR)
+```
+
+- **Separate process.** darktable has a lot of global state and pulls in GTK's libraries. Keeping it in a helper keeps the Swift app clean, and if the engine crashes, the app restarts it and reopens the photo.
+- **Metal.** darktable's GPU code runs on Metal through MetalCL (`Engine/metalcl`): a library providing the 40 OpenCL functions darktable loads, running kernels that `Engine/metal/cl2metal.py` translates to Metal. darktable is unchanged; it loads MetalCL through its `opencl_library` setting. Its output matches Apple's OpenCL to within 1 level in 8 bits; renders are 15 to 25% faster, and kernels load in 0.02 s against 1.8 s. Settings › Graphics processing switches between Metal (default), Apple OpenCL and CPU only. Details and numbers are in `Engine/metal/README.md`.
+- **GPU.** darktable's OpenCL path is switched on (darktable leaves it off on macOS). On an M3 Pro with denoise, local contrast and diffuse or sharpen enabled, it is 4–5× faster than the CPU (about 0.75 s against 3–4 s per change at 2800 px), and the output matches the CPU's to within 0.04 levels on average. Apple's OpenCL is deprecated, so a Metal backend behind darktable's `dt_opencl_*` interface is the long-term plan.
+- **Draft renders.** While a slider is dragged, frames render at half size; a full-size frame follows when edits pause.
+- **Warm pipeline.** The helper keeps the image and pipeline open between edits, and darktable's pipe cache means moving a slider only reruns the pipe from that module: about 50 ms per exposure change on a 24 MP raw at 2120 px, against 175 ms when the whole pipe reruns. On the GPU this needs Engine/patches/0003: darktable only copies GPU results back into the cache for the module focused in its interface, so headless nothing was cached until the helper started naming the module being edited.
+- **Generated controls.** Every darktable module publishes metadata for its settings (names, ranges, defaults, enum values). The helper sends that to the app, which builds sliders, pickers and toggles from it. Curves, masks and other array-valued settings are counted and listed as "needs a custom editor".
+- **XMP is the save format.** The helper's library is in memory. Opening a photo reads any existing sidecar (from this app or from darktable), and Save writes it back. darktable's own sidecar writing is set to "never" after start-up (a `--conf` override would also block Save) and switched to "always" only while saving. Real darktable reads it without changes (checked with darktable-cli 5.6.2).
+
+### HDR preview
+
+darktable can export HDR (PQ and HLG, Rec.2020 and P3) but can't show HDR while you edit. Here, the HDR toggle (⇧⌘H) switches the pipeline's output to unclipped linear Rec.2020 float. The app then converts it the way the chosen export profile will encode it, and shows it with EDR:
+
+| Output colour profile | Linear 1.0 means | Shown as |
+| --- | --- | --- |
+| PQ (Rec.2020 or P3) | 10,000 nits | nits ÷ 203 |
+| HLG (Rec.2020 or P3) | nominal peak | BT.2100 OOTF for a 1000-nit display, ÷ 203 |
+| anything else | SDR white | as is |
+
+These mappings come from darktable's own profile code (`common/colorspaces.c`), which applies the BT.2100 curves with no extra scaling and clips the signal at 1.0. P3 targets are converted from Rec.2020, and out-of-gamut values are clipped as the export would clip them. 203 nits is the BT.2408 HDR reference white, used as 1.0 on the EDR scale.
+
+The inspector shows:
+
+- a luminance histogram in stops around reference white, with this display's headroom, the format's peak and the peak limit marked; it ends just above the brightest level the export can hold (the peak limit, or the format's peak: HLG about +2.3 stops), not at +6 for every image
+- the peak in stops and nits
+- how much of the image is above reference white, beyond this display, and clipped by the format
+
+The toolbar warning button tints pixels this display can't show.
+
+The HDR card has two further controls, following Greg Benz's advice on HDR photos:
+
+- **Peak limit** rolls the brightest highlights off smoothly so nothing goes past a set number of stops above reference white (from a stop below the limit, luminance eases towards it with hue kept). A lower peak glows rather than glares, and looks more alike across displays. It applies to the HDR view and to gain map JPEGs. darktable writes HEIF and JPEG XL itself, so for those, lower the tone mapper's target white instead.
+- **Preview as** shows a gain map JPEG as a display with less headroom would: viewers blend the SDR base and the HDR rendition per pixel in log space, weighted by the display's headroom over the image's (the ISO 21496-1 weighting). It uses whichever SDR base the export is set to make.
+
+Both are sliders that don't touch the engine: the engine keeps the last HDR render's pipe output (and the SDR base rendered for it), so a change only reruns the app's HDR pass and the blend, about 15–30 ms. Switching between SDR and HDR drops darktable's cached output from colorout onwards, not the whole cache, since only colorout and gamma depend on the display profile.
+
+### SDR version
+
+With an HDR export profile, the SDR view shows the edit's SDR rendition: the tone mapper's target white back at 100%, which is what displays without HDR show and the base of a gain map JPEG. The SDR version card adjusts brightness, contrast and saturation for that rendition only, like Lightroom's SDR settings. They become overrides on exposure (or its automatic target level), the tone mapper's contrast and color balance rgb's saturation. The helper commits overrides straight to the pipeline's nodes for one render, pointing each module at the overridden params while committing, because darktable's cache key hashes the module's own params rather than the committed ones. The cache still serves everything before the first overridden module. darktable's sidecar has no place for these settings, so they're stored per photo in the app's preferences.
+
+### Zoom
+
+Click the photo to zoom to 100% at that point, and drag to move around; click again, or press ⌘0, to fit. The engine renders only the visible crop at the zoom scale, as darktable's darkroom does, so at 100% darktable runs its full demosaic rather than the fast preview one. Demosaic methods, capture sharpening and noise reduction can only be judged at 100%. While zoomed, the histograms still describe the whole photo.
+
+### Export
+
+File › Export (⌘E) is the macOS save panel with the options underneath, as in Pixelmator: format, colour profile, size, quality, bit depth.
+
+- **Formats:** JPEG, HEIF, JPEG XL, TIFF, PNG and WebP go through darktable's own export path (the "disk" storage and format modules, as darktable-cli uses), so the output matches darktable's. OpenEXR is left out.
+- **Colour profile:** comes from the edit's output colour profile unless overridden, so HLG and PQ exports carry their HDR tagging. A 10-bit HLG HEIF is tagged Display P3 with ARIB (HLG), and a 12-bit PQ JPEG XL is tagged SMPTE (PQ).
+- **JPEG with HDR gain map:** an ISO 21496-1 gain map, the standard behind Ultra HDR, written by Core Image. darktable 5.6.2 can't write it; darktable does it through its `ultrahdr` Lua script, and an unmerged PR (#21458) would add it with libultrahdr. The HDR image is the HDR preview's output. Following Greg Benz's advice that the SDR base matters most, the SDR base is by default darktable's own SDR rendering of the edit, with the tone mapper's target white back at 100% and the SDR version's adjustments, rendered without touching the edit. Apple's automatic tone mapping is the alternative. Checked by decoding: the SDR base peaks at 0.93, and expanded to HDR it peaks at 4.5× white with 41% above white, matching the HDR preview.
+
+### Library and filmstrip
+
+The library sidebar (the standard sidebar button or View › Show Sidebar; it stays as you leave it) has two collections gathered across folders, **Edited** and **Exported**, then the folders added to the library, each expanding to its subfolders. Add folders with + or by dragging them from Finder; right-click to remove one. A folder that's open but not added shows under Current Folder. "Include Subfolders", above the grid, shows everything beneath a folder (up to 5,000 photos), with each photo's folder under its name.
+
+The catalog (`~/Library/Application Support/Develop/catalog.json`) records the added folders, when each photo was last saved, and every export (file, format, date). Photos found with a sidecar join Edited when their folder is first shown, so edits from darktable count too. Exported photos carry a badge, orange when edited since the last export, and their exports are listed in the right-click menu to show in Finder.
+
+**Map.** The sidebar's Map shows every photo in the library's folders and their subfolders (plus the folder open now, up to 5,000 photos). Grid | Map above the library, or View › as Grid (⌥⌘1) and as Map (⌥⌘2), switch the folder or collection being shown. Either way the photos are on Apple Maps, each photo pinned by its thumbnail where it was taken; click to select, double-click to edit. Positions come from the sidecar first (darktable's map view geotags there, in degrees and decimal minutes) and then the file's EXIF GPS via ImageIO, which reads raws too; zero positions, which cameras without a fix write, are ignored. A strip of the photos runs under the map, each marked with a pin or a crossed-out pin; click a placed one to go to it, or a pin to find its photo in the strip. Drag a photo from the strip onto the map to give it a location, or a pin to a new spot; right-click to remove one. Locations are written as darktable's map view writes them: the helper imports the photo into darktable's library, sets it with `dt_image_set_location` and writes the XMP sidecar (`Xmp.exif.GPSLatitude`), so any edit in the sidecar is kept and raws are never touched. While a photo is dragged over the map, a pin follows the pointer with its tip where the photo will land (a DropDelegate tracks the drag, which `dropDestination` can't).
+
+**Match Locations** gives photos without GPS a position from a track: located photos in the Photos library (an iPhone's, via PhotoKit, asking for access the first time) or the located photos in view. Each photo's capture time (EXIF DateTimeOriginal, in its recorded zone or the camera zone chosen, plus a clock correction for a fast or slow camera) is placed between the track points either side, partway in proportion to the time, or at the nearest point if only one is within the chosen gap. Proposals show as outlined pins with the track drawn; Apply writes them as dragging does. `LocationMatcher.swift` does the matching.
+
+The toolbar changes with the view: the editor's tools (crop, zoom, compare, SDR/HDR, export, save, inspector) in the editor, Grid | Map in the library. It's one customisable toolbar whose items are hidden by view (`.hidden(_:)`): swapping two toolbars in a window, or a toolbar item with no view, makes AppKit throw, and the `.toolbar` modifier has to come after `.inspector` or its items are registered more than once.
+
+The filmstrip (in the editor and under the map) resizes by dragging its top edge, and View › Hide Filmstrip (⌥⌘F) hides it.
+
+The search field finds places with Apple Maps (MKLocalSearch) near the area shown, and marks the one chosen.
+
+The library watches the folders it's showing (FSEvents, `FolderWatcher.swift`), so photos added or removed elsewhere, in Finder or by another app, appear and go within a second or so.
+
+**Raws darktable can't decode.** If darktable's decoders (rawspeed, then LibRaw) can't read a raw but macOS can, `AppleRawFallback.swift` decodes it with Core Image's raw engine to a linear, scene-referred 16-bit TIFF (linear Rec.2020, no tone curve, sharpening or noise reduction) in `~/Library/Caches/Develop/decoded`, and darktable edits that. The library, Info, exports and the catalog still refer to the original; the edit's sidecar is kept beside it and copied to and from the TIFF's. The decode is checked for content first: macOS reports the size of some raws it can't decode, such as Hasselblad's multi-shot FFF (six samples per pixel, lossless JPEG), and returns black. Those need exporting to DNG or TIFF from the maker's software.
+
+**Raw decoder (for interest).** Image › Raw Decoder picks, per photo, darktable's decoder or Apple's raw engine at any version macOS offers for that file (RAW 9, 8, 7; `CIRAWFilter.supportedDecoderVersions`). "Apple, newest" picks the highest itself, as Core Image's default isn't always the newest (a Nikon Z6 II file offers 7, 8 and 9 but defaults to 8). The decoder in use shows in the window subtitle and the Info window. Switching saves the edit and reopens the photo. With Apple's engine the image reaches darktable already demosaiced, so its raw-only modules have nothing to work on; the engine reports them as not applicable (darktable's own sign: off by default with no on/off control, as demosaic, raw prepare, raw denoise, hot pixels and raw chromatic aberration are on a non-raw) and the inspector hides them, with a note saying why. A DNG (Adobe DNG Converter, which also reads Nikon HE) keeps the sensor data, so darktable's raw tools work on it.
+
+**Edits on an Apple decode** are kept in their own sidecar, `photo.NEF.apple.xmp`, apart from darktable's `photo.NEF.xmp`: the two decodes don't share raw-stage steps, and darktable's raw white balance applied again to Apple's already balanced image turned it purple. The engine also rereads (or, with no sidecar, clears) an image's history on every open, as darktable only reads a sidecar on first import.
+
+**HDR images.** A gain-map JPEG or HEIC (iPhone, Pixel, Ultra HDR, Develop's own exports) or an HLG or PQ HEIF or AVIF (Nikon's HLG HEIF) is opened through macOS's HDR decode (`CIImage` with `expandToHDR`): darktable would read only a gain map image's SDR base. It arrives as a linear half-float TIFF in Rec.2020 (written through ImageIO, in strips: Core Image writes tiled TIFFs, which darktable's TIFF reader refuses) with SDR white at 1.0 and the highlights above it, so the HDR view and exports keep them. These photos get an HDR badge in the library and the Info window. Nikon's High Efficiency raws (HE and HE*, TicoRAW) aren't readable by rawspeed or LibRaw; they open through the raw fallback above, as macOS reads them (checked with raw.pixls.us Z8 samples).
+
+Folders and photos can be dropped on the window or the Dock icon, or opened from Finder: a folder shows in the library, a photo (raw or not) opens. The app declares raws, common image formats and folders as documents for that.
+
+Opening a photo makes its folder the library, unless it's in the folder or collection already showing; File › Open Folder (⇧⌘O) opens one directly. The filmstrip under the photo shows the folder's raws and images by name; click one, or press ← and →, to move through them (⌘← and ⌘→ in the Go menu). G, or the toolbar's grid button, shows the folder as a grid; double-click or Return opens a photo. Single keys are ignored while typing in a text field.
+
+- **Thumbnails** start as the camera's embedded preview (ImageIO, so they're quick). Once a photo is edited, its thumbnail is the render, cached in `~/Library/Caches/Develop/thumbnails` and keyed to the sidecar's modification date, so an edit made elsewhere invalidates it.
+- **Moving to another photo saves your edits** to the XMP sidecar, as darktable and Lightroom do. Only your own edits count: a photo you only looked at keeps no sidecar, even though opening it applies the new-photo defaults (those aren't recorded as undo steps, which is how they're told apart).
+
+### Info
+
+Window › Info (⌘I) is laid out as Photos' Info window, on a translucent background, and follows the photo being looked at: the open one in the editor, or the one selected in the grid, map or strip. The title, caption, keywords and star rating are editable (click a star again to clear it); they go to the sidecar through darktable (`dt_metadata_set` with Xmp.dc.title and Xmp.dc.description, darktable tags, `dt_ratings_apply_on_image`), so darktable shows them too. With sidecar writing off, darktable reads a sidecar's title and description only if each field's import flag is set, and a new config leaves them unset; the helper sets them at start-up, or the next write would drop them. Lens names get the ƒ glyph ("f/1.2", "F2.8"). Where the EXIF lacks the 35 mm equivalent focal length (Fujifilm), it's worked out from the sensor's size, or the camera's crop factor. Cameras are named as sold (`CameraNames.swift`: NIKON CORPORATION / NIKON Z 6_2 is a Nikon Z6 II, SONY / ILCE-7M3 a Sony α7 III). The exposure line gives the full-frame equivalent focal length; hold Option for the true one. It has the file name and capture time, a card with the camera, lens, size and format, white balance, metering and flash as icons and the exposure along the bottom, the darktable edit (the modules used, leaving out the ones darktable always runs, and the history length), the user's tags (without darktable's automatic `darktable|…` ones), and the place, named by reverse geocoding, over a map. All Metadata opens every tag, by dictionary, with a filter. The file's metadata comes from ImageIO, which reads raws; for raws, bit depth and colour profile are left out, as ImageIO reports the embedded preview's. `PhotoMetadata.swift` does the reading.
+
+### Undo
+
+Edit › Undo and Redo (⌘Z, ⇧⌘Z) step darktable's history position back and forward, as darktable's own history stack does, so each step is mostly a pipe cache hit. The app keeps the stack: each step records the history position plus what isn't in darktable's history (the SDR version, applied styles). Changes to one module less than a second apart are one step, so a slider drag, a tone equalizer macro or a scene white pick undoes in one go. Steps for slider edits are resolved as their queued settings reach the engine, so a step always lands exactly between two edits. Auto is one step. Opening a photo and Reset All clear the stack.
+
+### Crop and straighten
+
+Image › Crop and Straighten (⌘K, or C on its own), or the toolbar's crop button. The canvas shows the whole straightened photo with a crop box; drag its corners, edges or inside, with a ratio held if one is chosen. Return finishes, Escape cancels.
+
+- **Straighten** is darktable's rotate and perspective module (ashift): its rotation, plus crop margins that keep the photo's shape and cut off the corners the rotation brings in, as its "original format" automatic cropping would. darktable fits those margins in its interface code, so for a pure rotation the app works them out: the largest centred rectangle of the photo's proportions inside the rotated bounding box. ashift runs before the orientation flip, so this uses the size reaching it (the render reply reports it).
+- **Instant preview.** Rotation runs early in the pipe, so each straighten change reprocesses most of it (about 400 ms on a 24 MP raw). While that runs, the canvas turns the frame it has by the difference and enlarges it to fill, which is what the margins will do; darktable's render then replaces it.
+- **Auto straighten** works like Lightroom's and Photomator's levelling (`LevelDetector.swift`). It takes Sobel gradients on a 900 px grey copy of the photo as shown and keeps only pixels where a structure tensor over 5 × 5 pixels is coherent, which means straight edges and not grass or leaves. Each one's tilt from the nearest axis goes into a 0.1° histogram, weighted towards lines near the centre, because converging verticals lean more towards the edges. Verticals count double, as horizons are often hills. The peak is the tilt. Vision's horizon detection is the fallback. It always measures the same picture: a 1200 px render with the rotation and crop overridden to none. So the tilt found is the rotation that levels the photo, in one pass, rounded to 0.1°. The answer depends only on the photo, and pressing it again changes nothing. On the Z50 sample it gives 0.1° from starting angles of 0°, 4°, −3° and 7°.
+- **Crop** is darktable's crop module, which comes after rotation, so the box is relative to the straightened photo. While cropping, renders override the crop to the full frame (the helper recomputes the output size after overrides for this).
+
+Both are ordinary edits, so they undo, save to the XMP and open in darktable.
+
+### RGB curve and lens correction
+
+The RGB curve card (darktable's rgb curve, linked channels, preserve colours on) is a Photomator-style editor: guides at blacks, shadows, mid-tones, highlights and whites, the curve's input histogram behind, and a handle on each guide. A handle you haven't moved rides on the curve as other handles change it; a moved one is a point of the curve and shows a dot. Each point belongs to its nearest guide, so dragging a handle sideways doesn't leave another behind. The end handles move inwards too, to compress the range: beyond them the curve is flat, as darktable's is, which also caps HDR highlights. Click the curve between guides to add a point; double-click a handle to reset it. While dragging, the editor draws the curve from the drag itself and only the latest position goes to the engine, so the line keeps up with the pointer and the photo follows as fast as it renders. Its axis is rgb curve's middle-grey-compensated scale (Lab lightness), so the guides are labelled in stops from middle grey: about −2, grey, +1.4 and +2.4 EV, the top of the curve, above which darktable carries the curve on along its last slope, so HDR highlights aren't clipped. The engine writes the points (`set_curve`) and returns them with the histogram (`curve`); rgb curve switches its histogram off outside darktable's preview pipe at every commit, so the engine turns it back on before each render, and while the editor shows an rgb curve that's off, the preview runs it flat (an override that isn't an edit) to collect the histogram. The curve is drawn with darktable's monotone Hermite maths, ported.
+
+Lens correction shows the lens darktable matched (the engine now sends modules' text settings), where the correction data comes from (the camera's own, Lensfun, or a manual vignette) and switches for distortion, vignetting and chromatic aberration, with strength sliders for the camera's own data. darktable's other lens settings stay at their defaults.
+
+### Looks
+
+- **Default tone mapper.** darktable's workflow setting (sigmoid, filmic or AgX), chosen in Settings (⌘,). Develop defaults to filmic. darktable registers the matching presets at startup, so changing this restarts the engine. If edits are unsaved, the restart waits until the next photo is opened.
+- **Camera styles.** darktable ships 510 styles that approximate each camera maker's JPEG look. `CameraStyles.swift` matches the photo's camera to one, following darktable's `apply_camera_style.lua`: exact model first, then series patterns like `EOS R? series` and sets like `EOS [200D Mark II,250D]`. Only a style for that camera or its series is offered, not the maker's or darktable's generic ones, and only for raws (a JPEG or HEIC already has the camera's look). For raws without an existing edit, a banner offers the match. Settings can make it automatic or turn it off. Styles are appended to the edit, as in darktable's default mode.
+- **Match Camera.** One button for the camera style plus automatic exposure, roughly the camera's own JPEG look. It's named for what it does rather than "Auto Enhance", because nothing analyses the photo's content.
+- **New-photo defaults.** For photos without an existing edit, lens correction is on by default (darktable leaves it off). darktable uses the correction data stored in the raw where the camera writes it (Sony, Fujifilm, Olympus and others), otherwise the Lensfun database. Automatic exposure is optional. It's darktable's metering rule (a chosen percentile to a target level), shown as an "Auto" pill rather than a wand for the same reason. Auto sets the Exposure slider to a measured value, as Lightroom's does. It doesn't switch on darktable's automatic mode, which only runs on 16-bit mosaic raws. On monochrome raws such as the Leica M11 Monochrom, linear DNGs, JPEGs and decoded TIFFs, that mode silently does nothing, while hiding the slider behind a percentile and a target level. The engine's `auto_exposure` command applies darktable's rule (the 50th percentile of the input, in EV below white, to −4 EV) to any input. It reads a sample of the full-size input buffer, uses the raw black and white levels for raws, and undoes the sRGB curve for display-referred files, which aim a little lower (−3 EV), since the camera has already exposed them. The result allows for the module's exposure-bias and highlight-preservation compensation. On the Z50 sample it gives the same frame as darktable's own mode. A photo saved in darktable's automatic mode is switched to the equivalent manual value when opened, using its own percentile and target. The Auto pill shows as on while the slider sits at the measured value.
+- **Before and after.** The helper keeps a second, untouched copy of the photo as it was opened, with its own pipe and cache, so edits only re-render the edited side. Compare (⇧⌘B) shows it left of a draggable divider.
+- **Customisable Essentials.** The default tab. Add or remove modules from a card's context menu and drag them into your own order.
+- **Scene white.** darktable sets the scene's white in color calibration, leaving white balance on camera reference. The card shows that illuminant as temperature and tint. `Illuminant.swift` converts to and from xy with Krystek's Planckian locus and standard Duv; D65 round-trips to 6506 K, +3.3.
+- **Shadows and highlights.** The tone equalizer, with two main sliders that move weighted groups of its exposure zones. Known gap: darktable fits the tone equalizer's mask to each photo with an auto-adjust ("magic wand") in its interface code. Without it, which zones a photo occupies varies, so on very bright or dark photos the sliders reach into the midtones. Next: run that fit in the engine.
+- **Card layouts.** `Presentation.layouts` groups a module's fields into an open main section, disclosures and Advanced (used for color balance rgb and the tone equalizer). `fieldLabels`, `displayNames` and `searchAliases` give familiar names, so "clarity" finds local contrast and "dehaze" finds haze removal.
+- **Other styles.** Every other darktable style is under Look › Apply a style.
+
+## Building
+
+Needs Xcode 16 or later, Homebrew, and these formulae:
+
+```fish
+brew install gtk+3 json-glib librsvg exiv2 lensfun pugixml potrace libomp pkgconf intltool cmake ninja
+```
+
+Then:
+
+```fish
+Engine/fetch-engine.sh     # darktable source + patches -> vendor/dt-install (~5 min)
+Scripts/build-app.sh       # helper + app -> build/Develop.app, signed
+open build/Develop.app
+```
+
+For faster iteration on the Swift side, `swift run` works if `DEVELOP_ENGINE` points at `vendor/dt-install/bin/darkroom-helper`.
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `Engine/helper.c` | The headless engine and its protocol |
+| `Engine/patches/` | Changes to darktable itself (currently one: float output from screen pipes) |
+| `App/Sources/Engine/` | Process management, wire types, HDR analysis |
+| `App/Sources/Editor/` | Editor state, edit coalescing, camera style matching, settings, presentation overrides |
+| `App/Sources/Views/` | SwiftUI views |
+| `Design/` | The app icon: `make-icon.py` draws darktable's aperture as a real iris (each blade lying on the next, shading painted in, since glass stacking can't loop) into Icon Composer layers, `AppIcon.icon`, which `build-app.sh` compiles with `actool` |
+
+## Known limits
+
+- **Homebrew at runtime:** The engine links Homebrew's dylibs in `/opt/homebrew`, so the app only runs on Macs with the formulae above. Bundling them properly (rewriting install names, as darktable's own macOS packaging does) is the step needed before sharing it.
+- **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
+- **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
+- **White balance:** The temperature module stores RGB multipliers. Kelvin and tint are worked out in darktable's GUI code, so they need a custom editor.
+- **Not supported yet:** perspective correction and other on-canvas tools, masks, curves, presets, multiple instances, ratings and other library metadata.
+
+## Licence
+
+GPL-3.0-or-later. It links darktable, which is GPL, so the app as a whole is too.

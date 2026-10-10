@@ -1,0 +1,37 @@
+--- a/src/develop/pixelpipe_hb.h	2026-10-04 12:50:40
++++ b/src/develop/pixelpipe_hb.h	2026-10-09 08:28:36
+@@ -197,6 +197,7 @@
+   uint8_t *backbuf;
+   size_t backbuf_size;
+   int backbuf_width, backbuf_height;
++  size_t backbuf_bpp; // Develop: bytes per pixel of backbuf (4, or 16 for float output)
+   float backbuf_scale;
+   dt_dev_zoom_pos_t backbuf_zoom_pos;
+   dt_hash_t backbuf_hash;
+--- a/src/develop/pixelpipe_hb.c	2026-10-04 12:50:40
++++ b/src/develop/pixelpipe_hb.c	2026-10-09 08:28:25
+@@ -3317,16 +3317,21 @@
+   //FIXME lock/release cache line instead of copying
+   if(dt_pipe_is_screen(pipe))
+   {
++    // Develop: copy at the output's real pixel size, so a screen pipe run
++    // without the gamma module hands back float data (used for HDR preview)
++    const size_t out_bpp = dt_iop_buffer_dsc_to_bpp(out_format);
+     if(pipe->backbuf == NULL
+-       || pipe->backbuf_width * pipe->backbuf_height != width * height)
++       || pipe->backbuf_width * pipe->backbuf_height != width * height
++       || pipe->backbuf_bpp != out_bpp)
+     {
+       g_free(pipe->backbuf);
+-      pipe->backbuf = g_malloc0(sizeof(uint8_t) * 4 * width * height);
++      pipe->backbuf = g_malloc0(out_bpp * width * height);
++      pipe->backbuf_bpp = out_bpp;
+     }
+ 
+     if(pipe->backbuf)
+     {
+-      memcpy(pipe->backbuf, buf, sizeof(uint8_t) * 4 * width * height);
++      memcpy(pipe->backbuf, buf, out_bpp * width * height);
+       pipe->backbuf_scale = scale;
+       for(int i = 0; i < 6; i++) pipe->backbuf_zoom_pos[i] = pts[i] * pipe->iscale;
+       pipe->output_imgid = pipe->image.id;

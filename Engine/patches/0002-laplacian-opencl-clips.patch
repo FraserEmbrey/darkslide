@@ -1,0 +1,20 @@
+Backport of the clip threshold fix from upstream darktable commit ac9c9ac
+https://github.com/darktable-org/darktable/commit/ac9c9ac19905cbef8a77d180285d4a9421fbdaad
+
+clips is a pointer parameter (dt_aligned_pixel_t decays to float *), so
+&clips uploaded the pointer's own address and the stack after it as the
+GPU clip thresholds. Only this line is backported: the rest of the
+upstream commit needs helpers added after 5.6.2. Drop this patch when
+moving to a release that includes ac9c9ac.
+
+--- a/src/iop/hlreconstruct/laplacian.c	2026-10-09 18:29:20
++++ b/src/iop/hlreconstruct/laplacian.c	2026-10-09 18:29:20
+@@ -839,7 +839,7 @@
+   cl_mem ds_acc_odd = dt_opencl_alloc_device(devid, ds_sizes[0], ds_sizes[1], sizeof(float) * 4);
+   cl_mem ds_acc_even = dt_opencl_alloc_device(devid, ds_sizes[0], ds_sizes[1], sizeof(float) * 4);
+ 
+-  cl_mem clips_cl = dt_opencl_copy_host_to_device_constant(devid, 4 * sizeof(float), &clips);
++  cl_mem clips_cl = dt_opencl_copy_host_to_device_constant(devid, 4 * sizeof(float), (void *)clips);
+   cl_mem wb_cl = dt_opencl_copy_host_to_device_constant(devid, 4 * sizeof(float), &wb);
+   if(!interpolated || !clipping_mask || !LF_odd || !LF_even || !temp || !HF
+       || !ds_interpolated || !ds_clipping_mask || !ds_acc_odd || !ds_acc_even || !clips_cl || !wb_cl)

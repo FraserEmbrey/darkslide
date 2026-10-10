@@ -1,0 +1,93 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.96000,0.96000,0.97000,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "barrel.svg",
+          "name": "barrel",
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.6
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "image-name": "rim-shade.svg",
+          "name": "rim-shade",
+          "glass": false
+        },
+        {
+          "image-name": "blade-0.svg",
+          "name": "blade-0",
+          "glass": true
+        },
+        {
+          "image-name": "blade-1.svg",
+          "name": "blade-1",
+          "glass": true
+        },
+        {
+          "image-name": "blade-2.svg",
+          "name": "blade-2",
+          "glass": true
+        },
+        {
+          "image-name": "blade-3.svg",
+          "name": "blade-3",
+          "glass": true
+        },
+        {
+          "image-name": "blade-4.svg",
+          "name": "blade-4",
+          "glass": true
+        },
+        {
+          "image-name": "blade-5.svg",
+          "name": "blade-5",
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.15
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "image-name": "opening.svg",
+          "name": "opening",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

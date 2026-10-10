@@ -1,0 +1,397 @@
+import AppKit
+import CoreLocation
+import CoreImage
+import CryptoKit
+import ImageIO
+import Observation
+import UniformTypeIdentifiers
+
+/// One photo in the library folder.
+struct LibraryItem: Identifiable, Hashable {
+    let url: URL
+    var id: URL { url }
+    var name: String { url.lastPathComponent }
+    var folderName: String { url.deletingLastPathComponent().lastPathComponent }
+    /// has an XMP sidecar, so it's been edited (here or in darktable)
+    var hasEdit: Bool
+}
+
+/// What the grid and filmstrip show: a folder, or a collection gathered
+/// from the catalog across folders.
+enum LibrarySource: Hashable {
+    case folder(URL)
+    case edited
+    case exported
+    /// every photo in the library's folders, on a map
+    case map
+
+    var title: String {
+        switch self {
+        case .folder(let url): url.lastPathComponent
+        case .edited: "Edited"
+        case .exported: "Exported"
+        case .map: "Map"
+        }
+    }
+}
+
+/// The photos being worked through: the grid and the filmstrip.
+/// Thumbnails start as the camera's embedded preview (fast, via ImageIO);
+/// once a photo is edited, its thumbnail is the render, cached on disk and
+/// reused while the sidecar is unchanged.
+@MainActor
+@Observable
+final class Library {
+    private(set) var source: LibrarySource?
+    private(set) var items: [LibraryItem] = []
+    private(set) var thumbnails: [URL: CGImage] = [:]
+    /// photos that hold HDR (a gain map, HLG or PQ), found as thumbnails load
+    private(set) var hdrPhotos: Set<URL> = []
+    private(set) var isScanning = false
+    /// a folder shows the photos in its subfolders too
+    var includeSubfolders = UserDefaults.standard.bool(forKey: "LibraryIncludeSubfolders") {
+        didSet {
+            UserDefaults.standard.set(includeSubfolders, forKey: "LibraryIncludeSubfolders")
+            if case .folder = source { rescan() }
+        }
+    }
+
+    /// the grid of thumbnails, or the photos on a map
+    enum ViewMode: String { case grid, map }
+    var viewMode = ViewMode(rawValue: UserDefaults.standard.string(forKey: "LibraryViewMode") ?? "") ?? .grid {
+        didSet {
+            UserDefaults.standard.set(viewMode.rawValue, forKey: "LibraryViewMode")
+            if showsMap { loadLocations() }
+        }
+    }
+    /// where each photo was taken, for those with GPS data; filled by loadLocations
+    private(set) var locations: [URL: CLLocationCoordinate2D] = [:]
+    private var locationsChecked: Set<URL> = []
+    private(set) var isLoadingLocations = false
+
+    let catalog: Catalog
+    private var loading: Set<URL> = []
+    private var scanGeneration = 0
+    /// a folder with more photos than this beneath it stops there
+    nonisolated private static let scanLimit = 5000
+    nonisolated private static let thumbnailPixels = 360
+    nonisolated private static let rawExtensions: Set<String> = [
+        "3fr", "ari", "arw", "bay", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25", "kdc",
+        "mef", "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
+    ]
+    nonisolated private static let imageExtensions: Set<String> = ["jpg", "jpeg", "tif", "tiff", "png", "heic", "heif", "jxl", "avif", "webp"]
+
+    init(catalog: Catalog) {
+        self.catalog = catalog
+    }
+
+    /// Watches what's showing, so photos added to or removed from its folders
+    /// appear and go without reopening it.
+    @ObservationIgnored private lazy var watcher = FolderWatcher { [weak self] in self?.rescan(watching: false) }
+
+    private func watchSource() {
+        let folders: [URL] = switch source {
+        case .folder(let f): [f]
+        case .map: catalog.folders + (lastFolder.map { [$0] } ?? [])
+        // a collection's photos are spread across folders: watch those
+        case .edited, .exported: Array(Set(items.map { $0.url.deletingLastPathComponent() }))
+        case nil: []
+        }
+        watcher.watch(folders)
+    }
+
+    nonisolated static func isPhoto(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return rawExtensions.contains(ext) || imageExtensions.contains(ext)
+    }
+
+    /// the folder being shown, if it's a folder
+    var folder: URL? {
+        if case .folder(let url) = source { return url }
+        return nil
+    }
+
+    /// the photo selected in the grid, map or strip (the metadata window shows it)
+    var selection: URL?
+
+    /// the folder shown most recently, which stays in the sidebar and on the
+    /// map, across launches too
+    private(set) var lastFolder: URL? = UserDefaults.standard.string(forKey: "LibraryLastFolder")
+        .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } {
+        didSet { UserDefaults.standard.set(lastFolder?.path, forKey: "LibraryLastFolder") }
+    }
+
+    /// whether the photos show on the map: the Map source, or another in map view
+    var showsMap: Bool { source == .map || viewMode == .map }
+
+    /// Shows a folder or collection. Nothing happens if it's already showing,
+    /// so opening a photo from it keeps the thumbnails.
+    func show(_ source: LibrarySource) {
+        guard source != self.source else { return }
+        self.source = source
+        if case .folder(let url) = source { lastFolder = url }
+        items = []
+        rescan()
+    }
+
+    func show(folder: URL) { show(.folder(folder.standardizedFileURL)) }
+
+    func contains(_ url: URL) -> Bool { index(of: url) != nil }
+
+    func rescan() { rescan(watching: true) }
+
+    private func rescan(watching: Bool) {
+        guard let source else { return }
+        scanGeneration += 1
+        let generation = scanGeneration
+        isScanning = true
+        let recursive = includeSubfolders
+        let collection: [URL]? = switch source {
+        case .folder, .map: nil
+        case .edited: catalog.editedPhotos
+        case .exported: catalog.exportedPhotos
+        }
+        // the map covers the library's folders, and the folder open now
+        var mapFolders = catalog.folders
+        if let current = lastFolder, !catalog.isInLibrary(current) { mapFolders.append(current) }
+        Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            var urls: [URL]
+            switch source {
+            case .folder(let folder):
+                urls = recursive ? Self.photos(beneath: folder) : Self.photos(in: folder)
+                urls.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+            case .map:
+                var seen = Set<String>()
+                urls = []
+                for folder in mapFolders where urls.count < Self.scanLimit {
+                    for url in Self.photos(beneath: folder) where seen.insert(url.standardizedFileURL.path).inserted {
+                        urls.append(url)
+                    }
+                }
+                urls = Array(urls.prefix(Self.scanLimit))
+            default:
+                urls = (collection ?? []).filter { fm.fileExists(atPath: $0.path) }
+            }
+            let found = urls.map { url -> (LibraryItem, Date?) in
+                let xmp = url.path + ".xmp"
+                let date = (try? fm.attributesOfItem(atPath: xmp)[.modificationDate]) as? Date
+                return (LibraryItem(url: url, hasEdit: date != nil), date)
+            }
+            await MainActor.run {
+                guard generation == self.scanGeneration else { return }
+                self.items = found.map(\.0)
+                self.isScanning = false
+                if watching { self.watchSource() }
+                if let sel = self.selection, !self.items.contains(where: { $0.url == sel }) { self.selection = nil }
+                if self.showsMap { self.loadLocations() }
+                // sidecars from darktable, or from before the catalog, join Edited
+                for (item, date) in found { if let date { self.catalog.noteSidecar(item.url, date: date) } }
+            }
+        }
+    }
+
+    nonisolated private static func photos(in folder: URL) -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil,
+                                                                 options: [.skipsHiddenFiles])) ?? []
+        return files.filter(isPhoto)
+    }
+
+    nonisolated private static func photos(beneath folder: URL) -> [URL] {
+        guard let walk = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
+                                                        options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+        var found: [URL] = []
+        for case let url as URL in walk where isPhoto(url) {
+            found.append(url)
+            if found.count >= scanLimit { break }
+        }
+        return found
+    }
+
+    /// subfolders, for the sidebar
+    nonisolated static func subfolders(of folder: URL) -> [URL] {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
+            options: [.skipsHiddenFiles])) ?? []
+        return entries.filter {
+            let v = try? $0.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+            return v?.isDirectory == true && v?.isPackage != true
+        }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    func index(of url: URL?) -> Int? {
+        guard let url else { return nil }
+        let path = url.standardizedFileURL.path
+        return items.firstIndex { $0.url.standardizedFileURL.path == path }
+    }
+
+    func neighbour(of url: URL?, offset: Int) -> URL? {
+        guard let i = index(of: url) else { return items.first?.url }
+        let j = i + offset
+        return items.indices.contains(j) ? items[j].url : nil
+    }
+
+    func noteEdited(_ url: URL) {
+        if let i = index(of: url) { items[i].hasEdit = true }
+    }
+
+    /// Reads the GPS position of every photo not yet checked: the sidecar's
+    /// first (darktable's map view geotags there), then the file's own EXIF.
+    func loadLocations() {
+        let todo = items.map(\.url).filter { !locationsChecked.contains($0) }
+        guard !todo.isEmpty, !isLoadingLocations else { return }
+        isLoadingLocations = true
+        Task.detached(priority: .utility) {
+            let found = await withTaskGroup(of: (URL, CLLocationCoordinate2D?).self) { group in
+                var results: [(URL, CLLocationCoordinate2D?)] = []
+                var next = 0
+                // a few at a time: each reads the start of a raw file
+                for _ in 0..<min(8, todo.count) {
+                    let url = todo[next]; next += 1
+                    group.addTask { (url, Self.location(of: url)) }
+                }
+                while let r = await group.next() {
+                    results.append(r)
+                    if next < todo.count {
+                        let url = todo[next]; next += 1
+                        group.addTask { (url, Self.location(of: url)) }
+                    }
+                }
+                return results
+            }
+            await MainActor.run {
+                for (url, coordinate) in found {
+                    self.locationsChecked.insert(url)
+                    if let coordinate { self.locations[url] = coordinate }
+                }
+                self.isLoadingLocations = false
+                // items may have changed while this ran
+                if self.items.contains(where: { !self.locationsChecked.contains($0.url) }) { self.loadLocations() }
+            }
+        }
+    }
+
+    /// after placing a photo on the map
+    func setLocation(_ coordinate: CLLocationCoordinate2D?, for url: URL) {
+        locations[url] = coordinate
+        locationsChecked.insert(url)
+        if let i = index(of: url) { items[i].hasEdit = true }   // it has a sidecar now
+    }
+
+    nonisolated private static func location(of url: URL) -> CLLocationCoordinate2D? {
+        sidecarLocation(of: url) ?? exifLocation(of: url)
+    }
+
+    nonisolated private static func exifLocation(of url: URL) -> CLLocationCoordinate2D? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any],
+              var lat = gps[kCGImagePropertyGPSLatitude] as? Double,
+              var lon = gps[kCGImagePropertyGPSLongitude] as? Double else { return nil }
+        if (gps[kCGImagePropertyGPSLatitudeRef] as? String) == "S" { lat = -lat }
+        if (gps[kCGImagePropertyGPSLongitudeRef] as? String) == "W" { lon = -lon }
+        return valid(lat, lon)
+    }
+
+    /// XMP stores positions as degrees and decimal minutes: exif:GPSLatitude="51,30.1234N"
+    nonisolated private static func sidecarLocation(of url: URL) -> CLLocationCoordinate2D? {
+        guard let xmp = try? String(contentsOfFile: url.path + ".xmp", encoding: .utf8) else { return nil }
+        func value(_ name: String) -> Double? {
+            guard let range = xmp.range(of: "exif:\(name)=\"") else { return nil }
+            let rest = xmp[range.upperBound...]
+            guard let end = rest.firstIndex(of: "\"") else { return nil }
+            let text = rest[..<end]
+            guard let hemisphere = text.last, "NSEW".contains(hemisphere) else { return nil }
+            let parts = text.dropLast().split(separator: ",").compactMap { Double($0) }
+            guard let degrees = parts.first else { return nil }
+            let minutes = parts.count > 1 ? parts[1] : 0
+            let seconds = parts.count > 2 ? parts[2] : 0
+            let v = degrees + minutes / 60 + seconds / 3600
+            return "SW".contains(hemisphere) ? -v : v
+        }
+        guard let lat = value("GPSLatitude"), let lon = value("GPSLongitude") else { return nil }
+        return valid(lat, lon)
+    }
+
+    nonisolated private static func valid(_ lat: Double, _ lon: Double) -> CLLocationCoordinate2D? {
+        // cameras without a fix often write zeros
+        guard abs(lat) <= 90, abs(lon) <= 180, !(lat == 0 && lon == 0) else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    /// Loads a thumbnail when a cell first appears.
+    func requestThumbnail(for url: URL) {
+        guard thumbnails[url] == nil, !loading.contains(url) else { return }
+        loading.insert(url)
+        Task.detached(priority: .utility) {
+            let image = Self.cachedRender(for: url) ?? Self.embeddedPreview(for: url)
+            let isRaw = Self.rawExtensions.contains(url.pathExtension.lowercased())
+            let hdr = !isRaw && AppleRawFallback.isHDR(url)
+            await MainActor.run {
+                self.loading.remove(url)
+                if let image { self.thumbnails[url] = image }
+                if hdr { self.hdrPhotos.insert(url) }
+            }
+        }
+    }
+
+    /// After editing: the render becomes the thumbnail, here and on disk.
+    func updateThumbnail(for url: URL, from frame: CGImage) {
+        guard let small = Self.downscale(frame) else { return }
+        thumbnails[url] = small
+        Task.detached(priority: .utility) { Self.storeRender(small, for: url) }
+    }
+
+    // MARK: Thumbnail sources
+
+    nonisolated private static func embeddedPreview(for url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,   // camera orientation
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailPixels,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// Rendered thumbnails live in Caches, named for the photo's path and keyed
+    /// to its sidecar's modification date, so an edit elsewhere invalidates them.
+    nonisolated private static func cacheURL(for url: URL) -> URL? {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let xmp = (try? FileManager.default.attributesOfItem(atPath: url.path + ".xmp")[.modificationDate] as? Date)
+            .map { "\($0.timeIntervalSince1970)" } ?? "none"
+        let digest = SHA256.hash(data: Data((url.path + "|" + xmp).utf8)).map { String(format: "%02x", $0) }.joined()
+        return caches.appendingPathComponent("Develop/thumbnails/\(digest.prefix(32)).jpg")
+    }
+
+    nonisolated private static func cachedRender(for url: URL) -> CGImage? {
+        guard let file = cacheURL(for: url),
+              let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    nonisolated private static func storeRender(_ image: CGImage, for url: URL) {
+        guard let file = cacheURL(for: url) else { return }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let dest = CGImageDestinationCreateWithURL(file as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        CGImageDestinationFinalize(dest)
+    }
+
+    /// to sRGB 8-bit at thumbnail size; HDR frames are tone mapped to SDR
+    nonisolated private static func downscale(_ image: CGImage) -> CGImage? {
+        let scale = Double(thumbnailPixels) / Double(max(image.width, image.height))
+        var ci = CIImage(cgImage: image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        if image.contentHeadroom > 1 {
+            let map = CIFilter(name: "CIToneMapHeadroom")
+            map?.setValue(ci, forKey: kCIInputImageKey)
+            map?.setValue(image.contentHeadroom, forKey: "inputSourceHeadroom")
+            map?.setValue(1, forKey: "inputTargetHeadroom")
+            ci = map?.outputImage ?? ci
+        }
+        return CIContext().createCGImage(ci, from: ci.extent.integral, format: .RGBA8,
+                                         colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    }
+}

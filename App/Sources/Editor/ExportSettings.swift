@@ -1,9 +1,11 @@
 import Foundation
 
-/// The export formats Develop offers: darktable's, minus OpenEXR, plus a JPEG
-/// with an HDR gain map, which Core Image writes (see EditorModel.exportGainMapJPEG).
+/// The export formats Develop offers: JPEG, TIFF and PNG from darktable, and
+/// a JPEG with an HDR gain map and HEIF from Core Image (see
+/// EditorModel.exportGainMapJPEG and exportHEIF). darktable is built without
+/// its HEIF, JPEG XL, WebP and OpenEXR modules: macOS writes HEIF itself.
 enum ExportFormat: String, CaseIterable, Identifiable, Codable {
-    case jpeg, jpegGainMap, heif, jxl, tiff, png, webp
+    case jpeg, jpegGainMap, heif, tiff, png
 
     var id: String { rawValue }
 
@@ -12,17 +14,15 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
         case .jpeg: "JPEG"
         case .jpegGainMap: "JPEG with HDR gain map"
         case .heif: "HEIF"
-        case .jxl: "JPEG XL"
         case .tiff: "TIFF"
         case .png: "PNG"
-        case .webp: "WebP"
         }
     }
 
     /// darktable's format module, for formats darktable writes
     var darktableName: String? {
         switch self {
-        case .jpegGainMap: nil
+        case .jpegGainMap, .heif: nil
         default: rawValue
         }
     }
@@ -31,21 +31,18 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .jpeg, .jpegGainMap: "jpg"
         case .heif: "heic"
-        case .jxl: "jxl"
         case .tiff: "tif"
         case .png: "png"
-        case .webp: "webp"
         }
     }
 
-    var usesQuality: Bool { [.jpeg, .jpegGainMap, .heif, .jxl, .webp].contains(self) }
+    var usesQuality: Bool { [.jpeg, .jpegGainMap, .heif].contains(self) }
 
     /// bit depths darktable's module for the format offers
     var bitDepths: [Int] {
         switch self {
-        case .jpeg, .jpegGainMap, .webp: [8]
-        case .heif: [8, 10, 12]
-        case .jxl: [8, 10, 12, 16]
+        case .jpeg, .jpegGainMap: [8]
+        case .heif: [8, 10]     // what Core Image writes
         case .tiff: [8, 16, 32]
         case .png: [8, 16]
         }
@@ -53,7 +50,7 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
 
     /// whether the format can carry HDR at the given depth
     func holdsHDR(bitDepth: Int) -> Bool {
-        self == .jpegGainMap || ([.heif, .jxl].contains(self) && bitDepth >= 10)
+        self == .jpegGainMap || (self == .heif && bitDepth >= 10)
     }
 
     var detail: String {
@@ -61,10 +58,8 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
         case .jpeg: "Opens everywhere. 8-bit, so standard brightness only."
         case .jpegGainMap: "An ordinary JPEG that also carries the HDR highlights (ISO 21496-1 gain map, as Ultra HDR and iPhone photos use). Shows as HDR in Apple apps, Chrome and Android, and as a normal JPEG elsewhere."
         case .heif: "Apple's format: smaller than JPEG, and 10-bit for HDR."
-        case .jxl: "Smallest files at high quality, and HDR. Support outside Apple apps is still growing."
         case .tiff: "Lossless, for printing or editing elsewhere. Large files."
         case .png: "Lossless, mainly for graphics. Large files for photos."
-        case .webp: "Small files for the web. 8-bit, so standard brightness only."
         }
     }
 }

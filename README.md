@@ -254,3 +254,13 @@ GPL-3.0-or-later. It links darktable, which is GPL, so the app as a whole is too
 ## Licence
 
 GPL-3.0-or-later, the same as darktable. The engine links against darktable, `Engine/patches` modifies it, and the Metal kernels are translated from darktable's OpenCL code, so the app is distributed under darktable's terms. The full text is in `LICENSE`. The libraries darktable brings in keep their own licences: rawspeed and LibRaw (LGPL) and Lensfun (LGPL, with its lens database under CC BY-SA).
+
+## A slimmer engine
+
+darktable is built with only what Develop uses. Besides the extras that were already off (maps, Lua, colord, G'MIC, ImageMagick, tethering, AI masks and others), XCF and ICU are off, and so are its HEIF, OpenEXR, JPEG XL and WebP modules. macOS does that work instead:
+- **Opening:** HEIC, HEIF, AVIF, JPEG XL, WebP and OpenEXR files go through macOS's decode. SDR images become a 16-bit TIFF in their own colour space; HDR images and EXR become a linear Rec.2020 float TIFF, as before. darktable edits the TIFF, and the sidecar stays with the original.
+- **HEIF export:** darktable exports a 16-bit TIFF already encoded in the export's profile (with any frame and watermark), and Core Image writes those values unchanged into a HEIC tagged with the matching colour space (sRGB, Display P3, Adobe RGB, linear Rec.2020, or PQ or HLG in Rec.2020 or P3), 8-bit or 10-bit. Colour management is off for that step, so nothing is converted twice.
+- **JPEG XL and WebP export** are gone: macOS reads both but writes neither.
+
+libdarktable now links 27 Homebrew libraries rather than 39. Most of the rest is GTK and the stack under it, which darktable's build requires though Develop never runs its interface. Patching that out is the next step towards a self-contained app, and an iPad version.
+

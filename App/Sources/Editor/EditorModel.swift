@@ -618,6 +618,19 @@ final class EditorModel {
                 reply = try await engine.open(tiff)
                 decodedTIFF = tiff
                 openedAsHDR = true
+            } else if !isRaw, AppleRawFallback.needsAppleDecode(url) {
+                // a format darktable is built without (HEIC, AVIF, JPEG XL, WebP,
+                // OpenEXR): macOS decodes it to a TIFF darktable edits
+                statusNote = "Decoding with macOS…"
+                defer { statusNote = nil }
+                let exr = url.pathExtension.lowercased() == "exr"
+                let tiff = try await Task.detached(priority: .userInitiated) {
+                    exr ? try AppleRawFallback.decodedHDR(for: url) : try AppleRawFallback.decodedImage(for: url)
+                }.value
+                AppleRawFallback.sidecarToDecoded(original: url, decoded: tiff, raw: false)
+                reply = try await engine.open(tiff)
+                decodedTIFF = tiff
+                openedAsHDR = exr
             } else if isRaw, case .apple(let version) = RawDecoderChoice.stored(for: url) {
                 // chosen in Image › Raw Decoder
                 reply = try await openWithApple(url, version: version, engine: engine)
@@ -955,6 +968,19 @@ final class EditorModel {
                         try? await Task.sleep(for: .seconds(4))
                         FileHandle.standardError.write("Develop photos test: opened \(self.url?.lastPathComponent ?? "-"), asset \(photosAsset != nil), library url matches \(libraryURL == first.url), modules \(modules.count), source \(library.source?.title ?? "-")\n".data(using: .utf8)!)
                     }
+                }
+            }
+            // TestHEIF: launch argument (-TestHEIF /folder) for testing: exports this photo as
+            // HEIC, 8-bit sRGB and 10-bit HLG P3, into the folder
+            if let folder = UserDefaults.standard.string(forKey: "TestHEIF"), !folder.isEmpty {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    var s = ExportSettings(); s.format = .heif; s.longEdge = 1200; s.quality = 90
+                    s.bitDepth = 8; s.profile = .sRGB
+                    await export(s, to: URL(fileURLWithPath: folder + "/sdr8.heic"), remember: false)
+                    s.bitDepth = 10; s.profile = .hlgP3
+                    await export(s, to: URL(fileURLWithPath: folder + "/hlg10.heic"), remember: false)
+                    FileHandle.standardError.write("Develop heif test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
@@ -1545,6 +1571,9 @@ final class EditorModel {
                 try await exportGainMapJPEG(settings, to: url, engine: engine)
                 lastExport = url
                 FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+            } else if settings.format == .heif {
+                try await exportHEIF(settings, to: url, engine: engine)
+                lastExport = url
             } else {
                 // darktable adds the extension itself
                 lastExport = try await engine.export(
@@ -1560,6 +1589,64 @@ final class EditorModel {
             FileHandle.standardError.write("Develop export failed: \(error)\n".data(using: .utf8)!)
             errorMessage = "Couldn't export: \(error.localizedDescription)"
         }
+    }
+
+    /// HEIF, written by Core Image: darktable exports a 16-bit TIFF already
+    /// encoded in the export's profile (sRGB, Display P3, PQ or HLG, with any
+    /// frame and watermark), and Core Image writes those values unchanged into
+    /// a HEIC tagged with the matching colour space, 8-bit or 10-bit. Colour
+    /// management is off for that step, so nothing is converted twice.
+    private func exportHEIF(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
+        let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("develop-heif-\(UUID().uuidString)")
+        let tiff = try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: 16,
+                                           maxEdge: settings.longEdge, profile: profile,
+                                           extras: ExportExtras.load(), photoSize: imageSize)
+        defer { try? FileManager.default.removeItem(at: tiff) }
+        let quality = Double(settings.quality) / 100
+        let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
+        try await Task.detached(priority: .userInitiated) {
+            if let space = Self.colourSpace(forDarktableProfile: profile) {
+                // the values as darktable encoded them, tagged with that encoding
+                guard let image = CIImage(contentsOf: tiff, options: [.colorSpace: NSNull()]) else {
+                    throw EngineError(message: "Couldn't read darktable's export.")
+                }
+                let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+                if settings.bitDepth >= 10 {
+                    try context.writeHEIF10Representation(of: image, to: url, colorSpace: space, options: options)
+                } else {
+                    try context.writeHEIFRepresentation(of: image, to: url, format: .RGBA8, colorSpace: space, options: options)
+                }
+            } else {
+                // another profile: through its ICC profile, kept in the HEIC
+                guard let image = CIImage(contentsOf: tiff), let space = image.colorSpace else {
+                    throw EngineError(message: "Couldn't read darktable's export.")
+                }
+                let context = CIContext()
+                if settings.bitDepth >= 10 {
+                    try context.writeHEIF10Representation(of: image, to: url, colorSpace: space, options: options)
+                } else {
+                    try context.writeHEIFRepresentation(of: image, to: url, format: .RGBA8, colorSpace: space, options: options)
+                }
+            }
+        }.value
+        FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+    }
+
+    /// macOS's colour space for darktable's export profiles that have one
+    nonisolated static func colourSpace(forDarktableProfile type: Int) -> CGColorSpace? {
+        let name: CFString? = switch type {
+        case 1: CGColorSpace.sRGB
+        case 2: CGColorSpace.adobeRGB1998
+        case 4: CGColorSpace.linearITUR_2020
+        case 26: CGColorSpace.displayP3
+        case 22: CGColorSpace.itur_2100_PQ
+        case 23: CGColorSpace.itur_2100_HLG
+        case 24: CGColorSpace.displayP3_PQ
+        case 25: CGColorSpace.displayP3_HLG
+        default: nil
+        }
+        return name.flatMap { CGColorSpace(name: $0) }
     }
 
     /// A JPEG with an ISO 21496-1 HDR gain map, written by Core Image.
@@ -2738,12 +2825,13 @@ extension EditorModel {
                     settings.format = .jpegGainMap
                     settings.bitDepth = 8
                     try await exportGainMapJPEG(settings, to: destination, engine: engine)
-                } else {
-                    let heic = target.type.conforms(to: .heic)
-                    settings.format = heic ? .heif : .jpeg
+                } else if target.type.conforms(to: .heic) {
+                    settings.format = .heif
                     settings.bitDepth = 8
+                    try await exportHEIF(settings, to: destination, engine: engine)
+                } else {
                     let written = try await engine.export(
-                        path: destination.deletingPathExtension().path, format: settings.format.darktableName ?? "jpeg",
+                        path: destination.deletingPathExtension().path, format: "jpeg",
                         quality: settings.quality, bitDepth: 8, maxEdge: 0, profile: nil)
                     if written != destination {
                         try? FileManager.default.removeItem(at: destination)

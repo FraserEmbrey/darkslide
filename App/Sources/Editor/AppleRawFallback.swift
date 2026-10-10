@@ -101,6 +101,25 @@ enum AppleRawFallback {
         return false
     }
 
+    /// formats darktable is built without, which macOS reads
+    static let appleDecodedExtensions: Set<String> = ["heic", "heif", "hif", "avif", "jxl", "webp", "exr"]
+
+    static func needsAppleDecode(_ url: URL) -> Bool { appleDecodedExtensions.contains(url.pathExtension.lowercased()) }
+
+    /// An SDR image darktable can't read, as a 16-bit TIFF in its own colour
+    /// space (with its profile embedded), the right way up.
+    static func decodedImage(for url: URL) throws -> URL {
+        let tiff = try cacheURL(for: url, suffix: "sdr")
+        if isFresh(tiff, for: url) { return tiff }
+        guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+            throw EngineError(message: "macOS couldn't decode \(url.lastPathComponent).")
+        }
+        let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!])
+        try writeTIFF(image, to: tiff, format: .RGBA16, space: space, context: context)
+        return tiff
+    }
+
     /// The image with its HDR, as macOS shows it (the gain map applied at full
     /// strength, or HLG/PQ decoded), as a linear floating-point TIFF in
     /// Rec.2020: SDR white is 1.0 and highlights go above it, scene-referred

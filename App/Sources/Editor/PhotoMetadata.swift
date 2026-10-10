@@ -82,7 +82,7 @@ struct PhotoMetadata: Sendable {
             capture.append(Row(label: "Taken", value: formatExifDate(date) + (offset.map { " (UTC\($0))" } ?? "")))
         }
         var exposure: [String] = []
-        if let f = exif[kCGImagePropertyExifFNumber] as? Double { exposure.append("ƒ/\(trim(f))") }
+        if let f = fNumber(exif) { exposure.append("ƒ/\(trim(f))") }
         if let t = exif[kCGImagePropertyExifExposureTime] as? Double { exposure.append(shutter(t)) }
         if let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first { exposure.append("ISO \(iso)") }
         if !exposure.isEmpty { capture.append(Row(label: "Exposure", value: exposure.joined(separator: "  "))) }
@@ -185,7 +185,7 @@ struct PhotoMetadata: Sendable {
         if f.focal35 == nil, let fl = f.focalLength, let crop = cropFactor(exif: exif, props: props, make: make, model: model) {
             f.focal35 = Int((fl * crop).rounded())
         }
-        f.aperture = exif[kCGImagePropertyExifFNumber] as? Double
+        f.aperture = fNumber(exif)
         f.shutter = exif[kCGImagePropertyExifExposureTime] as? Double
         f.iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first
         f.bias = exif[kCGImagePropertyExifExposureBiasValue] as? Double
@@ -270,6 +270,17 @@ struct PhotoMetadata: Sendable {
             if crop > 0.7 && crop < 6 { return crop }
         }
         return nil
+    }
+
+    /// The f-number: EXIF's FNumber, or else its ApertureValue (APEX: f =
+    /// 2^(Av/2)), as Photos and darktable read it. A Leica M lens has no
+    /// electronic contacts for its aperture, so the camera estimates it by
+    /// comparing its light meter with what reached the sensor and writes only
+    /// ApertureValue (its maker note's FNumber is a placeholder 1.0).
+    static func fNumber(_ exif: [CFString: Any]) -> Double? {
+        if let f = exif[kCGImagePropertyExifFNumber] as? Double, f > 0 { return f }
+        guard let av = exif[kCGImagePropertyExifApertureValue] as? Double, av.isFinite else { return nil }
+        return (pow(2, av / 2) * 10).rounded() / 10
     }
 
     /// Lens names write the aperture as "f/1.2" or "F2.8"; set them with the ƒ glyph.

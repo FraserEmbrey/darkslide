@@ -227,7 +227,8 @@ struct MetadataWindow: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .frame(maxWidth: .infinity)
-                        .help(i == 1 ? (optionDown ? "True focal length" : "Full-frame equivalent focal length; hold Option for the true one") : "")
+                        .help(i == 1 ? (optionDown ? "True focal length" : "Full-frame equivalent focal length; hold Option for the true one")
+                              : i == 3 && f.apertureEstimated ? "Estimated by the camera: the lens doesn't report its aperture (a Leica M lens, say), so the camera compares its light meter with the exposure" : "")
                 }
             }
             .font(.system(size: 12))

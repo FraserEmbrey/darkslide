@@ -23,6 +23,8 @@ struct PhotoMetadata: Sendable {
         var focalLength: Double?
         var focal35: Int?
         var aperture: Double?
+        /// the camera worked the aperture out rather than reading it (see fNumber)
+        var apertureEstimated = false
         var shutter: Double?
         var iso: Int?
         var bias: Double?
@@ -44,7 +46,7 @@ struct PhotoMetadata: Sendable {
             return "\(Int((Double(width * height) / 1_000_000).rounded())) MP"
         }
         var shutterText: String? { shutter.map { $0 >= 1 ? "\(PhotoMetadata.trim($0)) s" : "1/\(Int((1 / $0).rounded())) s" } }
-        var apertureText: String? { aperture.map { "ƒ\(PhotoMetadata.trim($0))" } }
+        var apertureText: String? { aperture.map { (apertureEstimated ? "≈ ƒ" : "ƒ") + PhotoMetadata.trim($0) } }
         var focalText: String? { focalLength.map { "\(PhotoMetadata.trim($0)) mm" } }
         var biasText: String? { bias.map { $0 == 0 ? "0 ev" : String(format: "%+.1f ev", $0) } }
     }
@@ -82,7 +84,7 @@ struct PhotoMetadata: Sendable {
             capture.append(Row(label: "Taken", value: formatExifDate(date) + (offset.map { " (UTC\($0))" } ?? "")))
         }
         var exposure: [String] = []
-        if let f = fNumber(exif) { exposure.append("ƒ/\(trim(f))") }
+        if let f = fNumber(exif) { exposure.append((isEstimated(exif) ? "≈ ƒ/" : "ƒ/") + trim(f)) }
         if let t = exif[kCGImagePropertyExifExposureTime] as? Double { exposure.append(shutter(t)) }
         if let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first { exposure.append("ISO \(iso)") }
         if !exposure.isEmpty { capture.append(Row(label: "Exposure", value: exposure.joined(separator: "  "))) }
@@ -186,6 +188,7 @@ struct PhotoMetadata: Sendable {
             f.focal35 = Int((fl * crop).rounded())
         }
         f.aperture = fNumber(exif)
+        f.apertureEstimated = f.aperture != nil && isEstimated(exif)
         f.shutter = exif[kCGImagePropertyExifExposureTime] as? Double
         f.iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first
         f.bias = exif[kCGImagePropertyExifExposureBiasValue] as? Double
@@ -277,6 +280,10 @@ struct PhotoMetadata: Sendable {
     /// electronic contacts for its aperture, so the camera estimates it by
     /// comparing its light meter with what reached the sensor and writes only
     /// ApertureValue (its maker note's FNumber is a placeholder 1.0).
+    static func isEstimated(_ exif: [CFString: Any]) -> Bool {
+        !((exif[kCGImagePropertyExifFNumber] as? Double).map { $0 > 0 } ?? false)
+    }
+
     static func fNumber(_ exif: [CFString: Any]) -> Double? {
         if let f = exif[kCGImagePropertyExifFNumber] as? Double, f > 0 { return f }
         guard let av = exif[kCGImagePropertyExifApertureValue] as? Double, av.isFinite else { return nil }

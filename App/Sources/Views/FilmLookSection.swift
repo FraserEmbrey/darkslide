@@ -97,18 +97,20 @@ struct LookBrowser: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 10) {
-                HStack {
-                    TextField("Search", text: $search)
-                        .textFieldStyle(.roundedBorder)
-                    Button("None") { model.applyLook(nil) }
-                        .disabled(model.currentLook == nil)
-                }
+            HStack(spacing: 8) {
+                TextField("Search", text: $search)
+                    .textFieldStyle(.roundedBorder)
+                // a menu, as the folders can be many and long
                 Picker("Show", selection: $scope) {
-                    ForEach(scopes, id: \.self) { Text(Self.tidy($0)).tag($0) }
+                    ForEach(scopes.prefix(2), id: \.self) { Text(Self.tidy($0)).tag($0) }
+                    Divider()
+                    ForEach(scopes.dropFirst(2), id: \.self) { Text(Self.tidy($0)).tag($0) }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .labelsHidden()
+                .fixedSize()
+                Button("None") { model.applyLook(nil) }
+                    .disabled(model.currentLook == nil)
             }
             .padding(12)
             Divider()
@@ -221,7 +223,7 @@ struct LookTile: View {
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if film.looks.count > 1 {
-                        Label("\(film.looks.count)", systemImage: "square.stack")
+                        Label("\(film.looks.count)", systemImage: "square.3.layers.3d")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 5).padding(.vertical, 2)

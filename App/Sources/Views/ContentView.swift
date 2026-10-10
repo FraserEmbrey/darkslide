@@ -410,7 +410,8 @@ struct ZoomableImage: View {
                     guard case .scale = model.zoom else { return }
                     if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
                 }
-                .help(model.imageIsZoomed ? "Drag to move around; click to fit the photo" : "Click to zoom to 100% here")
+                // not while the look browser is open over it, where it shows by the popover's edge
+                .help(model.lookBrowserOpen ? "" : model.imageIsZoomed ? "Drag to move around; click to fit the photo" : "Click to zoom to 100% here")
         }
     }
 }

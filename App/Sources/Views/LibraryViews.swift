@@ -189,13 +189,18 @@ struct LibraryGrid: View {
     @State private var position = ScrollPosition(edge: .top)
     @State private var viewSize = CGSize.zero
     @State private var rowHeight = 0.0
+    @State private var scrollY = 0.0
+    /// the far end of a Shift-arrow selection; the anchor is the selection
+    @State private var cursor: URL?
 
-    /// Centres a photo, working out its row as the grid lays out its
-    /// columns (adaptive, 170 points and up, 14 apart, inside 20 of padding):
-    /// scrollTo(id:) laid out every row above it, seconds into a whole Photos library.
+    /// photos in a row, as the grid lays out its columns (adaptive, 170
+    /// points and up, 14 apart, inside 20 of padding)
+    private var perRow: Int { max(1, Int((viewSize.width - 40 + 14) / (170 + 14))) }
+
+    /// Centres a photo, working out its row: scrollTo(id:) laid out every
+    /// row above it, seconds into a whole Photos library.
     private func scroll(to url: URL) {
         guard rowHeight > 0, let i = model.library.index(of: url) else { return }
-        let perRow = max(1, Int((viewSize.width - 40 + 14) / (170 + 14)))
         let row = Double(i / perRow)
         position.scrollTo(y: max(0, 20 + row * (rowHeight + 18) + rowHeight / 2 - viewSize.height / 2))
     }
@@ -220,6 +225,7 @@ struct LibraryGrid: View {
                     .padding(20)
                 }
                 .scrollPosition($position)
+                .onScrollGeometryChange(for: Double.self) { $0.contentOffset.y } action: { _, y in scrollY = y }
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { viewSize = $0 }
                 .onAppear {
                     model.library.selection = model.libraryURL ?? model.library.items.first?.url
@@ -267,8 +273,17 @@ struct LibraryGrid: View {
         .focused($focused)
         .focusEffectDisabled()
         .onKeyPress(.return) { open(model.library.selection); return .handled }
-        .onKeyPress(.leftArrow) { move(-1); return .handled }
-        .onKeyPress(.rightArrow) { move(1); return .handled }
+        // ← → by a photo, ↑ ↓ by a row; Shift extends the selection, as in Finder
+        .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow], phases: [.down, .repeat]) { press in
+            let step = switch press.key {
+            case .leftArrow: -1
+            case .rightArrow: 1
+            case .upArrow: -perRow
+            default: perRow
+            }
+            move(step, extend: press.modifiers.contains(.shift))
+            return .handled
+        }
 
     }
 
@@ -329,9 +344,40 @@ struct LibraryGrid: View {
         Task { await model.open(url) }
     }
 
-    private func move(_ offset: Int) {
-        let items = model.library.items
-        let i = items.firstIndex { $0.url == model.library.selection } ?? 0
-        model.library.selection = items[min(max(i + offset, 0), items.count - 1)].url
+    private func move(_ offset: Int, extend: Bool) {
+        let library = model.library
+        let items = library.items
+        guard !items.isEmpty else { return }
+        let from = extend ? (cursor ?? library.selection) : library.selection
+        let i = library.index(of: from) ?? 0
+        // up from the top row or down from the bottom one stays put, as in
+        // Finder; down into a shorter last row goes to its last photo
+        let j = i + offset
+        let lastRow = (items.count - 1) / perRow
+        guard j >= 0, j < items.count || abs(offset) == 1 || i / perRow < lastRow else { return }
+        let target = items[min(max(j, 0), items.count - 1)].url
+        if extend {
+            library.click(target, command: false, shift: true)
+            cursor = target
+        } else {
+            library.selection = target
+            cursor = nil
+        }
+        reveal(target)
+        // LogKeys: launch argument (-LogKeys YES) for testing
+        if UserDefaults.standard.bool(forKey: "LogKeys") {
+            FileHandle.standardError.write("Develop grid move \(offset): \(library.index(of: target) ?? -1) of \(items.count), \(perRow) a row, \(library.selected.count) selected\n".data(using: .utf8)!)
+        }
+    }
+
+    /// scrolls just enough to show a photo's row, as Finder does
+    private func reveal(_ url: URL) {
+        guard rowHeight > 0, let i = model.library.index(of: url) else { return }
+        let top = 20 + Double(i / perRow) * (rowHeight + 18), bottom = top + rowHeight
+        if top < scrollY + 8 {
+            position.scrollTo(y: max(0, top - 12))
+        } else if bottom > scrollY + viewSize.height - 8 {
+            position.scrollTo(y: bottom - viewSize.height + 12)
+        }
     }
 }

@@ -51,6 +51,7 @@ struct InspectorView: View {
                             if model.exportTarget.isHDR { SDRVersionCard() }
                             if model.viewHDR { HDRDetailsCard() }
                             LookCard()
+                            if model.url != nil { LocalAdjustmentsCard() }
                         }
                         if model.filter != .essentials, model.search.isEmpty {
                             Label("In processing order: the top module runs last, as in darktable.",

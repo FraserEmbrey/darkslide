@@ -118,6 +118,19 @@ Image › Crop and Straighten (⌘K, or C on its own), or the toolbar's crop but
 
 Both are ordinary edits, so they undo, save to the XMP and open in darktable.
 
+### Local adjustments
+
+The Local adjustments card adds linear and radial gradients that brighten or darken part of the photo. Each is its own exposure instance, named "Local n", masked by one darktable drawn shape (a gradient or an ellipse), so the sidecar carries it as darktable would. Select one to show its shape on the photo:
+- **Linear:** drag the centre to move it, the arrow to turn it (the side it points to gets the adjustment), and the dashed line to soften it.
+- **Radial:** drag the centre, the two radius handles, and the outer handle for the softness.
+
+The engine does what darktable's mask tools do, without the interface:
+- `add_local` duplicates the module, creates the shape, saves it with `dt_masks_gui_form_save_creation` (which makes the module's mask group and links it), turns on the drawn mask, and rebuilds the pipe.
+- `set_shape` and `shape` take and give points in the photo as processed. They move them through the pipe's distortions (lens, perspective, crop, flip) with `dt_dev_distort_backtransform_plus` and `dt_dev_distort_transform_plus`, because shapes are stored in input coordinates.
+- Two traps. The pipe cache's key doesn't cover a shape, so a moved shape invalidates the cache from its module on. And each node's input size is only set when the pipe's dimensions are worked out, which happens at load, so a module switched on since (lens correction) transformed points with a zero size until the engine started working them out again first.
+- darktable's instance removal is interface code, so Delete switches the instance off and renames it out of sight, and undo brings it back.
+- For now each adjustment is exposure only; other adjustments would be other modules masked the same way.
+
 ### Hue curves
 
 The Hue curves card is darktable's colour equaliser shown as Photomator-style curves. It has Hue, Saturation and Luminance tabs, each plotted against hue, with a handle on each of darktable's eight colours (red, orange, yellow, green, cyan, blue, lavender and magenta). Drag a handle up or down, or double-click it to reset. Hue runs ±90° on screen (darktable allows ±180°) and the others 0 to 200%. The line is darktable's periodic radial-basis interpolation (`_periodic_RBF_interpolate`), ported, so it's the curve applied, including the module's hue smoothing and node placement. The handles use the eight named colours rather than HSV hues, because darktable's hue circle (its UCS) isn't HSV's. The module's other settings (saturation threshold, contrast, white level, the guided filter's radii) are under Advanced. Every value is a plain field, so no engine support was needed.

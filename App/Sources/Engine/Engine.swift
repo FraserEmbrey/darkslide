@@ -250,6 +250,40 @@ actor Engine {
         return try await request(["cmd": "modules"], as: ModulesReply.self).modules
     }
 
+    /// a local adjustment's shape in output pixels (see the helper's "shape")
+    struct ShapeReply: Decodable {
+        let kind: String
+        let points: [Double]
+        var compression: Double? = nil
+        var border: Double? = nil
+    }
+
+    func addLocal(base: String, shape: String, name: String) async throws -> InstanceReply {
+        try await request(["cmd": "add_local", "module": base, "shape": shape, "name": name], as: InstanceReply.self)
+    }
+
+    func setGradient(module: String, anchor: CGPoint, toward: CGPoint, compression: Double?) async throws {
+        var body: [String: Any] = ["cmd": "set_shape", "module": module,
+                                   "anchor": [anchor.x, anchor.y], "toward": [toward.x, toward.y]]
+        if let compression { body["compression"] = compression }
+        _ = try await request(body)
+    }
+
+    func setEllipse(module: String, center: CGPoint, a: CGPoint, b: CGPoint, border: Double?) async throws {
+        var body: [String: Any] = ["cmd": "set_shape", "module": module, "center": [center.x, center.y],
+                                   "a": [a.x, a.y], "b": [b.x, b.y]]
+        if let border { body["border"] = border }
+        _ = try await request(body)
+    }
+
+    func renameInstance(_ module: String, to name: String) async throws -> [EngineModule] {
+        try await request(["cmd": "rename_instance", "module": module, "name": name], as: ModulesReply.self).modules
+    }
+
+    func shape(module: String) async throws -> ShapeReply {
+        try await request(["cmd": "shape", "module": module], as: ShapeReply.self)
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

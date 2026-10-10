@@ -98,6 +98,14 @@ final class EditorModel {
     /// the last whole-photo frame, drawn soft under a zoomed crop so panning
     /// shows the photo at once where the sharp render hasn't reached
     private(set) var panBackdrop: (image: CGImage, isHDR: Bool)?
+    /// the local adjustment being edited, whose shape shows on the photo
+    var selectedLocal: String? {
+        didSet { if selectedLocal != oldValue { localShape = nil; if selectedLocal != nil { Task { await fetchLocalShape() } } } }
+    }
+    /// its shape in output pixels, as the engine has it
+    var localShape: LocalShape?
+    var pendingShape: ShapeEdit?
+    var sendingShape = false
     /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
     var curveChannel = 0
     /// the module curveInfo describes
@@ -496,7 +504,7 @@ final class EditorModel {
         // is on, and in Active, when either curve is
         let channels = channelCurveModule
         return modules.filter { ($0.applicable ?? true) && (!($0.deprecated ?? false) || $0.enabled || $0.inHistory)
-            && !Self.isChannelCurve($0) }
+            && !Self.isChannelCurve($0) && !Self.isLocal($0) && $0.instanceName != Self.deletedLocalName }
             .map { m in
                 guard let channels, m.op == "rgbcurve" else { return m }
                 var shown = m
@@ -755,6 +763,30 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("level")
                 }
             }
+            // TestLocal: launch argument (-TestLocal YES) for testing: adds a linear gradient,
+            // brightens it, moves it, and logs its shape
+            if UserDefaults.standard.bool(forKey: "TestLocal") {
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Develop local test: \(s): selected \(selectedLocal ?? "-"), locals \(localAdjustments.map { "\($0.key) \($0.instanceName) \($0.enabled)" }), shape \(localShape.map { "\($0.kind) \($0.points.prefix(3).map { "(\(Int($0.x)),\(Int($0.y)))" })" } ?? "-")\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    addLocal(.gradient)
+                    try? await Task.sleep(for: .seconds(3)); log("added")
+                    if let key = selectedLocal { setValue(.number(1.5), module: key, field: "exposure") }
+                    try? await Task.sleep(for: .seconds(3)); log("brightened")
+                    if case .gradient = localShape?.kind, let s = localShape {
+                        moveShape(.gradient(anchor: CGPoint(x: s.points[0].x, y: s.points[0].y + 600), toward: CGPoint(x: s.points[2].x, y: s.points[2].y + 600), compression: nil))
+                    }
+                    try? await Task.sleep(for: .seconds(3)); log("moved")
+                    let first = selectedLocal
+                    addLocal(.ellipse)
+                    try? await Task.sleep(for: .seconds(3)); log("radial")
+                    if let key = selectedLocal { setValue(.number(-1), module: key, field: "exposure") }
+                    if let first { deleteLocal(first) }
+                    try? await Task.sleep(for: .seconds(3)); log("deleted first")
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -810,6 +842,7 @@ final class EditorModel {
             sensor = reply.sensor ?? "bayer"
             modules = reply.modules
             panBackdrop = nil
+            selectedLocal = nil
             hasUnsavedChanges = false
             image = nil
             beforeImage = nil
@@ -1209,6 +1242,8 @@ final class EditorModel {
                         curveInfoKey = key
                         if fresh { renderRequested = true }
                     }
+                    // the shape may have changed with an undo, or been placed by the engine
+                    if selectedLocal != nil, pendingShape == nil, !sendingShape { await fetchLocalShape() }
                     frameStraighten = renderStraighten
                     if crop == nil, !isCropping, !isSimulatingHeadroom {
                         thumbnailFrame = frame.image
@@ -2069,5 +2104,120 @@ extension EditorModel {
         return LensInfo(model: model?.isEmpty == false ? model : nil,
                         focal: exif[kCGImagePropertyExifFocalLength] as? Double,
                         maxAperture: apex.map { pow(2.0.squareRoot(), $0) })
+    }
+}
+
+// MARK: - Local adjustments
+
+/// A local adjustment's shape in output pixels (the photo as processed, at
+/// full size): see LocalAdjustments.swift for how it's drawn and edited.
+struct LocalShape: Equatable {
+    enum Kind { case gradient, ellipse }
+    let kind: Kind
+    /// gradient: anchor, a point along the line, the side it fades in toward,
+    /// and the two edges of its transition. Ellipse: 64 points of its outline,
+    /// 64 of its outline with the border, then its centre and the ends of its
+    /// two radii.
+    var points: [CGPoint]
+    var compression = 0.3
+    var border = 0.5
+}
+
+/// A move of a shape, in output pixels, waiting to go to the engine.
+enum ShapeEdit {
+    case gradient(anchor: CGPoint, toward: CGPoint, compression: Double?)
+    case ellipse(center: CGPoint, a: CGPoint, b: CGPoint, border: Double?)
+}
+
+extension EditorModel {
+    /// Local adjustments are instances of exposure named "Local n", each
+    /// masked by one drawn shape (the engine's add_local). They're edited in
+    /// their own card, not as modules.
+    nonisolated static func isLocal(_ m: EngineModule) -> Bool { m.instanceName.hasPrefix("Local ") }
+    var localAdjustments: [EngineModule] { modules.filter(Self.isLocal).sorted { $0.instanceName < $1.instanceName } }
+
+    func addLocal(_ kind: LocalShape.Kind) {
+        guard let engine, url != nil,
+              let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
+        let used = Set(localAdjustments.map(\.instanceName))
+        let name = (1...).lazy.map { "Local \($0)" }.first { !used.contains($0) }!
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "Add \(kind == .gradient ? "Linear Gradient" : "Radial Gradient")")
+            do {
+                let reply = try await engine.addLocal(base: base.key, shape: kind == .gradient ? "gradient" : "ellipse", name: name)
+                modules = reply.modules
+                hasUnsavedChanges = true
+                // start where it's easy to see and grab: a gradient across the
+                // middle brightening the top half, a circle in the centre
+                let w = imageSize.width, h = imageSize.height
+                let c = CGPoint(x: w / 2, y: h / 2)
+                switch kind {
+                case .gradient:
+                    try await engine.setGradient(module: reply.added, anchor: c, toward: CGPoint(x: c.x, y: c.y - h * 0.2), compression: 0.15)
+                case .ellipse:
+                    let r = min(w, h) * 0.25
+                    try await engine.setEllipse(module: reply.added, center: c, a: CGPoint(x: c.x + r, y: c.y),
+                                                b: CGPoint(x: c.x, y: c.y + r), border: 0.5)
+                }
+                selectedLocal = reply.added
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't add the adjustment: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// darktable's instance removal is interface code, so a deleted local
+    /// adjustment is switched off and renamed out of sight; undo brings it back
+    nonisolated static let deletedLocalName = "Deleted local"
+
+    func deleteLocal(_ key: String) {
+        guard let engine else { return }
+        if selectedLocal == key { selectedLocal = nil }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "Delete Local Adjustment")
+            do {
+                try await engine.enable(module: key, on: false)
+                modules = try await engine.renameInstance(key, to: Self.deletedLocalName)
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func fetchLocalShape() async {
+        guard let engine, let key = selectedLocal, let r = try? await engine.shape(module: key) else { return }
+        let pts = stride(from: 0, to: r.points.count - 1, by: 2).map { CGPoint(x: r.points[$0], y: r.points[$0 + 1]) }
+        guard selectedLocal == key, pendingShape == nil, !sendingShape else { return }
+        localShape = LocalShape(kind: r.kind == "ellipse" ? .ellipse : .gradient, points: pts,
+                                compression: r.compression ?? 0.3, border: r.border ?? 0.5)
+    }
+
+    /// A drag on the shape: only the latest goes to the engine, then a render.
+    func moveShape(_ edit: ShapeEdit) {
+        guard let key = selectedLocal, let engine else { return }
+        recordUndoStep(label: "Move Mask", gesture: "shape:\(key)")
+        hasUnsavedChanges = true
+        pendingShape = edit
+        guard !sendingShape else { return }
+        sendingShape = true
+        Task {
+            defer { sendingShape = false }
+            await settleEdits()
+            while let e = pendingShape {
+                pendingShape = nil
+                switch e {
+                case let .gradient(anchor, toward, compression):
+                    try? await engine.setGradient(module: key, anchor: anchor, toward: toward, compression: compression)
+                case let .ellipse(center, a, b, border):
+                    try? await engine.setEllipse(module: key, center: center, a: a, b: b, border: border)
+                }
+                requestRender()
+            }
+        }
     }
 }

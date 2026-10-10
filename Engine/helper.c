@@ -50,6 +50,8 @@
 #include "common/exif.h"
 #include "develop/develop.h"
 #include "develop/imageop.h"
+#include "develop/blend.h"
+#include "develop/masks.h"
 #include "develop/pixelpipe_cache.h"
 #include "develop/pixelpipe_hb.h"
 #include "imageio/imageio_common.h"
@@ -1077,6 +1079,250 @@ static void _cmd_set_text(JsonObject *o)
   _ok_done(_ok());
 }
 
+// ------------------------------------------------------ local adjustments
+
+// A local adjustment is a module instance with one drawn shape as its mask: a
+// linear gradient or an ellipse (radial). Shapes live in darktable's input
+// coordinates (before lens correction, perspective, crop and flip), so the
+// app talks in the photo as processed (full-size output pixels) and the
+// engine moves points through the pipe's distortions both ways.
+
+// Each node's buf_in is set when the pipe's dimensions are worked out, which
+// happens at load; a module switched on since (lens correction, say) would
+// transform with a zero size and return nonsense, so work them out afresh
+static void _refresh_dimensions(void)
+{
+  dt_dev_pixelpipe_get_dimensions(&H.edit.pipe, &H.edit.dev, H.edit.pipe.iwidth, H.edit.pipe.iheight,
+                                  &H.edit.pipe.processed_width, &H.edit.pipe.processed_height);
+}
+
+static gboolean _to_input(float *pts, const int n)
+{
+  _refresh_dimensions();
+  return dt_dev_distort_backtransform_plus(&H.edit.dev, &H.edit.pipe, 0.0, DT_DEV_TRANSFORM_DIR_ALL, pts, n);
+}
+
+static gboolean _to_output(float *pts, const int n)
+{
+  _refresh_dimensions();
+  return dt_dev_distort_transform_plus(&H.edit.dev, &H.edit.pipe, 0.0, DT_DEV_TRANSFORM_DIR_ALL, pts, n);
+}
+
+// the one shape in a module's mask group
+static dt_masks_form_t *_local_shape(dt_iop_module_t *m)
+{
+  if(!m->blend_params) return NULL;
+  dt_masks_form_t *grp = dt_masks_get_from_id(&H.edit.dev, m->blend_params->mask_id);
+  if(!grp || !(grp->type & DT_MASKS_GROUP) || !grp->points) return NULL;
+  const dt_masks_point_group_t *pt = grp->points->data;
+  return dt_masks_get_from_id(&H.edit.dev, pt->formid);
+}
+
+static void _shape_changed(dt_iop_module_t *m)
+{
+  dt_dev_add_masks_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
+  _commit(m, TRUE);
+  // the pipe cache's key doesn't cover the shape, so the module and what
+  // follows it must run again
+  dt_dev_pixelpipe_cache_invalidate_later(&H.edit.pipe, m->iop_order, "shape moved: ");
+}
+
+// {"cmd":"add_local","module":"exposure:0","shape":"gradient"|"ellipse","name":"Local 1"}
+// -> the new instance's key and the module list. The shape starts across the
+// middle (gradient) or centred (ellipse); set_shape places it.
+static void _cmd_add_local(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *base = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!base) return _error("unknown module");
+  if(!(base->flags() & IOP_FLAGS_SUPPORTS_BLENDING)) return _error("this module can't be masked");
+  const gboolean ellipse = !g_strcmp0(json_object_get_string_member_with_default(o, "shape", "gradient"), "ellipse");
+
+  dt_dev_add_history_item_ext(&H.edit.dev, base, FALSE, TRUE);
+  dt_iop_module_t *m = dt_dev_module_duplicate(&H.edit.dev, base);
+  if(!m) return _error("couldn't add an instance");
+  dt_iop_reload_defaults(m);
+  const char *name = json_object_get_string_member_with_default(o, "name", "");
+  if(*name)
+  {
+    g_strlcpy(m->multi_name, name, sizeof(m->multi_name));
+    m->multi_name_hand_edited = TRUE;
+  }
+  dt_dev_add_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
+
+  dt_masks_form_t *form = dt_masks_create(ellipse ? DT_MASKS_ELLIPSE : DT_MASKS_GRADIENT);
+  if(ellipse)
+  {
+    dt_masks_point_ellipse_t *e = calloc(1, sizeof(dt_masks_point_ellipse_t));
+    e->center[0] = e->center[1] = 0.5f;
+    e->radius[0] = e->radius[1] = 0.25f;
+    e->border = 0.5f;
+    e->flags = DT_MASKS_ELLIPSE_PROPORTIONAL;
+    form->points = g_list_append(form->points, e);
+  }
+  else
+  {
+    dt_masks_point_gradient_t *g = calloc(1, sizeof(dt_masks_point_gradient_t));
+    g->anchor[0] = g->anchor[1] = 0.5f;
+    g->compression = 0.3f;
+    g->steepness = 0.0f;
+    g->curvature = 0.0f;
+    g->state = DT_MASKS_GRADIENT_STATE_SIGMOIDAL;
+    form->points = g_list_append(form->points, g);
+  }
+  dt_masks_gui_form_save_creation(&H.edit.dev, m, form, NULL);
+  m->blend_params->mask_mode = DEVELOP_MASK_ENABLED | DEVELOP_MASK_MASK;
+  _commit(m, TRUE);
+
+  dt_dev_pixelpipe_cleanup_nodes(&H.edit.pipe);
+  dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+  H.edit.dirty = TRUE;
+
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "added");
+  gchar *key = _module_key(m);
+  json_builder_add_string_value(b, key);
+  g_free(key);
+  _add_modules(b);
+  _ok_done(b);
+}
+
+// Places a local adjustment's shape, in output pixels:
+// gradient: {"anchor":[x,y],"toward":[x,y],"compression":0.3} - the line runs
+//   through anchor, the adjustment fading in toward "toward" (perpendicular)
+// ellipse: {"center":[x,y],"a":[x,y],"b":[x,y],"border":0.5} - a and b are
+//   the ends of its two radii
+static void _cmd_set_shape(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  dt_masks_form_t *form = m ? _local_shape(m) : NULL;
+  if(!form || !form->points) return _error("not a local adjustment");
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+  const float mind = fminf(iw, ih);
+#define PT(name, i) (float)json_array_get_double_element(json_object_get_array_member(o, name), i)
+  if(form->type & DT_MASKS_GRADIENT)
+  {
+    if(!json_object_has_member(o, "anchor") || !json_object_has_member(o, "toward")) return _error("missing points");
+    float pts[4] = { PT("anchor", 0), PT("anchor", 1), PT("toward", 0), PT("toward", 1) };
+    _to_input(pts, 2);
+    dt_masks_point_gradient_t *g = form->points->data;
+    g->anchor[0] = pts[0] / iw;
+    g->anchor[1] = pts[1] / ih;
+    // the line runs at v = -rotation (gradient.c); the adjustment's side is
+    // at rotation - 90, so "toward" sets it
+    const float side = atan2f(pts[3] - pts[1], pts[2] - pts[0]);
+    g->rotation = -rad2degf(side) - 90.0f;
+    if(json_object_has_member(o, "compression"))
+      g->compression = CLAMP((float)json_object_get_double_member(o, "compression"), 0.001f, 1.0f);
+  }
+  else if(form->type & DT_MASKS_ELLIPSE)
+  {
+    if(!json_object_has_member(o, "center") || !json_object_has_member(o, "a") || !json_object_has_member(o, "b"))
+      return _error("missing points");
+    float pts[6] = { PT("center", 0), PT("center", 1), PT("a", 0), PT("a", 1), PT("b", 0), PT("b", 1) };
+    _to_input(pts, 3);
+    dt_masks_point_ellipse_t *e = form->points->data;
+    e->center[0] = pts[0] / iw;
+    e->center[1] = pts[1] / ih;
+    e->radius[0] = fmaxf(hypotf(pts[2] - pts[0], pts[3] - pts[1]) / mind, 0.002f);
+    e->radius[1] = fmaxf(hypotf(pts[4] - pts[0], pts[5] - pts[1]) / mind, 0.002f);
+    e->rotation = rad2degf(atan2f(pts[3] - pts[1], pts[2] - pts[0]));
+    if(json_object_has_member(o, "border"))
+      e->border = CLAMP((float)json_object_get_double_member(o, "border"), 0.001f, 4.0f);
+  }
+#undef PT
+  _shape_changed(m);
+  _ok_done(_ok());
+}
+
+// {"cmd":"shape","module":...} -> the shape in output pixels: for a gradient
+// its anchor, a point along the line, the side it fades in toward and its
+// compression; for an ellipse its outline and the outline with its border
+static void _cmd_shape(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  dt_masks_form_t *form = m ? _local_shape(m) : NULL;
+  if(!form || !form->points) return _error("not a local adjustment");
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+  const float mind = fminf(iw, ih), diag = hypotf(iw, ih);
+  JsonBuilder *b = _ok();
+  if(form->type & DT_MASKS_GRADIENT)
+  {
+    const dt_masks_point_gradient_t *g = form->points->data;
+    const float ax = g->anchor[0] * iw, ay = g->anchor[1] * ih;
+    const float v = deg2radf(-g->rotation), side = deg2radf(-(g->rotation + 90.0f));
+    const float reach = 0.1f * mind, width = g->compression * diag;
+    float pts[10] = { ax, ay,
+                      ax + reach * cosf(v), ay + reach * sinf(v),
+                      ax + reach * cosf(side), ay + reach * sinf(side),
+                      ax + width * cosf(side), ay + width * sinf(side),
+                      ax - width * cosf(side), ay - width * sinf(side) };
+    _to_output(pts, 5);
+    json_builder_set_member_name(b, "kind");
+    json_builder_add_string_value(b, "gradient");
+    json_builder_set_member_name(b, "points");
+    json_builder_begin_array(b);
+    for(int i = 0; i < 10; i++) json_builder_add_double_value(b, pts[i]);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "compression");
+    json_builder_add_double_value(b, g->compression);
+  }
+  else
+  {
+    const dt_masks_point_ellipse_t *e = form->points->data;
+    const float cx = e->center[0] * iw, cy = e->center[1] * ih;
+    const float r = deg2radf(e->rotation);
+    const float k = (e->flags & DT_MASKS_ELLIPSE_PROPORTIONAL) ? 1.0f + e->border : 1.0f;
+    const float extra = (e->flags & DT_MASKS_ELLIPSE_PROPORTIONAL) ? 0.0f : e->border * mind;
+    enum { N = 64 };
+    float pts[2 * (2 * N + 3)];
+    for(int ring = 0; ring < 2; ring++)
+      for(int i = 0; i < N; i++)
+      {
+        const float t = 2.0f * M_PI_F * i / N;
+        const float a = e->radius[0] * mind * (ring ? k : 1.0f) + (ring ? extra : 0.0f);
+        const float bb = e->radius[1] * mind * (ring ? k : 1.0f) + (ring ? extra : 0.0f);
+        const float x = a * cosf(t), y = bb * sinf(t);
+        pts[2 * (ring * N + i)] = cx + x * cosf(r) - y * sinf(r);
+        pts[2 * (ring * N + i) + 1] = cy + x * sinf(r) + y * cosf(r);
+      }
+    // centre and the ends of the two radii
+    float *c = pts + 4 * N;
+    c[0] = cx; c[1] = cy;
+    c[2] = cx + e->radius[0] * mind * cosf(r); c[3] = cy + e->radius[0] * mind * sinf(r);
+    c[4] = cx - e->radius[1] * mind * sinf(r); c[5] = cy + e->radius[1] * mind * cosf(r);
+    _to_output(pts, 2 * N + 3);
+    json_builder_set_member_name(b, "kind");
+    json_builder_add_string_value(b, "ellipse");
+    json_builder_set_member_name(b, "points");
+    json_builder_begin_array(b);
+    for(int i = 0; i < 2 * (2 * N + 3); i++) json_builder_add_double_value(b, pts[i]);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "border");
+    json_builder_add_double_value(b, e->border);
+  }
+  _ok_done(b);
+}
+
+// {"cmd":"rename_instance","module":"exposure:1","name":"..."}: an instance's
+// name, kept in the history and the sidecar
+static void _cmd_rename_instance(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!m) return _error("unknown module");
+  g_strlcpy(m->multi_name, json_object_get_string_member_with_default(o, "name", ""), sizeof(m->multi_name));
+  m->multi_name_hand_edited = TRUE;
+  _commit(m, m->enabled);
+  JsonBuilder *b = _ok();
+  _add_modules(b);
+  _ok_done(b);
+}
+
 static void _cmd_styles(void)
 {
   JsonBuilder *b = _ok();
@@ -1739,6 +1985,10 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "lens_cameras")) _cmd_lens_cameras(o);
     else if(!strcmp(cmd, "lens_lenses")) _cmd_lens_lenses(o);
     else if(!strcmp(cmd, "set_text")) _cmd_set_text(o);
+    else if(!strcmp(cmd, "add_local")) _cmd_add_local(o);
+    else if(!strcmp(cmd, "set_shape")) _cmd_set_shape(o);
+    else if(!strcmp(cmd, "shape")) _cmd_shape(o);
+    else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
     else if(!strcmp(cmd, "reset_all")) _cmd_reset_all();
     else if(!strcmp(cmd, "reset")) _cmd_reset(o);
     else if(!strcmp(cmd, "modules")) _cmd_modules();

@@ -380,6 +380,9 @@ struct ZoomableImage: View {
                         CropOverlay(frameSize: size)
                     } else if model.comparing {
                         CompareDivider(imageSize: size, pixelExact: model.imageIsZoomed)
+                    } else if model.selectedLocal != nil {
+                        LocalShapeOverlay(toView: { toView($0, in: geo.size, frame: size) },
+                                          toImage: { toImage($0, in: geo.size, frame: size) })
                     }
                 }
                 .scaleEffect(pinch, anchor: pinchAnchor)
@@ -439,6 +442,32 @@ extension ZoomableImage {
                           height: model.imageSize.height * shown.scale / displayScale)
         return (whole.image, CGRect(x: r.minX - CGFloat(shown.x) / displayScale, y: r.minY - CGFloat(shown.y) / displayScale,
                                     width: size.width, height: size.height))
+    }
+
+    /// a point of the processed photo (full-size output pixels) in this view
+    fileprivate func toView(_ p: CGPoint, in view: CGSize, frame: CGSize) -> CGPoint {
+        if model.imageIsZoomed, let c = model.shownCrop {
+            let r = EDRImageView.displayedRect(frame, in: view, pixelExact: true, displayScale: displayScale)
+            let o = panOffset
+            return CGPoint(x: r.minX + o.width + (p.x * c.scale - CGFloat(c.x)) / displayScale,
+                           y: r.minY + o.height + (p.y * c.scale - CGFloat(c.y)) / displayScale)
+        }
+        let r = EDRImageView.fittedRect(frame, in: view)
+        let k = r.width / max(model.imageSize.width, 1)
+        return CGPoint(x: r.minX + p.x * k, y: r.minY + p.y * k)
+    }
+
+    /// the inverse: a point of this view in the processed photo's pixels
+    fileprivate func toImage(_ v: CGPoint, in view: CGSize, frame: CGSize) -> CGPoint {
+        if model.imageIsZoomed, let c = model.shownCrop {
+            let r = EDRImageView.displayedRect(frame, in: view, pixelExact: true, displayScale: displayScale)
+            let o = panOffset
+            return CGPoint(x: ((v.x - r.minX - o.width) * displayScale + CGFloat(c.x)) / c.scale,
+                           y: ((v.y - r.minY - o.height) * displayScale + CGFloat(c.y)) / c.scale)
+        }
+        let r = EDRImageView.fittedRect(frame, in: view)
+        let k = r.width / max(model.imageSize.width, 1)
+        return CGPoint(x: (v.x - r.minX) / k, y: (v.y - r.minY) / k)
     }
 
     /// click: zoom to 100% at the point, or back to fit

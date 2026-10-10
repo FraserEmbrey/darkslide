@@ -106,7 +106,7 @@ struct LibrarySidebar: View {
             Label("Exported", systemImage: "square.and.arrow.up")
                 .badge(model.catalog.exportedPhotos.count)
                 .tag(LibrarySource.exported)
-            Label("Map", systemImage: "map")
+            Label("Places", systemImage: "map")
                 .tag(LibrarySource.map)
                 .help("Every photo in the library's folders, where it was taken")
         }

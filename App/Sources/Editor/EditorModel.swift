@@ -1279,7 +1279,11 @@ final class EditorModel {
         autoExposure = nil
         guard let engine, let m = modules.firstIndex(where: { $0.op == "exposure" }) else { return }
         let module = modules[m]
-        autoExposure = try? await engine.autoExposure(module: module.key)
+        // an HDR source is exposed already, as the camera (or Apple's raw
+        // engine) rendered it; darktable's rule aims its middle tone at a
+        // processed image's usual level, which lifted an iPhone HDR photo
+        // by more than a stop, its highlights well past the format's peak
+        autoExposure = openedAsHDR ? 0 : try? await engine.autoExposure(module: module.key)
         // an edit in darktable's automatic mode keeps its own percentile and target
         guard let mode = module.fields.firstIndex(where: { $0.name == "mode" }),
               Int(module.fields[mode].value.number) == 1,

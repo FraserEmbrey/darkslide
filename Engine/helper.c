@@ -739,8 +739,10 @@ static void _commit(dt_iop_module_t *m, const gboolean enable)
   // no_image=TRUE: we drive our own pipe, so skip darktable's GUI redraw path
   dt_dev_add_history_item_ext(&H.edit.dev, m, enable, TRUE);
   H.edit.dirty = TRUE;
-  // a new output profile changes where an HDR source's white belongs
-  if(H.hdr_source && !strcmp(m->op, "colorout")) _sync_hdr_white();
+  // a new output profile, or a tone mapper on or off, changes where an HDR source's white belongs
+  if(H.hdr_source && (!strcmp(m->op, "colorout") || !strcmp(m->op, "sigmoid") || !strcmp(m->op, "filmicrgb")
+                      || !strcmp(m->op, "agx") || !strcmp(m->op, "basecurve")))
+    _sync_hdr_white();
 }
 
 static void _cmd_set(JsonObject *o)
@@ -1644,7 +1646,10 @@ static dt_iop_module_t *_first_module(const char *op)
 // profile: exposure brings SDR white to the reference white (203 nits), and
 // for HLG, levels on luminance undoes the HLG display's system gamma (1.2),
 // which would otherwise darken the midtones (BT.2100's inverse OOTF). They're
-// off for an SDR profile. They go into the history with the profile change,
+// off for an SDR profile. With a tone mapper on, they're off too: its output
+// is display-referred in darktable's own terms (target white 100% is the
+// format's 1.0, as for a raw), so it works on an HDR source as it does on a
+// raw. They go into the history with the profile or tone mapper change,
 // so undo takes all of it back together; the app hides them.
 #define HDR_WHITE_NAME "HDR white"
 
@@ -1683,8 +1688,15 @@ static void _sync_hdr_white(void)
   if(!colorout) return;
   dt_introspection_field_t *tf = _find_field(colorout, "type");
   const int type = tf ? *(int *)((char *)colorout->params + tf->header.offset) : DT_COLORSPACE_SRGB;
-  const gboolean hlg = type == DT_COLORSPACE_HLG_REC2020 || type == DT_COLORSPACE_HLG_P3;
-  const gboolean pq = type == DT_COLORSPACE_PQ_REC2020 || type == DT_COLORSPACE_PQ_P3;
+  gboolean mapped = FALSE;
+  static const char *mappers[] = { "sigmoid", "filmicrgb", "agx", "basecurve" };
+  for(GList *l = H.edit.dev.iop; l && !mapped; l = g_list_next(l))
+  {
+    const dt_iop_module_t *x = l->data;
+    for(int i = 0; i < 4; i++) if(x->enabled && !strcmp(x->op, mappers[i])) mapped = TRUE;
+  }
+  const gboolean hlg = !mapped && (type == DT_COLORSPACE_HLG_REC2020 || type == DT_COLORSPACE_HLG_P3);
+  const gboolean pq = !mapped && (type == DT_COLORSPACE_PQ_REC2020 || type == DT_COLORSPACE_PQ_P3);
   const float ev = hlg ? log2f(203.0f / 1000.0f) : pq ? log2f(203.0f / 10000.0f) : 0.0f;
   // levels' grey point for an exponent of 1/1.2: inv_gamma = 10^((grey - 0.5) / 0.5)
   const float grey = 0.5f + 0.5f * log10f(1.0f / 1.2f);

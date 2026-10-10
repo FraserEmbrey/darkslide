@@ -44,7 +44,7 @@ enum LibrarySource: Hashable {
         case .folder(let url): url.lastPathComponent
         case .edited: "Edited"
         case .exported: "Exported"
-        case .map: "Map"
+        case .map: "Places"
         case .photos(_, let title): title
         case .photosPlaces: "Places"
         }

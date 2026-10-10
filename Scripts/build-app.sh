@@ -2,8 +2,8 @@
 # Builds Develop.app: the Swift app plus the darktable engine in
 # Contents/Resources/engine, signed with the local Apple Development identity.
 #
-# Proof-of-concept limits: the engine still links Homebrew's dylibs in
-# /opt/homebrew, so the app only runs on a Mac with those formulae installed.
+# The engine's libraries are copied in from Homebrew (Scripts/bundle-libs.py),
+# so the built app runs on a Mac without Homebrew; building it still needs them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,6 +41,8 @@ rsync -a --exclude 'pixmaps' --exclude 'themes' --exclude 'pswp' --exclude 'late
 # darktable's interface libraries (GTK and those under it) are never run:
 # point the engine at stand-ins, so they aren't loaded (Scripts/stub-gui-libs.py)
 python3 "$ROOT/Scripts/stub-gui-libs.py" "$APP/Contents/Resources/engine"
+# and the libraries it does use go into the app, so it runs without Homebrew
+python3 "$ROOT/Scripts/bundle-libs.py" "$APP/Contents/Resources/engine"
 
 codesign --force --deep --sign "$IDENTITY" "$APP"
 echo "built $APP"

@@ -265,5 +265,13 @@ darktable is built with only what Develop uses. Besides the extras that were alr
 
 Cairo and potrace get stand-ins too. Homebrew's Cairo brought in X11 (libX11, libxcb, libXext, libXrender), fontconfig, freetype and pixman, about 24 MB. Develop only used it for darktable's watermark module, and now draws frames and watermarks itself. potrace traces darktable's AI masks into paths, and AI is off. The bundle also leaves out darktable's lighttable and view modules and its interface art (pixmaps, themes, the slideshow viewer), as well as its LaTeX and tools folders. The engine is 29 MB, down from 35 MB.
 
-The engine now links 16 Homebrew libraries rather than 39: the GLib family (GLib, GObject, GIO, GModule, GThread), json-glib, Little CMS, Exiv2, Lensfun, pugixml, libjpeg, libpng, libtiff, libomp, libintl and Imath. Bundling those is what remains for a self-contained app.
+The engine now links 16 Homebrew libraries rather than 39: the GLib family (GLib, GObject, GIO, GModule, GThread), json-glib, Little CMS, Exiv2, Lensfun, pugixml, libjpeg, libpng, libtiff, libomp, libintl and Imath.
+
+**Self-contained.** The app build bundles them (`Scripts/bundle-libs.py`), so Develop runs on a Mac without Homebrew; building it still needs Homebrew.
+- **What's copied:** the 16 above, plus the 7 they use themselves (PCRE2, Brotli, inih, zstd, xz), 23 in all, about 12 MB. They go into the engine's `lib/darktable` under the names they're referred to by, each with an `@rpath` install name and every reference pointed at it. The helper no longer searches `/opt/homebrew/lib`. Lensfun's lens database goes into `share/lensfun`, where darktable looks for it beside its own data.
+- **Signing:** changing a library breaks its signature. install_name_tool only re-signs what the linker signed, and macOS kills a process that loads a library with a broken signature (exit 137), so the script signs every binary it changes again.
+- **Tested without Homebrew:** the engine run under `sandbox-exec` with all reads of `/opt/homebrew` denied opens raws, finds lenses in the bundled database, renders and exports.
+- **Size:** the app is 57 MB.
+
+The engine's old frame and watermark support (darktable's modules through an export style) is gone, as it needed Cairo; the app draws them.
 

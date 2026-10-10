@@ -11,57 +11,8 @@ enum LevelDetector {
     /// lines lean clockwise in the image as shown; nil if nothing is clearly
     /// straight.
     static func tilt(of image: CGImage, maxTilt: Double = 15) -> Double? {
-        // grey, about 900 px on the long side
-        let scale = 900 / Double(max(image.width, image.height))
-        let w = max(Int(Double(image.width) * min(scale, 1)), 16), h = max(Int(Double(image.height) * min(scale, 1)), 16)
-        var grey = [UInt8](repeating: 0, count: w * h)
-        guard let ctx = CGContext(data: &grey, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
-                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-
-        // a light blur, so pixel steps don't bias the angles of near-level edges
-        var px = grey.map(Float.init)
-        var tmp = px
-        for y in 0..<h { for x in 1..<(w - 1) { tmp[y * w + x] = (px[y * w + x - 1] + 2 * px[y * w + x] + px[y * w + x + 1]) / 4 } }
-        for y in 1..<(h - 1) { for x in 0..<w { px[y * w + x] = (tmp[(y - 1) * w + x] + 2 * tmp[y * w + x] + tmp[(y + 1) * w + x]) / 4 } }
-
-        // Sobel gradients, then the structure tensor over a 5 × 5 window: where
-        // it is coherent the pixel sits on a straight edge, where it isn't it is
-        // texture (grass, leaves) and is left out
-        var gxs = [Float](repeating: 0, count: w * h), gys = gxs
-        for y in 1..<(h - 1) {
-            for x in 1..<(w - 1) {
-                let i = y * w + x
-                gxs[i] = (px[i - w + 1] + 2 * px[i + 1] + px[i + w + 1]) - (px[i - w - 1] + 2 * px[i - 1] + px[i + w - 1])
-                gys[i] = (px[i + w - 1] + 2 * px[i + w] + px[i + w + 1]) - (px[i - w - 1] + 2 * px[i - w] + px[i - w + 1])
-            }
-        }
-        func boxBlur(_ a: [Float], r: Int) -> [Float] {
-            var t = a, o = a
-            for y in 0..<h {
-                var acc: Float = 0
-                for x in 0..<min(r, w) { acc += a[y * w + x] }
-                for x in 0..<w {
-                    if x + r < w { acc += a[y * w + x + r] }
-                    if x - r - 1 >= 0 { acc -= a[y * w + x - r - 1] }
-                    t[y * w + x] = acc
-                }
-            }
-            for x in 0..<w {
-                var acc: Float = 0
-                for y in 0..<min(r, h) { acc += t[y * w + x] }
-                for y in 0..<h {
-                    if y + r < h { acc += t[(y + r) * w + x] }
-                    if y - r - 1 >= 0 { acc -= t[(y - r - 1) * w + x] }
-                    o[y * w + x] = acc
-                }
-            }
-            return o
-        }
-        let jxx = boxBlur(zip(gxs, gxs).map { $0 * $1 }, r: 2)
-        let jyy = boxBlur(zip(gys, gys).map { $0 * $1 }, r: 2)
-        let jxy = boxBlur(zip(gxs, gys).map { $0 * $1 }, r: 2)
+        guard let f = field(of: image) else { return nil }
+        let (w, h, gxs, gys, jxx, jyy, jxy) = (f.w, f.h, f.gx, f.gy, f.jxx, f.jyy, f.jxy)
 
         let binsPerDegree = 10.0
         let count = Int(2 * maxTilt * binsPerDegree) + 1
@@ -115,5 +66,104 @@ enum LevelDetector {
             if abs(den) > 1e-9 { offset = 0.5 * (a - c) / den }
         }
         return (Double(peak) + offset) / binsPerDegree - maxTilt
+    }
+
+    private struct Field {
+        let w: Int, h: Int
+        let gx: [Float], gy: [Float], jxx: [Float], jyy: [Float], jxy: [Float]
+    }
+
+    /// Gradients and the smoothed structure tensor of a grey copy about 900 px
+    /// on the long side (rows top first)
+    private static func field(of image: CGImage) -> Field? {
+        // grey, about 900 px on the long side
+        let scale = 900 / Double(max(image.width, image.height))
+        let w = max(Int(Double(image.width) * min(scale, 1)), 16), h = max(Int(Double(image.height) * min(scale, 1)), 16)
+        var grey = [UInt8](repeating: 0, count: w * h)
+        guard let ctx = CGContext(data: &grey, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        // a light blur, so pixel steps don't bias the angles of near-level edges
+        var px = grey.map(Float.init)
+        var tmp = px
+        for y in 0..<h { for x in 1..<(w - 1) { tmp[y * w + x] = (px[y * w + x - 1] + 2 * px[y * w + x] + px[y * w + x + 1]) / 4 } }
+        for y in 1..<(h - 1) { for x in 0..<w { px[y * w + x] = (tmp[(y - 1) * w + x] + 2 * tmp[y * w + x] + tmp[(y + 1) * w + x]) / 4 } }
+
+        // Sobel gradients, then the structure tensor over a 5 × 5 window: where
+        // it is coherent the pixel sits on a straight edge, where it isn't it is
+        // texture (grass, leaves) and is left out
+        var gxs = [Float](repeating: 0, count: w * h), gys = gxs
+        for y in 1..<(h - 1) {
+            for x in 1..<(w - 1) {
+                let i = y * w + x
+                gxs[i] = (px[i - w + 1] + 2 * px[i + 1] + px[i + w + 1]) - (px[i - w - 1] + 2 * px[i - 1] + px[i + w - 1])
+                gys[i] = (px[i + w - 1] + 2 * px[i + w] + px[i + w + 1]) - (px[i - w - 1] + 2 * px[i - w] + px[i - w + 1])
+            }
+        }
+        func boxBlur(_ a: [Float], r: Int) -> [Float] {
+            var t = a, o = a
+            for y in 0..<h {
+                var acc: Float = 0
+                for x in 0..<min(r, w) { acc += a[y * w + x] }
+                for x in 0..<w {
+                    if x + r < w { acc += a[y * w + x + r] }
+                    if x - r - 1 >= 0 { acc -= a[y * w + x - r - 1] }
+                    t[y * w + x] = acc
+                }
+            }
+            for x in 0..<w {
+                var acc: Float = 0
+                for y in 0..<min(r, h) { acc += t[y * w + x] }
+                for y in 0..<h {
+                    if y + r < h { acc += t[(y + r) * w + x] }
+                    if y - r - 1 >= 0 { acc -= t[(y - r - 1) * w + x] }
+                    o[y * w + x] = acc
+                }
+            }
+            return o
+        }
+        let jxx = boxBlur(zip(gxs, gxs).map { $0 * $1 }, r: 2)
+        let jyy = boxBlur(zip(gys, gys).map { $0 * $1 }, r: 2)
+        let jxy = boxBlur(zip(gxs, gys).map { $0 * $1 }, r: 2)
+        return Field(w: w, h: h, gx: gxs, gy: gys, jxx: jxx, jyy: jyy, jxy: jxy)
+    }
+
+    struct EdgeSample { let x: Double, y: Double, dx: Double, dy: Double, weight: Double }
+
+    /// Points on straight edges, in the image's pixels (top-left origin), with
+    /// each edge's direction: for fitting perspective. Only edges within
+    /// `maxTilt` of an axis (of vertical, if `verticalOnly`), the strongest few
+    /// thousand.
+    static func edgeSamples(of image: CGImage, maxTilt: Double, verticalOnly: Bool) -> [EdgeSample]? {
+        guard let f = field(of: image) else { return nil }
+        let sx = Double(image.width) / Double(f.w), sy = Double(image.height) / Double(f.h)
+        var out: [EdgeSample] = []
+        for y in 3..<(f.h - 3) {
+            for x in 3..<(f.w - 3) {
+                let i = y * f.w + x
+                let m = Double((f.gx[i] * f.gx[i] + f.gy[i] * f.gy[i]).squareRoot())
+                guard m > 30 else { continue }
+                let a = Double(f.jxx[i]), b = Double(f.jyy[i]), c = Double(f.jxy[i])
+                let trace = a + b
+                guard trace > 0 else { continue }
+                let coherence = ((a - b) * (a - b) + 4 * c * c).squareRoot() / trace
+                guard coherence > 0.85 else { continue }
+                // the edge runs across the dominant gradient
+                let phi = 0.5 * atan2(2 * c, a - b) + .pi / 2
+                let dx = cos(phi), dy = sin(phi)
+                let fromVertical = abs(remainder(phi - .pi / 2, .pi)) * 180 / .pi
+                let fromHorizontal = abs(remainder(phi, .pi)) * 180 / .pi
+                guard fromVertical <= maxTilt || (!verticalOnly && fromHorizontal <= maxTilt) else { continue }
+                out.append(EdgeSample(x: (Double(x) + 0.5) * sx, y: (Double(y) + 0.5) * sy,
+                                      dx: dx * sx, dy: dy * sy, weight: m * coherence * coherence))
+            }
+        }
+        if out.count > 5000 {
+            out.sort { $0.weight > $1.weight }
+            out = Array(out.prefix(5000))
+        }
+        return out
     }
 }

@@ -729,6 +729,32 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop pan test: panned\n".data(using: .utf8)!)
                 }
             }
+            // TestUpright: launch argument (-TestUpright YES) for testing: adds a vertical lens
+            // shift, runs Upright, and logs the geometry and the corners of the result
+            if UserDefaults.standard.bool(forKey: "TestUpright") {
+                Task { @MainActor in
+                    @MainActor func corners() -> String {
+                        guard let img = image, let data = img.dataProvider?.data as Data? else { return "?" }
+                        let (w, h, row) = (img.width, img.height, img.bytesPerRow)
+                        return [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3)].map { (x, y) in
+                            let i = y * row + x * 4
+                            return "\(data[i])/\(data[i + 1])/\(data[i + 2])"
+                        }.joined(separator: " ")
+                    }
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Develop upright test: \(s): \(perspective), corners \(corners())\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    setGeometry(.init(rotation: 0, vertical: 0.4))
+                    try? await Task.sleep(for: .seconds(3)); log("shifted")
+                    await autoUpright()
+                    try? await Task.sleep(for: .seconds(3)); log("upright")
+                    await autoUpright()
+                    try? await Task.sleep(for: .seconds(3)); log("again")
+                    await autoStraighten()
+                    try? await Task.sleep(for: .seconds(3)); log("level")
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -1677,26 +1703,75 @@ extension EditorModel {
     func resetCrop() {
         cropAspect = .free
         cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
-        if straighten != 0 { setStraighten(0) }
+        if perspective != Perspective.Geometry() { setGeometry(.init()) }
+    }
+
+    /// rotation and perspective as darktable's rotate and perspective module holds them
+    var perspective: Perspective.Geometry {
+        guard let m = rotateModule, m.enabled else { return .init() }
+        return .init(rotation: number(m, "rotation") ?? 0, vertical: number(m, "lensshift_v") ?? 0,
+                     horizontal: number(m, "lensshift_h") ?? 0, shear: number(m, "shear") ?? 0)
     }
 
     /// Turns the photo by `degrees` and crops off the corners that brings in,
-    /// keeping its shape: the largest rectangle of the photo's proportions
-    /// inside it, centred, as margins of the rotated bounding box.
+    /// keeping its shape and any perspective correction.
     func setStraighten(_ degrees: Double) {
+        var g = perspective
+        g.rotation = degrees
+        setGeometry(g)
+    }
+
+    /// Sets rotation and perspective, with the crop margins darktable's
+    /// "automatic cropping: original format" would fit: the largest rectangle
+    /// of the photo's shape inside the corrected photo (Perspective.cropMargins).
+    func setGeometry(_ g: Perspective.Geometry) {
         guard let m = rotateModule, let size = rotateInSize, size.width > 0, size.height > 0 else { return }
-        let (w, h) = (size.width, size.height)
-        let a = abs(degrees) * .pi / 180
-        let (c, s) = (cos(a), sin(a))
-        let boxW = w * c + h * s, boxH = w * s + h * c
-        let k = min(w / boxW, h / boxH)     // scale of the photo-shaped rectangle that fits
-        let mx = 0.5 - k * w / (2 * boxW), my = 0.5 - k * h / (2 * boxH)
-        setValue(.number(degrees), module: m.key, field: "rotation")
-        setValue(.number(degrees == 0 ? 0 : mx), module: m.key, field: "cl")
-        setValue(.number(degrees == 0 ? 1 : 1 - mx), module: m.key, field: "cr")
-        setValue(.number(degrees == 0 ? 0 : my), module: m.key, field: "ct")
-        setValue(.number(degrees == 0 ? 1 : 1 - my), module: m.key, field: "cb")
+        let margins = Perspective.cropMargins(g, width: size.width, height: size.height)
+        setValue(.number(g.rotation), module: m.key, field: "rotation")
+        setValue(.number(g.vertical), module: m.key, field: "lensshift_v")
+        setValue(.number(g.horizontal), module: m.key, field: "lensshift_h")
+        setValue(.number(g.shear), module: m.key, field: "shear")
+        setValue(.number(margins.cl), module: m.key, field: "cl")
+        setValue(.number(margins.cr), module: m.key, field: "cr")
+        setValue(.number(margins.ct), module: m.key, field: "ct")
+        setValue(.number(margins.cb), module: m.key, field: "cb")
         setValue(.number(2), module: m.key, field: "cropmode")   // "original format", as computed here
+    }
+
+    /// The photo as darktable's rotate and perspective module receives it, for
+    /// measuring: no rotation, perspective or crop, and no orientation flip
+    /// (which comes after it), so what's found is in the module's own terms.
+    private func renderUncorrected(_ engine: Engine) async -> CGImage? {
+        var overrides: [Engine.Override] = []
+        if let r = rotateModule, r.enabled {
+            overrides += [("rotation", 0.0), ("lensshift_v", 0), ("lensshift_h", 0), ("shear", 0),
+                          ("cl", 0), ("cr", 1), ("ct", 0), ("cb", 1)].map { .init(module: r.key, field: $0.0, value: $0.1) }
+        }
+        if let c = cropModule, c.enabled {
+            overrides += [("cx", 0.0), ("cy", 0), ("cw", 1), ("ch", 1)].map { .init(module: c.key, field: $0.0, value: $0.1) }
+        }
+        if let f = modules.first(where: { $0.op == "flip" }), f.enabled {
+            overrides.append(.init(module: f.key, field: "orientation", value: 0))   // ORIENTATION_NONE
+        }
+        return try? await engine.render(maxPixels: 1200, hdr: false, displayHeadroom: 1, wantOverlay: false,
+                                        overrides: overrides).image
+    }
+
+    /// Like Lightroom's Upright "Vertical": the rotation and vertical
+    /// perspective that make the photo's near-vertical lines vertical.
+    func autoUpright() async {
+        guard let engine, url != nil, let size = rotateInSize else { return }
+        await settleEdits()
+        guard let image = await renderUncorrected(engine) else { return }
+        let fit = await Task.detached(priority: .userInitiated) { Perspective.fitUpright(image, inputSize: size) }.value
+        guard let fit else {
+            errorMessage = "No vertical lines found to correct in this photo."
+            return
+        }
+        var g = perspective
+        g.rotation = fit.rotation
+        g.vertical = fit.vertical
+        if g != perspective { setGeometry(g) }
     }
 
     /// Levels the photo, the way Lightroom's and Photomator's levelling do:
@@ -1707,18 +1782,7 @@ extension EditorModel {
     func autoStraighten() async {
         guard let engine, url != nil else { return }
         await settleEdits()
-        var overrides: [Engine.Override] = []
-        if let r = rotateModule, r.enabled {
-            overrides += [("rotation", 0.0), ("cl", 0), ("cr", 1), ("ct", 0), ("cb", 1)].map {
-                .init(module: r.key, field: $0.0, value: $0.1)
-            }
-        }
-        if let c = cropModule, c.enabled {
-            overrides += [("cx", 0.0), ("cy", 0), ("cw", 1), ("ch", 1)].map { .init(module: c.key, field: $0.0, value: $0.1) }
-        }
-        guard let frame = try? await engine.render(maxPixels: 1200, hdr: false, displayHeadroom: 1, wantOverlay: false,
-                                                   overrides: overrides) else { return }
-        let image = frame.image
+        guard let image = await renderUncorrected(engine) else { return }
         let degrees = await Task.detached(priority: .userInitiated) { () -> Double? in
             if let tilt = LevelDetector.tilt(of: image) { return tilt }
             let request = VNDetectHorizonRequest()

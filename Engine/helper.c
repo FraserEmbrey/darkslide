@@ -521,7 +521,9 @@ static void _apply_overrides(view_t *v, JsonArray *ov)
     const char *field = json_object_get_string_member_with_default(e, "field", "");
     dt_introspection_field_t *f = m && *field ? _find_field(m, field) : NULL;
     // no field: only "enable", running the module as it is (for its histogram)
-    if(!m || (*field && (!f || f->header.type != DT_INTROSPECTION_TYPE_FLOAT))) continue;
+    if(!m || (*field && (!f || (f->header.type != DT_INTROSPECTION_TYPE_FLOAT && f->header.type != DT_INTROSPECTION_TYPE_INT
+                                 && f->header.type != DT_INTROSPECTION_TYPE_ENUM && f->header.type != DT_INTROSPECTION_TYPE_BOOL))))
+      continue;
     int k = 0;
     while(k < n && pending[k].m != m) k++;
     if(k == n)
@@ -535,8 +537,19 @@ static void _apply_overrides(view_t *v, JsonArray *ov)
       pending[n++] = (pending_t){ m, piece, params, m->enabled };
     }
     if(f)
-      *(float *)((char *)pending[k].params + f->header.offset)
-        = CLAMP((float)json_object_get_double_member_with_default(e, "value", 0), f->Float.Min, f->Float.Max);
+    {
+      char *at = (char *)pending[k].params + f->header.offset;
+      const double value = json_object_get_double_member_with_default(e, "value", 0);
+      switch(f->header.type)
+      {
+        case DT_INTROSPECTION_TYPE_FLOAT: *(float *)at = CLAMP((float)value, f->Float.Min, f->Float.Max); break;
+        case DT_INTROSPECTION_TYPE_INT: *(int *)at = CLAMP((int)lround(value), f->Int.Min, f->Int.Max); break;
+        // a choice (such as flip's orientation) or an on/off setting
+        case DT_INTROSPECTION_TYPE_ENUM: *(int *)at = (int)lround(value); break;
+        case DT_INTROSPECTION_TYPE_BOOL: *(gboolean *)at = value != 0; break;
+        default: break;
+      }
+    }
     pending[k].enable |= json_object_get_boolean_member_with_default(e, "enable", FALSE);
   }
   for(int k = 0; k < n; k++)

@@ -198,12 +198,29 @@ struct CropPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 ParamSlider(label: "Straighten", value: model.straighten, defaultValue: 0, range: -45...45,
                             isInteger: false, unit: "°", trackColors: nil) { model.setStraighten(($0 * 100).rounded() / 100) }
+                // perspective: darktable's lens shifts, shown as Lightroom's -100 to 100
+                ParamSlider(label: "Vertical", value: model.perspective.vertical * 100, defaultValue: 0, range: -100...100,
+                            isInteger: true, unit: "", trackColors: nil) { v in
+                    var g = model.perspective
+                    g.vertical = (v / 100 * 1000).rounded() / 1000
+                    model.setGeometry(g)
+                }
+                .help("Corrects converging verticals, as a shift lens would: buildings leaning back when the camera was tilted up")
+                ParamSlider(label: "Horizontal", value: model.perspective.horizontal * 100, defaultValue: 0, range: -100...100,
+                            isInteger: true, unit: "", trackColors: nil) { v in
+                    var g = model.perspective
+                    g.horizontal = (v / 100 * 1000).rounded() / 1000
+                    model.setGeometry(g)
+                }
+                .help("Corrects a wall shot at an angle, turning it to face the camera")
                 HStack {
-                    Button("Auto Straighten", systemImage: "level") { Task { await model.autoStraighten() } }
+                    Button("Level", systemImage: "level") { Task { await model.autoStraighten() } }
                         .help("Levels the photo from its straight lines, or failing those its horizon")
+                    Button("Upright", systemImage: "building.2") { Task { await model.autoUpright() } }
+                        .help("Makes the photo's vertical lines vertical: levels it and corrects converging verticals")
                     Spacer()
                     Button("Reset") { model.resetCrop() }
-                        .help("Back to the whole photo, unrotated")
+                        .help("Back to the whole photo, unrotated and uncorrected")
                 }
             }
 

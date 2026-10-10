@@ -178,6 +178,9 @@ struct ModuleCard: View {
             } else if expandedBinding.wrappedValue, module.op == "rgbcurve" {
                 RGBCurveControls(module: module)
                     .transition(.opacity)
+            } else if expandedBinding.wrappedValue, module.op == "colorequal" {
+                HueCurveControls(module: module)
+                    .transition(.opacity)
             } else if expandedBinding.wrappedValue, module.op == "demosaic" {
                 DemosaicControls(module: module)
                     .transition(.opacity)

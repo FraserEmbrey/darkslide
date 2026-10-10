@@ -101,6 +101,7 @@ enum Presentation {
         "channelmixerrgb": "Scene white",
         "toneequal": "Shadows and highlights",
         "rgbcurve": "RGB curve",
+        "colorequal": "Hue curves",
         "rgblevels": "RGB levels",
     ]
 
@@ -131,6 +132,7 @@ enum Presentation {
         "denoiseprofile": ["noise", "noise reduction"],
         "lens": ["distortion", "vignetting", "chromatic aberration", "lens correction"],
         "ashift": ["perspective", "keystone", "straighten", "level"],
+        "colorequal": ["hue", "hsl", "colour equaliser", "color equalizer", "colour mixer", "color mixer"],
         "highlights": ["highlight recovery", "clipped", "blown"],
         "filmicrgb": ["tone mapping", "contrast", "film"],
         "sigmoid": ["tone mapping", "contrast"],

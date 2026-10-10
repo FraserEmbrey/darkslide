@@ -700,6 +700,19 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop channel test: instances \(modules.filter { $0.op == "rgbcurve" }.map { "\($0.key) '\($0.instanceName)' \($0.enabled)" }), shown \(curveInfoKey ?? "-")\n".data(using: .utf8)!)
                 }
             }
+            // TestHueCurves: launch argument (-TestHueCurves YES) for testing: shows the hue
+            // curves card and lifts blue's saturation and shifts green's hue
+            if UserDefaults.standard.bool(forKey: "TestHueCurves") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    filter = .all
+                    search = "hue curves"
+                    guard let m = modules.first(where: { $0.op == "colorequal" }) else { return }
+                    expanded.insert(m.key)
+                    setValue(.number(1.6), module: m.key, field: "sat_blue")
+                    setValue(.number(30), module: m.key, field: "hue_green")
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in

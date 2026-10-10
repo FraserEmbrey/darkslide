@@ -111,8 +111,48 @@ final class Library {
         return nil
     }
 
-    /// the photo selected in the grid, map or strip (the metadata window shows it)
-    var selection: URL?
+    /// the current photo in the grid, map or strip (the metadata window shows
+    /// it, arrows move it); setting it selects that photo alone
+    var selection: URL? {
+        didSet { if !extending { selected = selection.map { [$0] } ?? [] } }
+    }
+    /// every selected photo: ⌘-click adds or removes one, ⇧-click a range
+    private(set) var selected: Set<URL> = []
+    private var extending = false
+
+    /// a click in the grid, with the keys held
+    func click(_ url: URL, command: Bool, shift: Bool) {
+        if shift, let anchor = selection,
+           let a = items.firstIndex(where: { $0.url == anchor }), let b = items.firstIndex(where: { $0.url == url }) {
+            let range = items[min(a, b)...max(a, b)].map(\.url)
+            extending = true
+            selected = command ? selected.union(range) : Set(range)
+            extending = false
+        } else if command {
+            extending = true
+            if selected.contains(url) {
+                selected.remove(url)
+                // the current photo moves to another selected one, if it was this
+                if selection == url { selection = items.first { selected.contains($0.url) }?.url }
+            } else {
+                selected.insert(url)
+                selection = url
+            }
+            extending = false
+        } else {
+            selection = url
+        }
+    }
+
+    func selectAll() {
+        extending = true
+        selected = Set(items.map(\.url))
+        if selection == nil { selection = items.first?.url }
+        extending = false
+    }
+
+    /// the selected photos in the grid's order
+    var selectedInOrder: [URL] { items.map(\.url).filter(selected.contains) }
 
     /// the folder shown most recently, which stays in the sidebar and on the
     /// map, across launches too

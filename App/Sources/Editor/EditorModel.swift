@@ -890,6 +890,27 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop paste test: undone, exposure \(ev())\n".data(using: .utf8)!)
                 }
             }
+            // TestMultiPaste: launch argument (-TestMultiPaste YES) for testing: edits this photo,
+            // copies, selects the folder's other photos with ⌘-click and pastes onto them
+            if UserDefaults.standard.bool(forKey: "TestMultiPaste") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    setValue(.number(1.6), module: "exposure:0", field: "exposure")
+                    try? await Task.sleep(for: .seconds(2))
+                    copyAdjustments()
+                    try? await Task.sleep(for: .seconds(1))
+                    toggleLibrary()
+                    try? await Task.sleep(for: .seconds(2))
+                    let others = library.items.map(\.url).filter { $0 != self.url }
+                    if let first = others.first { library.click(first, command: false, shift: false) }
+                    for o in others.dropFirst() { library.click(o, command: true, shift: false) }
+                    FileHandle.standardError.write("Develop multi test: selected \(library.selectedInOrder.map(\.lastPathComponent)), targets \(pasteTargets.count)\n".data(using: .utf8)!)
+                    pasteAdjustments()
+                    try? await Task.sleep(for: .seconds(4))
+                    let dir = self.url?.deletingLastPathComponent().path ?? ""
+                    FileHandle.standardError.write("Develop multi test: sidecars \(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted())\n".data(using: .utf8)!)
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -2544,7 +2565,7 @@ extension EditorModel {
 
     /// where Paste puts them: the open photo, or the library's selection
     var pasteTargets: [URL] {
-        if showingLibrary { return library.selection.map { [$0] } ?? [] }
+        if showingLibrary { return library.selectedInOrder }
         return url.map { [$0] } ?? []
     }
 

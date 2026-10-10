@@ -217,6 +217,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func installKeys(model: EditorModel) {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // ⌘A in the library selects every photo (in a text field it's the text's)
+            if event.keyCode == 0, event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
+               model.showingLibrary, !(NSApp.keyWindow?.firstResponder is NSText) {
+                model.library.selectAll()
+                return nil
+            }
             guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
                   !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
             switch event.keyCode {

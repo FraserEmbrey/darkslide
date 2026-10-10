@@ -72,9 +72,13 @@ struct ItemMenu: View {
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
         if let model {
             Divider()
+            // on a selected photo, paste goes to every selected one
+            let targets = model.library.selected.contains(item.url) ? model.library.selectedInOrder : [item.url]
             Button("Copy Adjustments") { model.copyAdjustments(from: item.url) }
-            Button("Paste Adjustments") { model.pasteAdjustments(onto: [item.url]) }
-                .disabled(model.copiedAdjustments == nil || model.copiedAdjustments?.source == item.url)
+            Button(targets.count > 1 ? "Paste Adjustments to \(targets.count) Photos" : "Paste Adjustments") {
+                model.pasteAdjustments(onto: targets)
+            }
+            .disabled(model.copiedAdjustments == nil || targets == [model.copiedAdjustments?.source])
         }
         let exports = (model?.catalog.exports(of: item.url) ?? []).sorted { $0.date > $1.date }
         if !exports.isEmpty {
@@ -237,6 +241,7 @@ struct LibraryGrid: View {
         .onKeyPress(.return) { open(model.library.selection); return .handled }
         .onKeyPress(.leftArrow) { move(-1); return .handled }
         .onKeyPress(.rightArrow) { move(1); return .handled }
+
     }
 
     private var emptyText: String {
@@ -257,7 +262,7 @@ struct LibraryGrid: View {
     }
 
     private func cell(_ item: LibraryItem) -> some View {
-        let selected = model.library.selection == item.url
+        let selected = model.library.selected.contains(item.url)
         return VStack(spacing: 6) {
             Thumbnail(item: item)
                 .frame(height: 140)
@@ -283,7 +288,11 @@ struct LibraryGrid: View {
         .contextMenu { ItemMenu(item: item) }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { open(item.url) }
-        .simultaneousGesture(TapGesture().onEnded { model.library.selection = item.url; focused = true })
+        .simultaneousGesture(TapGesture().onEnded {
+            let keys = NSEvent.modifierFlags
+            model.library.click(item.url, command: keys.contains(.command), shift: keys.contains(.shift))
+            focused = true
+        })
     }
 
     private func open(_ url: URL?) {

@@ -134,7 +134,7 @@ Film LUTs only cover 0 to 1. Engine patch 0004 makes LUT 3D scale any pixel brig
 As in Photos:
 - **Edit › Copy Adjustments (⇧⌘C)** copies the open photo's edit, or the selected one's in the library.
 - **Copy Some Adjustments… (⌥⇧⌘C)** gives a checklist of the edit's modules, with white balance, lens correction and orientation unticked because they belong to the photo.
-- **Paste Adjustments (⇧⌘V)** pastes onto the open photo, or the photo selected in the library.
+- **Paste Adjustments (⇧⌘V)** pastes onto the open photo, or every photo selected in the library. In the grid, click selects one photo, ⌘-click adds or removes one, ⇧-click selects a range and ⌘A selects all; the right-click menu on a selected photo pastes to the whole selection. The single current photo (arrows, Return, Info, the map) is the last one clicked.
 - **Right-click menu:** library photos also have Copy Adjustments and Paste Adjustments.
 - **Camera style shortcut:** Apply Camera Style moves to ⌥⌘C.
 

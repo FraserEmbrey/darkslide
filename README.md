@@ -118,6 +118,12 @@ Image › Crop and Straighten (⌘K, or C on its own), or the toolbar's crop but
 
 Both are ordinary edits, so they undo, save to the XMP and open in darktable.
 
+### Presets and instances
+
+Each card's ⋯ menu lists darktable's presets for the module, with names written "group | name" gathered into submenus. It can also save the current settings as a preset (any camera, lens and exposure, not applied automatically, as darktable's "store new preset" defaults), delete your own presets, add a new instance of the module, and delete an extra instance.
+
+The engine reads and writes `data.presets` in Develop's darktable database. It lists the presets matching each module's version, leaving out the automatically applied workflow defaults. darktable stores its own presets as "_builtin_name" and shows them without the prefix, as Develop does. Applying copies the stored settings, and the blending where its version matches. New instances are numbered as darktable shows them ("Exposure 1"); a name not marked as given is replaced from presets, so the engine marks it. Deleting an instance switches it off and renames it out of sight, as for local adjustments, since darktable's removal is interface code.
+
 ### Local adjustments
 
 The Local adjustments card adds linear and radial gradients that brighten or darken part of the photo. Each is its own exposure instance, named "Local n", masked by one darktable drawn shape (a gradient or an ellipse), so the sidecar carries it as darktable would. Select one to show its shape on the photo:
@@ -191,7 +197,7 @@ For faster iteration on the Swift side, `swift run` works if `DEVELOP_ENGINE` po
 - **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
 - **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
 - **White balance:** The temperature module stores RGB multipliers. Kelvin and tint are worked out in darktable's GUI code, so they need a custom editor.
-- **Not supported yet:** perspective correction and other on-canvas tools, masks, curves, presets, multiple instances, ratings and other library metadata.
+- **Not supported yet:** masks other than linear and radial gradients (paths, brushes, parametric masks), and local adjustments other than exposure.
 
 ## Licence
 

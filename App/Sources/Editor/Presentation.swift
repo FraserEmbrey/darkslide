@@ -144,7 +144,11 @@ enum Presentation {
 
     /// the name a module is shown under
     static func title(of module: EngineModule) -> String {
-        displayNames[module.op] ?? module.name.capitalizedSentence
+        let base = displayNames[module.op] ?? module.name.capitalizedSentence
+        // a second or later instance is told apart by its name (darktable numbers them)
+        guard !module.key.hasSuffix(":0"), !module.instanceName.isEmpty,
+              !module.instanceName.hasPrefix("_builtin_") else { return base }
+        return "\(base) \(module.instanceName)"
     }
 
     static func matches(_ module: EngineModule, search: String) -> Bool {

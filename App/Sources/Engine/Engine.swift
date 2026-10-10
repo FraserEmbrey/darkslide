@@ -284,6 +284,31 @@ actor Engine {
         try await request(["cmd": "shape", "module": module], as: ShapeReply.self)
     }
 
+    struct PresetInfo: Decodable, Hashable {
+        let op: String
+        let name: String        // as stored; darktable's own start "_builtin_"
+        let title: String       // as shown
+        let builtin: Bool
+    }
+    private struct PresetsReply: Decodable { let presets: [PresetInfo] }
+
+    /// darktable's presets for the open photo's modules (its own and the user's)
+    func presets() async throws -> [PresetInfo] {
+        try await request(["cmd": "presets"], as: PresetsReply.self).presets
+    }
+
+    func applyPreset(_ name: String, module: String) async throws -> [EngineModule] {
+        try await request(["cmd": "apply_preset", "module": module, "name": name], as: ModulesReply.self).modules
+    }
+
+    func savePreset(_ name: String, module: String) async throws {
+        _ = try await request(["cmd": "save_preset", "module": module, "name": name])
+    }
+
+    func deletePreset(_ name: String, op: String) async throws {
+        _ = try await request(["cmd": "delete_preset", "op": op, "name": name])
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

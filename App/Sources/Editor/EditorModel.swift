@@ -106,6 +106,8 @@ final class EditorModel {
     var localShape: LocalShape?
     var pendingShape: ShapeEdit?
     var sendingShape = false
+    /// darktable's presets for the open photo's modules
+    var presetList: [Engine.PresetInfo] = []
     /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
     var curveChannel = 0
     /// the module curveInfo describes
@@ -504,7 +506,8 @@ final class EditorModel {
         // is on, and in Active, when either curve is
         let channels = channelCurveModule
         return modules.filter { ($0.applicable ?? true) && (!($0.deprecated ?? false) || $0.enabled || $0.inHistory)
-            && !Self.isChannelCurve($0) && !Self.isLocal($0) && $0.instanceName != Self.deletedLocalName }
+            && !Self.isChannelCurve($0) && !Self.isLocal($0)
+            && $0.instanceName != Self.deletedLocalName && $0.instanceName != Self.deletedInstanceName }
             .map { m in
                 guard let channels, m.op == "rgbcurve" else { return m }
                 var shown = m
@@ -787,6 +790,27 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("deleted first")
                 }
             }
+            // TestPresets: launch argument (-TestPresets YES) for testing: a new exposure
+            // instance, a darktable preset applied to diffuse, then the instance deleted
+            if UserDefaults.standard.bool(forKey: "TestPresets") {
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let shown = visibleModules.filter { $0.op == "exposure" || $0.op == "diffuse" }.map { "\(Presentation.title(of: $0)) \($0.enabled)" }
+                        FileHandle.standardError.write("Develop presets test: \(s): presets \(presetList.count), diffuse \(presets(for: "diffuse").prefix(3).map(\.title)), shown \(shown)\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    filter = .all
+                    log("start")
+                    newInstance(of: "exposure:0")
+                    try? await Task.sleep(for: .seconds(3)); log("new instance")
+                    if let p = presets(for: "diffuse").first(where: { $0.title.contains("dehaze") }), let d = modules.first(where: { $0.op == "diffuse" }) {
+                        applyPreset(p, module: d.key)
+                    }
+                    try? await Task.sleep(for: .seconds(3)); log("preset")
+                    if let extra = modules.first(where: { $0.op == "exposure" && !$0.key.hasSuffix(":0") && !Self.isLocal($0) }) { deleteInstance(extra.key) }
+                    try? await Task.sleep(for: .seconds(3)); log("deleted")
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -864,6 +888,7 @@ final class EditorModel {
             openedWithEdit = reply.hadSidecar
             lensInfo = await Task.detached { Self.readLens(url) }.value
             await measureAutoExposure()
+            await loadPresets()
             if !reply.hadSidecar { await applyNewPhotoDefaults() }
             requestRender()
         } catch {
@@ -2217,6 +2242,92 @@ extension EditorModel {
                     try? await engine.setEllipse(module: key, center: center, a: a, b: b, border: border)
                 }
                 requestRender()
+            }
+        }
+    }
+}
+
+// MARK: - Presets and instances
+
+extension EditorModel {
+    func presets(for op: String) -> [Engine.PresetInfo] { presetList.filter { $0.op == op } }
+
+    func loadPresets() async {
+        guard let engine else { return }
+        presetList = (try? await engine.presets()) ?? []
+    }
+
+    func applyPreset(_ preset: Engine.PresetInfo, module: String) {
+        guard let engine else { return }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "Apply \(preset.title)")
+            do {
+                modules = try await engine.applyPreset(preset.name, module: module)
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't apply \(preset.title): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func savePreset(named name: String, module: String) {
+        guard let engine, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        Task {
+            await settleEdits()
+            do {
+                try await engine.savePreset(name.trimmingCharacters(in: .whitespaces), module: module)
+                await loadPresets()
+            } catch {
+                errorMessage = "Couldn't save the preset: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func deletePreset(_ preset: Engine.PresetInfo) {
+        guard let engine, !preset.builtin else { return }
+        Task {
+            try? await engine.deletePreset(preset.name, op: preset.op)
+            await loadPresets()
+        }
+    }
+
+    /// another instance of a module, after it and at its defaults, as
+    /// darktable's "new instance"; it opens ready to edit
+    func newInstance(of key: String) {
+        guard let engine else { return }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "New Instance")
+            do {
+                let reply = try await engine.addInstance(of: key, name: "")
+                modules = reply.modules
+                expanded.insert(reply.added)
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't add an instance: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// as with local adjustments, deleting switches the instance off and
+    /// renames it out of sight (darktable's removal is interface code)
+    nonisolated static let deletedInstanceName = "Deleted instance"
+
+    func deleteInstance(_ key: String) {
+        guard let engine else { return }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "Delete Instance")
+            do {
+                try await engine.enable(module: key, on: false)
+                modules = try await engine.renameInstance(key, to: Self.deletedInstanceName)
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = error.localizedDescription
             }
         }
     }

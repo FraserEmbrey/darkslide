@@ -159,6 +159,7 @@ struct ModuleCard: View {
                         model.setAuto(!model.isAuto(module), module: module)
                     }
                 }
+                ModuleMenu(module: module, title: title)
                 CardIconButton(systemImage: "arrow.counterclockwise", help: "Reset \(title)") {
                     model.reset(module: module.key)
                 }
@@ -1056,5 +1057,83 @@ struct LensfunPicker: View {
     private func findCameras() async {
         guard let engine = model.engineForPickers, cameraSearch.count >= 2 else { cameras = []; return }
         cameras = (try? await engine.lensfunCameras(matching: cameraSearch)) ?? []
+    }
+}
+
+/// A card's menu: darktable's presets for the module (grouped where their
+/// names are, as "group | name"), saving the settings as a preset, and
+/// instances.
+struct ModuleMenu: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+    let title: String
+    @State private var naming = false
+    @State private var presetName = ""
+
+    private struct Group: Identifiable { let id: String; let presets: [Engine.PresetInfo] }
+
+    /// presets named "group | name" gather under their group
+    private var groups: (loose: [Engine.PresetInfo], grouped: [Group]) {
+        let all = model.presets(for: module.op)
+        var loose: [Engine.PresetInfo] = []
+        var grouped: [String: [Engine.PresetInfo]] = [:]
+        var order: [String] = []
+        for p in all {
+            let parts = p.title.components(separatedBy: " | ")
+            if parts.count > 1 {
+                if grouped[parts[0]] == nil { order.append(parts[0]) }
+                grouped[parts[0], default: []].append(p)
+            } else {
+                loose.append(p)
+            }
+        }
+        return (loose, order.map { Group(id: $0, presets: grouped[$0]!) })
+    }
+
+    var body: some View {
+        Menu {
+            let g = groups
+            if g.loose.isEmpty && g.grouped.isEmpty {
+                Text("No presets")
+            }
+            ForEach(g.loose, id: \.name) { p in presetItem(p, label: p.title) }
+            ForEach(g.grouped) { group in
+                Menu(group.id.capitalizedSentence) {
+                    ForEach(group.presets, id: \.name) { p in
+                        presetItem(p, label: p.title.components(separatedBy: " | ").dropFirst().joined(separator: " | "))
+                    }
+                }
+            }
+            Divider()
+            Button("Save as Preset…") { presetName = ""; naming = true }
+            let own = model.presets(for: module.op).filter { !$0.builtin }
+            if !own.isEmpty {
+                Menu("Delete Preset") {
+                    ForEach(own, id: \.name) { p in Button(p.title) { model.deletePreset(p) } }
+                }
+            }
+            Divider()
+            Button("New Instance") { model.newInstance(of: module.key) }
+            if !module.key.hasSuffix(":0") {
+                Button("Delete Instance", role: .destructive) { model.deleteInstance(module.key) }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Presets and instances of \(title)")
+        .alert("Save \(title) as a Preset", isPresented: $naming) {
+            TextField("Name", text: $presetName)
+            Button("Save") { model.savePreset(named: presetName, module: module.key) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saved in Develop's darktable presets, for any photo.")
+        }
+    }
+
+    private func presetItem(_ p: Engine.PresetInfo, label: String) -> some View {
+        Button(label) { model.applyPreset(p, module: module.key) }
     }
 }

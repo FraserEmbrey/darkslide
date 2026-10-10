@@ -34,6 +34,8 @@
 
 #include "common/colorspaces.h"
 #include "common/darktable.h"
+#include "common/database.h"
+#include <sqlite3.h>
 #include "common/film.h"
 #include "common/image.h"
 #include "common/image_cache.h"
@@ -938,6 +940,14 @@ static void _cmd_add_instance(JsonObject *o)
     g_strlcpy(m->multi_name, name, sizeof(m->multi_name));
     m->multi_name_hand_edited = TRUE;
   }
+  else
+  {
+    // numbered, as darktable shows instances; reloading the defaults can
+    // leave the name of an automatically applied workflow preset
+    snprintf(m->multi_name, sizeof(m->multi_name), "%d", m->multi_priority);
+    // marked as given, or darktable names it again from presets
+    m->multi_name_hand_edited = TRUE;
+  }
   // off until it's given settings
   dt_dev_add_history_item_ext(&H.edit.dev, m, FALSE, TRUE);
   m->enabled = FALSE;
@@ -1321,6 +1331,153 @@ static void _cmd_rename_instance(JsonObject *o)
   JsonBuilder *b = _ok();
   _add_modules(b);
   _ok_done(b);
+}
+
+// ---------------------------------------------------------------- presets
+
+// darktable's module presets live in data.presets: its own (write-protected,
+// added by each module's init_presets at startup) and the user's.
+// {"cmd":"presets"} -> those for the open photo's modules at their versions,
+// without the ones applied automatically (darktable's workflow defaults)
+static void _cmd_presets(void)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "presets");
+  json_builder_begin_array(b);
+  GHashTable *seen = g_hash_table_new(g_str_hash, g_str_equal);
+  for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+  {
+    dt_iop_module_t *m = l->data;
+    if(g_hash_table_contains(seen, m->op)) continue;
+    g_hash_table_add(seen, m->op);
+    sqlite3_stmt *stmt;
+    sqlite3_prepare_v2(dt_database_get(darktable.db),
+                       "SELECT name, writeprotect FROM data.presets"
+                       " WHERE operation = ?1 AND op_version = ?2 AND autoapply = 0"
+                       " ORDER BY writeprotect DESC, LOWER(name)", -1, &stmt, NULL);
+    sqlite3_bind_text(stmt, 1, m->op, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, m->version());
+    while(sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      json_builder_begin_object(b);
+      json_builder_set_member_name(b, "op");
+      json_builder_add_string_value(b, m->op);
+      const char *name = (const char *)sqlite3_column_text(stmt, 0);
+      json_builder_set_member_name(b, "name");
+      json_builder_add_string_value(b, name);
+      // darktable's own presets are stored as "_builtin_<name>" and shown without it
+      json_builder_set_member_name(b, "title");
+      json_builder_add_string_value(b, g_str_has_prefix(name, "_builtin_") ? name + strlen("_builtin_") : name);
+      json_builder_set_member_name(b, "builtin");
+      json_builder_add_boolean_value(b, sqlite3_column_int(stmt, 1) != 0);
+      json_builder_end_object(b);
+    }
+    sqlite3_finalize(stmt);
+  }
+  g_hash_table_destroy(seen);
+  json_builder_end_array(b);
+  _ok_done(b);
+}
+
+// {"cmd":"apply_preset","module":"exposure:0","name":"..."}: its settings
+// (and blending, where saved with one) onto that module, as one edit
+static void _cmd_apply_preset(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!m) return _error("unknown module");
+  sqlite3_stmt *stmt;
+  sqlite3_prepare_v2(dt_database_get(darktable.db),
+                     "SELECT op_params, enabled, blendop_params, blendop_version FROM data.presets"
+                     " WHERE operation = ?1 AND op_version = ?2 AND name = ?3", -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, m->op, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 2, m->version());
+  sqlite3_bind_text(stmt, 3, json_object_get_string_member_with_default(o, "name", ""), -1, SQLITE_TRANSIENT);
+  if(sqlite3_step(stmt) != SQLITE_ROW)
+  {
+    sqlite3_finalize(stmt);
+    return _error("no such preset");
+  }
+  const void *params = sqlite3_column_blob(stmt, 0);
+  const int size = sqlite3_column_bytes(stmt, 0);
+  const gboolean enabled = sqlite3_column_int(stmt, 1) != 0;
+  const void *blend = sqlite3_column_blob(stmt, 2);
+  const int blend_size = sqlite3_column_bytes(stmt, 2);
+  const int blend_version = sqlite3_column_int(stmt, 3);
+  if(!params || size != m->params_size)
+  {
+    sqlite3_finalize(stmt);
+    return _error("this preset is for another version of the module");
+  }
+  memcpy(m->params, params, size);
+  if(blend && m->blend_params && blend_version == dt_develop_blend_version()
+     && blend_size == sizeof(dt_develop_blend_params_t))
+    dt_iop_commit_blend_params(m, (const dt_develop_blend_params_t *)blend);
+  sqlite3_finalize(stmt);
+  _commit(m, enabled);
+  JsonBuilder *b = _ok();
+  _add_modules(b);
+  _ok_done(b);
+}
+
+// {"cmd":"save_preset","module":"exposure:0","name":"..."}: the module's
+// settings as a user preset, as darktable's "store new preset" does with its
+// defaults (any camera, lens and exposure; not applied automatically)
+static void _cmd_save_preset(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  const char *name = json_object_get_string_member_with_default(o, "name", "");
+  if(!m) return _error("unknown module");
+  if(!*name) return _error("a preset needs a name");
+  sqlite3_stmt *stmt;
+  // a darktable preset of the same name stays as it is
+  sqlite3_prepare_v2(dt_database_get(darktable.db),
+                     "SELECT 1 FROM data.presets WHERE operation = ?1 AND op_version = ?2 AND name = ?3 AND writeprotect = 1",
+                     -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, m->op, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 2, m->version());
+  sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
+  const gboolean protected_name = sqlite3_step(stmt) == SQLITE_ROW;
+  sqlite3_finalize(stmt);
+  if(protected_name) return _error("darktable has a preset with that name");
+  sqlite3_prepare_v2(dt_database_get(darktable.db),
+                     "INSERT OR REPLACE INTO data.presets"
+                     " (name, description, model, maker, lens, iso_min, iso_max, exposure_min, exposure_max,"
+                     "  aperture_min, aperture_max, focal_length_min, focal_length_max, autoapply,"
+                     "  filter, format, def, writeprotect, operation, op_version, op_params, enabled,"
+                     "  blendop_params, blendop_version, multi_priority, multi_name, multi_name_hand_edited)"
+                     " VALUES (?1, '', '%', '%', '%', 0, 340282346638528859811704183484516925440.0, 0, 100000000,"
+                     "  0, 100000000, 0, 1000, 0, 0, 0, 0, 0, ?2, ?3, ?4, ?5, ?6, ?7, 0, '', 0)",
+                     -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, m->op, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 3, m->version());
+  sqlite3_bind_blob(stmt, 4, m->params, m->params_size, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 5, m->enabled);
+  if(m->blend_params)
+    sqlite3_bind_blob(stmt, 6, m->blend_params, sizeof(dt_develop_blend_params_t), SQLITE_TRANSIENT);
+  else
+    sqlite3_bind_null(stmt, 6);
+  sqlite3_bind_int(stmt, 7, dt_develop_blend_version());
+  const int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  if(rc != SQLITE_DONE) return _error("couldn't save the preset");
+  _ok_done(_ok());
+}
+
+// {"cmd":"delete_preset","op":"exposure","name":"..."}: a user preset only
+static void _cmd_delete_preset(JsonObject *o)
+{
+  sqlite3_stmt *stmt;
+  sqlite3_prepare_v2(dt_database_get(darktable.db),
+                     "DELETE FROM data.presets WHERE operation = ?1 AND name = ?2 AND writeprotect = 0", -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, json_object_get_string_member_with_default(o, "op", ""), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, json_object_get_string_member_with_default(o, "name", ""), -1, SQLITE_TRANSIENT);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  _ok_done(_ok());
 }
 
 static void _cmd_styles(void)
@@ -1989,6 +2146,10 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "set_shape")) _cmd_set_shape(o);
     else if(!strcmp(cmd, "shape")) _cmd_shape(o);
     else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
+    else if(!strcmp(cmd, "presets")) _cmd_presets();
+    else if(!strcmp(cmd, "apply_preset")) _cmd_apply_preset(o);
+    else if(!strcmp(cmd, "save_preset")) _cmd_save_preset(o);
+    else if(!strcmp(cmd, "delete_preset")) _cmd_delete_preset(o);
     else if(!strcmp(cmd, "reset_all")) _cmd_reset_all();
     else if(!strcmp(cmd, "reset")) _cmd_reset(o);
     else if(!strcmp(cmd, "modules")) _cmd_modules();

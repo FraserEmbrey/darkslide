@@ -175,3 +175,7 @@ For faster iteration on the Swift side, `swift run` works if `DEVELOP_ENGINE` po
 ## Licence
 
 GPL-3.0-or-later. It links darktable, which is GPL, so the app as a whole is too.
+
+## Licence
+
+GPL-3.0-or-later, the same as darktable. The engine links against darktable, `Engine/patches` modifies it, and the Metal kernels are translated from darktable's OpenCL code, so the app is distributed under darktable's terms. The full text is in `LICENSE`. The libraries darktable brings in keep their own licences: rawspeed and LibRaw (LGPL) and Lensfun (LGPL, with its lens database under CC BY-SA).

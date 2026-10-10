@@ -35,7 +35,7 @@ struct InspectorView: View {
             } else {
                 ScrollView {
                     VStack(spacing: 10) {
-                        if model.search.isEmpty, model.decodedTIFF != nil, !model.openedAsHDR, let d = model.decoderInUse {
+                        if model.search.isEmpty, model.decodedTIFF != nil, let d = model.decoderInUse {
                             // raw-only modules are hidden: say why, and how to have them
                             Label("Decoded by \(d), so darktable's raw tools (demosaic, raw denoise, hot pixels, raw chromatic aberration) don't apply. Choose darktable in Image › Raw Decoder to use them, if it can read this file, or convert it to DNG.",
                                   systemImage: "info.circle")

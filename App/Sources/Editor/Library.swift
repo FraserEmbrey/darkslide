@@ -426,7 +426,7 @@ final class Library {
         Task.detached(priority: .utility) {
             let image = Self.cachedRender(for: url) ?? Self.embeddedPreview(for: url)
             let isRaw = Self.rawExtensions.contains(url.pathExtension.lowercased())
-            let hdr = !isRaw && AppleRawFallback.isHDR(url)
+            let hdr = isRaw ? AppleRawFallback.rawHasGainMap(url) : AppleRawFallback.isHDR(url)
             await MainActor.run {
                 self.loading.remove(url)
                 if let image { self.thumbnails[url] = image }

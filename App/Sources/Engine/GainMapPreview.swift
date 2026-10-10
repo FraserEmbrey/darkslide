@@ -59,6 +59,27 @@ enum GainMapPreview {
         return out
     }
 
+    /// An HDR image (RGBA float, SDR white at 1) brought within SDR white the
+    /// way an HDR photo's SDR version looks: everything below half of white is
+    /// left alone, and above that each pixel's largest channel is rolled off
+    /// smoothly (extended Reinhard) so the image's peak lands on white, hue
+    /// kept. Core Image's toneMapHeadroom darkens the midtones too, a stop or
+    /// so on an iPhone HDR photo; this keeps them as the photo's own SDR base has them.
+    static func rollOffToSDR(_ px: UnsafeMutableBufferPointer<Float>) {
+        let knee: Float = 0.5
+        var peak: Float = 1
+        for i in stride(from: 0, to: px.count - 3, by: 4) { peak = max(peak, px[i], px[i + 1], px[i + 2]) }
+        guard peak > 1 else { return }
+        let white = (peak - knee) / (1 - knee), white2 = white * white
+        for i in stride(from: 0, to: px.count - 3, by: 4) {
+            let m = max(px[i], px[i + 1], px[i + 2])
+            guard m > knee else { continue }
+            let t = (m - knee) / (1 - knee)
+            let s = (knee + (1 - knee) * t * (1 + t / white2) / (1 + t)) / m
+            px[i] *= s; px[i + 1] *= s; px[i + 2] *= s
+        }
+    }
+
     /// Per channel, (sdr + k)^(1 - w) × (hdr + k)^w − k: applying the gain map
     /// at weight w, with the format's small offset k so blacks stay defined.
     static func blend(sdr: Data, hdr: Data, weight: Float) -> Data {

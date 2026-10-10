@@ -88,6 +88,8 @@ typedef struct helper_t
   view_t edit;              // the photo being edited
   view_t before;            // the photo as it was when opened, for comparison
   gboolean hdr;             // current output mode of the pipes
+  // the photo is an HDR source (see _sync_hdr_white), as the app said on open
+  gboolean hdr_source;
   // the module whose input histogram the app shows (a curve's); its commit
   // turns collection off outside darktable's preview pipe, so it's turned
   // back on before each render
@@ -426,6 +428,8 @@ static const char *_load(const dt_imgid_t imgid)
   return _load_view(&H.edit, imgid);
 }
 
+static void _sync_hdr_white(void);
+
 static void _cmd_open(JsonObject *o)
 {
   const char *path = json_object_get_string_member_with_default(o, "path", NULL);
@@ -466,6 +470,8 @@ static void _cmd_open(JsonObject *o)
   const char *err = _load(imgid);
   if(!err) err = _load_view(&H.before, imgid);
   if(err) return _error(err);
+  H.hdr_source = json_object_get_boolean_member_with_default(o, "hdrSource", FALSE);
+  if(H.hdr_source) _sync_hdr_white();
 
   const dt_image_t *img = &H.edit.dev.image_storage;
   JsonBuilder *b = _ok();
@@ -732,6 +738,8 @@ static void _commit(dt_iop_module_t *m, const gboolean enable)
   // no_image=TRUE: we drive our own pipe, so skip darktable's GUI redraw path
   dt_dev_add_history_item_ext(&H.edit.dev, m, enable, TRUE);
   H.edit.dirty = TRUE;
+  // a new output profile changes where an HDR source's white belongs
+  if(H.hdr_source && !strcmp(m->op, "colorout")) _sync_hdr_white();
 }
 
 static void _cmd_set(JsonObject *o)
@@ -1509,6 +1517,103 @@ static dt_iop_module_t *_first_module(const char *op)
     if(!strcmp(m->op, op) && m->multi_priority == 0) return m;
   }
   return NULL;
+}
+
+// An HDR source (a gain map, HLG or PQ image, or Apple's rendering of a raw,
+// decoded by macOS) is already rendered: SDR white at 1.0, highlights above,
+// and no tone mapper. darktable's PQ and HLG output profiles put 1.0 at the
+// format's peak (10,000 or 1,000 nits), so such a photo would come out over
+// two stops too bright with everything above SDR white clipped. Two instances
+// named "HDR white", just before the output profile, place it for an HDR
+// profile: exposure brings SDR white to the reference white (203 nits), and
+// for HLG, levels on luminance undoes the HLG display's system gamma (1.2),
+// which would otherwise darken the midtones (BT.2100's inverse OOTF). They're
+// off for an SDR profile. They go into the history with the profile change,
+// so undo takes all of it back together; the app hides them.
+#define HDR_WHITE_NAME "HDR white"
+
+// the start of dt_iop_rgblevels_params_t in iop/rgblevels.c (not in a header)
+typedef struct dt_iop_rgblevels_params_head_t
+{
+  int autoscale;              // DT_IOP_RGBLEVELS_LINKED_CHANNELS = 0
+  int preserve_colors;        // DT_RGB_NORM_LUMINANCE = 1
+  float levels[3][3];
+} dt_iop_rgblevels_params_head_t;
+
+// the HDR white instance of a module, made (off, before the output profile) if asked
+static dt_iop_module_t *_hdr_white_instance(const char *op, dt_iop_module_t *colorout, const gboolean make)
+{
+  for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+  {
+    dt_iop_module_t *x = l->data;
+    if(!strcmp(x->op, op) && !strcmp(x->multi_name, HDR_WHITE_NAME)) return x;
+  }
+  dt_iop_module_t *base = _first_module(op);
+  if(!make || !base) return NULL;
+  dt_dev_add_history_item_ext(&H.edit.dev, base, FALSE, TRUE);
+  dt_iop_module_t *m = dt_dev_module_duplicate(&H.edit.dev, base);
+  if(!m) return NULL;
+  dt_iop_reload_defaults(m);
+  g_strlcpy(m->multi_name, HDR_WHITE_NAME, sizeof(m->multi_name));
+  m->multi_name_hand_edited = TRUE;
+  m->enabled = FALSE;
+  dt_ioppr_move_iop_before(&H.edit.dev, m, colorout);
+  return m;
+}
+
+static void _sync_hdr_white(void)
+{
+  dt_iop_module_t *colorout = _first_module("colorout");
+  if(!colorout) return;
+  dt_introspection_field_t *tf = _find_field(colorout, "type");
+  const int type = tf ? *(int *)((char *)colorout->params + tf->header.offset) : DT_COLORSPACE_SRGB;
+  const gboolean hlg = type == DT_COLORSPACE_HLG_REC2020 || type == DT_COLORSPACE_HLG_P3;
+  const gboolean pq = type == DT_COLORSPACE_PQ_REC2020 || type == DT_COLORSPACE_PQ_P3;
+  const float ev = hlg ? log2f(203.0f / 1000.0f) : pq ? log2f(203.0f / 10000.0f) : 0.0f;
+  // levels' grey point for an exponent of 1/1.2: inv_gamma = 10^((grey - 0.5) / 0.5)
+  const float grey = 0.5f + 0.5f * log10f(1.0f / 1.2f);
+  gboolean changed = FALSE;
+
+  dt_iop_module_t *exposure = _hdr_white_instance("exposure", colorout, ev != 0.0f);
+  dt_introspection_field_t *ef = exposure ? _find_field(exposure, "exposure") : NULL;
+  if(ef && (exposure->enabled != (ev != 0.0f)
+            || fabsf(*(float *)((char *)exposure->params + ef->header.offset) - ev) > 1e-4f))
+  {
+    // a plain scale: manual, no black offset, no exposure bias or highlight compensation
+    memcpy(exposure->params, exposure->default_params, exposure->params_size);
+    *(float *)((char *)exposure->params + ef->header.offset) = ev;
+    const char *off[] = { "compensate_exposure_bias", "compensate_hilite_pres" };
+    for(int i = 0; i < 2; i++)
+    {
+      dt_introspection_field_t *f = _find_field(exposure, off[i]);
+      if(f) *(gboolean *)((char *)exposure->params + f->header.offset) = FALSE;
+    }
+    exposure->enabled = ev != 0.0f;
+    dt_dev_add_history_item_ext(&H.edit.dev, exposure, exposure->enabled, TRUE);
+    changed = TRUE;
+  }
+
+  dt_iop_module_t *levels = _hdr_white_instance("rgblevels", colorout, hlg);
+  if(levels && levels->enabled != hlg)
+  {
+    dt_iop_rgblevels_params_head_t *p = levels->params;
+    memcpy(levels->params, levels->default_params, levels->params_size);
+    p->autoscale = 0;           // linked channels
+    p->preserve_colors = 1;     // luminance
+    p->levels[0][0] = 0.0f;
+    p->levels[0][1] = grey;
+    p->levels[0][2] = 1.0f;
+    levels->enabled = hlg;
+    dt_dev_add_history_item_ext(&H.edit.dev, levels, levels->enabled, TRUE);
+    changed = TRUE;
+  }
+
+  if(!changed) return;
+  H.edit.dirty = TRUE;
+  dt_dev_pixelpipe_cleanup_nodes(&H.edit.pipe);
+  dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
 }
 
 static void _cmd_look(JsonObject *o)

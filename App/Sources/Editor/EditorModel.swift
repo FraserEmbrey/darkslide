@@ -544,7 +544,8 @@ final class EditorModel {
         let channels = channelCurveModule
         return modules.filter { ($0.applicable ?? true) && (!($0.deprecated ?? false) || $0.enabled || $0.inHistory)
             && !Self.isChannelCurve($0) && !Self.isLocal($0)
-            && $0.instanceName != Self.deletedLocalName && $0.instanceName != Self.deletedInstanceName }
+            && $0.instanceName != Self.deletedLocalName && $0.instanceName != Self.deletedInstanceName
+            && $0.instanceName != Self.hdrWhiteName }
             .map { m in
                 guard let channels, m.op == "rgbcurve" else { return m }
                 var shown = m
@@ -615,7 +616,7 @@ final class EditorModel {
                 defer { statusNote = nil }
                 let tiff = try await Task.detached(priority: .userInitiated) { try AppleRawFallback.decodedHDR(for: url) }.value
                 AppleRawFallback.sidecarToDecoded(original: url, decoded: tiff, raw: false)
-                reply = try await engine.open(tiff)
+                reply = try await engine.open(tiff, hdrSource: true)
                 decodedTIFF = tiff
                 openedAsHDR = true
             } else if !isRaw, AppleRawFallback.needsAppleDecode(url) {
@@ -628,7 +629,7 @@ final class EditorModel {
                     exr ? try AppleRawFallback.decodedHDR(for: url) : try AppleRawFallback.decodedImage(for: url)
                 }.value
                 AppleRawFallback.sidecarToDecoded(original: url, decoded: tiff, raw: false)
-                reply = try await engine.open(tiff)
+                reply = try await engine.open(tiff, hdrSource: exr)
                 decodedTIFF = tiff
                 openedAsHDR = exr
             } else if isRaw, case .apple(let version) = RawDecoderChoice.stored(for: url) {
@@ -654,12 +655,14 @@ final class EditorModel {
             // StartZoom: launch argument (-StartZoom 1) for testing
             let startZoom = UserDefaults.standard.double(forKey: "StartZoom")
             zoom = startZoom > 0 ? .scale(startZoom) : .fit
-            // TestExport: launch arguments (-TestExport /path/file.jpg -TestExportFormat jpegGainMap) for testing
+            // TestExport: launch arguments (-TestExport /path/file.jpg -TestExportFormat jpegGainMap
+            // -TestExportProfile 1) for testing
             if let path = UserDefaults.standard.string(forKey: "TestExport") {
                 FileHandle.standardError.write("Develop test export to \(path)\n".data(using: .utf8)!)
                 var t = ExportSettings()
                 t.format = ExportFormat(rawValue: UserDefaults.standard.string(forKey: "TestExportFormat") ?? "") ?? .jpeg
                 t.longEdge = 3000
+                if let p = ExportProfile(rawValue: UserDefaults.standard.integer(forKey: "TestExportProfile")) { t.profile = p }
                 Task { await export(t, to: URL(fileURLWithPath: path), remember: false) }
             }
             // TestSDREdits: launch argument (-TestSDREdits YES) for testing, steps SDR brightness a few times
@@ -1102,7 +1105,7 @@ final class EditorModel {
         do {
             try await engine.save()
             hasUnsavedChanges = false
-            if let tiff = decodedTIFF, let url { AppleRawFallback.sidecarToOriginal(original: url, decoded: tiff, raw: !openedAsHDR) }
+            if let tiff = decodedTIFF, let url { AppleRawFallback.sidecarToOriginal(original: url, decoded: tiff, raw: decoderInUse != nil) }
             if let url {
                 catalog.recordEdit(url)
                 library.noteEdited(url)
@@ -1507,6 +1510,12 @@ final class EditorModel {
                     let elapsed = ContinuousClock.now - start
                     lastRenderMs = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
                     lastRenderWasDraft = draft
+                    // DumpFrame: launch argument (-DumpFrame /path/frame.png) for testing, writes each full frame
+                    if let path = UserDefaults.standard.string(forKey: "DumpFrame"), crop == nil, !draft,
+                       let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, frame.image, nil)
+                        CGImageDestinationFinalize(dest)
+                    }
                     // LogRenderTimes: launch argument (-LogRenderTimes YES) for testing
                     if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
                         // mean of the first channel, to check edits reach the frame
@@ -1598,8 +1607,8 @@ final class EditorModel {
                 try await exportGainMapJPEG(settings, to: url, engine: engine)
                 lastExport = url
                 FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
-            } else if settings.format == .heif || ExportExtras.load().any {
-                // HEIF, and anything with a frame or watermark, through Core Image
+            } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings) {
+                // HEIF, anything with a frame or watermark, and an HDR source made SDR, through Core Image
                 try await exportThroughCoreImage(settings, to: url, engine: engine)
                 lastExport = url
             } else {
@@ -1625,23 +1634,44 @@ final class EditorModel {
     /// Colour management is off for the encoding step, so nothing is converted
     /// twice; the TIFF's metadata (EXIF and the rest) goes into the file.
     /// Used for HEIF always, and for the others when there's a frame or watermark.
+    /// whether an export is an HDR source (see Engine.sdrFromHDR) made SDR:
+    /// darktable's own export would clip its highlights, so it's tone mapped
+    private func toneMapsExport(_ settings: ExportSettings) -> Bool {
+        guard openedAsHDR, settings.format != .jpegGainMap else { return false }
+        let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
+        return !HDRTarget(darktableProfile: profile).isHDR
+    }
+
     private func exportThroughCoreImage(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
         let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("develop-export-\(UUID().uuidString)")
-        let float = settings.format == .tiff && settings.bitDepth == 32
+        let toneMap = toneMapsExport(settings)
+        let float = toneMap || (settings.format == .tiff && settings.bitDepth == 32)
         let extras = ExportExtras.load()
-        // smaller by the frame's share, so the framed picture is the size chosen
+        // smaller by the frame's share, so the framed picture is the size chosen;
+        // an HDR source to be tone mapped comes out linear and unclipped
         let tiff = try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: float ? 32 : 16,
                                            maxEdge: extras.any ? extras.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge,
-                                           profile: profile)
+                                           profile: toneMap ? 4 : profile)
         defer { try? FileManager.default.removeItem(at: tiff) }
         let quality = Double(settings.quality) / 100
         try await Task.detached(priority: .userInitiated) {
-            let tagged = Self.colourSpace(forDarktableProfile: profile)
+            let tagged = toneMap ? nil : Self.colourSpace(forDarktableProfile: profile)
             // the values as darktable encoded them, or through its ICC profile
-            guard var image = tagged != nil ? CIImage(contentsOf: tiff, options: [.colorSpace: NSNull()]) : CIImage(contentsOf: tiff),
-                  let space = tagged ?? CIImage(contentsOf: tiff)?.colorSpace else {
-                throw EngineError(message: "Couldn't read darktable's export.")
+            var image: CIImage
+            let space: CGColorSpace
+            if toneMap {
+                guard let linear = CIImage(contentsOf: tiff, options: [.colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!]) else {
+                    throw EngineError(message: "Couldn't read darktable's export.")
+                }
+                image = Self.toneMappedToSDR(linear)
+                space = Self.colourSpace(forDarktableProfile: profile) ?? CGColorSpace(name: CGColorSpace.sRGB)!
+            } else {
+                guard let read = tagged != nil ? CIImage(contentsOf: tiff, options: [.colorSpace: NSNull()]) : CIImage(contentsOf: tiff),
+                      let s = tagged ?? CIImage(contentsOf: tiff)?.colorSpace else {
+                    throw EngineError(message: "Couldn't read darktable's export.")
+                }
+                (image, space) = (read, s)
             }
             if extras.any { image = extras.composite(image, white: tagged != nil ? Self.whiteLevel(forDarktableProfile: profile) : 1) }
             let context = tagged != nil ? CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()]) : CIContext()
@@ -1666,6 +1696,21 @@ final class EditorModel {
             }
         }.value
         FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+    }
+
+    /// An HDR image (SDR white at 1, linear Rec.2020) brought within SDR
+    /// white, as the engine's SDR renders of an HDR source are.
+    nonisolated static func toneMappedToSDR(_ image: CIImage) -> CIImage {
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!
+        let extent = image.extent.integral
+        let (w, h) = (Int(extent.width), Int(extent.height))
+        var px = Data(count: w * h * 16)
+        px.withUnsafeMutableBytes { raw in
+            CIContext(options: [.workingColorSpace: space])
+                .render(image, toBitmap: raw.baseAddress!, rowBytes: w * 16, bounds: extent, format: .RGBAf, colorSpace: space)
+            GainMapPreview.rollOffToSDR(raw.bindMemory(to: Float.self))
+        }
+        return CIImage(bitmapData: px, bytesPerRow: w * 16, size: CGSize(width: w, height: h), format: .RGBAf, colorSpace: space)
     }
 
     /// the value that is white (203 nits, reference white) in darktable's
@@ -2328,9 +2373,10 @@ extension EditorModel {
             try AppleRawFallback.decodedTIFF(for: url, version: version)
         }.value
         AppleRawFallback.sidecarToDecoded(original: url, decoded: decoded.url, raw: true)
-        let reply = try await engine.open(decoded.url)
+        let reply = try await engine.open(decoded.url, hdrSource: true)
         decodedTIFF = decoded.url
         decoderInUse = AppleRawFallback.versionName(decoded.version)
+        openedAsHDR = true
         return reply
     }
 
@@ -2620,6 +2666,9 @@ extension EditorModel {
     /// as with local adjustments, deleting switches the instance off and
     /// renames it out of sight (darktable's removal is interface code)
     nonisolated static let deletedInstanceName = "Deleted instance"
+    /// the engine's own exposure instance placing an HDR source's white for
+    /// an HDR profile (helper.c _sync_hdr_white); never shown or copied
+    nonisolated static let hdrWhiteName = "HDR white"
 
     func deleteInstance(_ key: String) {
         guard let engine else { return }
@@ -2780,7 +2829,7 @@ extension EditorModel {
     /// the edit's adjustments that could be copied, for Copy Some Adjustments
     var copyableModules: [EngineModule] {
         modules.filter { $0.enabled && $0.inHistory && $0.instanceName != Self.deletedLocalName
-            && $0.instanceName != Self.deletedInstanceName }
+            && $0.instanceName != Self.deletedInstanceName && $0.instanceName != Self.hdrWhiteName }
     }
 
     func copyAdjustments() {
@@ -2884,6 +2933,10 @@ extension EditorModel {
                     try await exportGainMapJPEG(settings, to: destination, engine: engine)
                 } else if target.type.conforms(to: .heic) {
                     settings.format = .heif
+                    settings.bitDepth = 8
+                    try await exportThroughCoreImage(settings, to: destination, engine: engine)
+                } else if openedAsHDR {
+                    settings.format = .jpeg
                     settings.bitDepth = 8
                     try await exportThroughCoreImage(settings, to: destination, engine: engine)
                 } else {

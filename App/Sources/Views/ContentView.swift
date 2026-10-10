@@ -216,7 +216,7 @@ struct ContentView: View {
         }
         var parts: [String] = []
         if !model.camera.isEmpty { parts.append(model.camera) }
-        if model.openedAsHDR { parts.append("HDR, decoded by macOS") } else if let d = model.decoderInUse, d != "darktable" { parts.append(d) }
+        if let d = model.decoderInUse, d != "darktable" { parts.append(model.openedAsHDR ? "HDR, \(d)" : d) } else if model.openedAsHDR { parts.append("HDR, decoded by macOS") }
         if let ms = model.lastRenderMs { parts.append("\(model.lastRenderWasDraft ? "draft" : "rendered") in \(ms) ms") }
         if model.hasUnsavedChanges { parts.append("edited") }
         return parts.joined(separator: " · ")

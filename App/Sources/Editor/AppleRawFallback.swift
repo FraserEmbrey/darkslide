@@ -5,9 +5,10 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Decoding through macOS, for what darktable can't read fully. For raws darktable can't decode (a Hasselblad multi-shot FFF, a camera
-/// too new for rawspeed and LibRaw), Apple's raw engine decodes the file to a
-/// linear, scene-referred 16-bit TIFF in Develop's cache, tagged linear
-/// Rec.2020, and darktable edits that. Everything else refers to the
+/// too new for rawspeed and LibRaw, an iPhone's ProRAW), Apple's raw engine
+/// renders the file as Photos shows it, in HDR (its tone curve, local tone
+/// mapping and highlights above SDR white), to a half-float linear Rec.2020
+/// TIFF in Develop's cache, and darktable edits that as an HDR photo. Everything else refers to the
 /// original: the library, Info, exports and the catalog. The edit's sidecar is
 /// kept beside the original (photo.fff.xmp) and copied to and from the
 /// cached TIFF's on open and save. darktable's raw steps (demosaic, raw white
@@ -43,26 +44,24 @@ enum AppleRawFallback {
             filter.decoderVersion = CIRAWDecoderVersion(rawValue: wanted)
         }
         let used = filter.decoderVersion.rawValue
-        let tiff = try cacheURL(for: url, suffix: "raw\(used.isEmpty || used == "None" ? "" : used)")
+        let tiff = try cacheURL(for: url, suffix: "rawhdr\(used.isEmpty || used == "None" ? "" : used)")
         if isFresh(tiff, for: url) { return (tiff, used) }
-        // scene-referred, as darktable expects: no tone curve, no added sharpening or noise reduction
-        filter.boostAmount = 0
-        filter.boostShadowAmount = 0
-        filter.sharpnessAmount = 0
-        filter.luminanceNoiseReductionAmount = 0
-        filter.colorNoiseReductionAmount = 0
-        filter.isGamutMappingEnabled = false
+        // Apple's own rendering, as Photos shows it: darktable has no tone
+        // mapper for a decoded image, and a scene-referred decode looks flat
+        // and too bright without one (a ProRAW's +3 EV baseline exposure
+        // relies on its tone curve and local tone map)
+        filter.extendedDynamicRangeAmount = 1
         guard let image = filter.outputImage else {
             throw EngineError(message: "macOS couldn't decode \(url.lastPathComponent).")
         }
-        let space = CGColorSpace(name: CGColorSpace.linearITUR_2020)!
-        let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!])
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!
+        let context = CIContext(options: [.workingColorSpace: space])
         // macOS reports the size of some raws it can't actually decode (a
         // Hasselblad multi-shot FFF) and returns black; don't edit that
         guard hasContent(image, context: context) else {
             throw EngineError(message: "Neither darktable nor macOS can decode \(url.lastPathComponent). Export it as DNG or TIFF from the camera maker's software (Phocus, for Hasselblad) and open that.")
         }
-        try writeTIFF(image, to: tiff, format: .RGBA16, space: space, context: context)
+        try writeTIFF(image, to: tiff, format: .RGBAh, space: space, context: context)
         return (tiff, used)
     }
 
@@ -90,15 +89,26 @@ enum AppleRawFallback {
     /// gain map image, so these are opened through macOS's HDR decode.
     static func isHDR(_ url: URL) -> Bool {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return false }
-        for type in [kCGImageAuxiliaryDataTypeISOGainMap, kCGImageAuxiliaryDataTypeHDRGainMap] {
-            if CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, type) != nil { return true }
-        }
+        if hasGainMap(src) { return true }
         // decoding is lazy: creating the image reads its colour space, not its pixels
         if let image = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
            let space = image.colorSpace {
             return CGColorSpaceUsesITUR_2100TF(space)
         }
         return false
+    }
+
+    /// Whether a raw carries an HDR gain map, as an iPhone's ProRAW does (for
+    /// its HDR rendering); a raw's colour space isn't checked, which would decode it.
+    static func rawHasGainMap(_ url: URL) -> Bool {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return false }
+        return hasGainMap(src)
+    }
+
+    private static func hasGainMap(_ src: CGImageSource) -> Bool {
+        [kCGImageAuxiliaryDataTypeISOGainMap, kCGImageAuxiliaryDataTypeHDRGainMap].contains {
+            CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, $0) != nil
+        }
     }
 
     /// formats darktable is built without, which macOS reads

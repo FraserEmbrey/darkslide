@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Foundation
 
 /// Runs darkroom-helper (the darktable engine) as a child process.
@@ -119,7 +120,10 @@ actor Engine {
 
     // MARK: Commands
 
-    func open(_ url: URL) async throws -> OpenReply {
+    /// `hdrSource`: an image already rendered with highlights above SDR white
+    /// (see sdrFromHDR and the helper's "HDR white"), decoded by macOS
+    func open(_ url: URL, hdrSource: Bool = false) async throws -> OpenReply {
+        sdrFromHDR = hdrSource
         // the last photo's frame mustn't stand in for this one
         lastHDRSource = nil
         lastSDRBase = nil
@@ -135,7 +139,7 @@ actor Engine {
         }
         defer { watchdog.cancel() }
         do {
-            return try await request(["cmd": "open", "path": url.path], as: OpenReply.self)
+            return try await request(["cmd": "open", "path": url.path, "hdrSource": hdrSource], as: OpenReply.self)
         } catch where hungOnOpen {
             throw EngineError(message: "The engine stopped responding while opening it, so it has been restarted. Try opening it again.")
         }
@@ -438,7 +442,9 @@ actor Engine {
     func render(maxPixels: Int, hdr: Bool, displayHeadroom: Double, wantOverlay: Bool,
                 before: Bool = false, crop: Crop? = nil, overrides: [Override] = [],
                 hdrLimit: Double? = nil, keepForRefresh: Bool = false) async throws -> Frame {
-        var body: [String: Any] = ["cmd": "render", "max": maxPixels, "hdr": hdr, "before": before]
+        // an HDR source's SDR render is its HDR render, tone mapped (see sdrFromHDR)
+        let toneMapped = !hdr && sdrFromHDR
+        var body: [String: Any] = ["cmd": "render", "max": maxPixels, "hdr": hdr || toneMapped, "before": before]
         if !overrides.isEmpty {
             body["overrides"] = overrides.map {
                 ["module": $0.module, "field": $0.field, "value": $0.value, "enable": $0.enable, "disable": $0.disable] as [String: Any]
@@ -448,8 +454,14 @@ actor Engine {
             body.merge(["scale": crop.scale, "x": crop.x, "y": crop.y, "w": crop.w, "h": crop.h]) { $1 }
         }
         let reply = try await request(body, as: RenderReply.self)
-        var frame = try frame(from: reply, hdr: hdr, keepForRefresh: keepForRefresh,
-                              displayHeadroom: displayHeadroom, wantOverlay: wantOverlay, hdrLimit: hdrLimit)
+        if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+            FileHandle.standardError.write("Develop render hdr \(hdr) toneMapped \(toneMapped) profile \(reply.outputProfile)\n".data(using: .utf8)!)
+        }
+        var frame = toneMapped
+            ? try toneMappedFrame(try self.frame(from: reply, hdr: true, keepForRefresh: false, displayHeadroom: 16,
+                                                 wantOverlay: false, hdrLimit: nil))
+            : try self.frame(from: reply, hdr: hdr, keepForRefresh: keepForRefresh,
+                             displayHeadroom: displayHeadroom, wantOverlay: wantOverlay, hdrLimit: hdrLimit)
         frame.processedSize = CGSize(width: reply.processedWidth, height: reply.processedHeight)
         if let w = reply.rotateInWidth, let h = reply.rotateInHeight { frame.rotateInSize = CGSize(width: w, height: h) }
         return frame
@@ -490,6 +502,34 @@ actor Engine {
                      isHDR: true, analysis: analysis, overlay: overlay, histogram: nil, ms: reply.ms,
                      pixels: pixels, width: w, height: h)
     }
+
+    /// Set while the open photo came from an HDR source (a gain map, HLG or
+    /// PQ image, or Apple's rendering of a raw): it is already rendered, with
+    /// highlights above SDR white and no tone mapper to bring them down, so an
+    /// SDR render would clip them. SDR renders are then the HDR render tone
+    /// mapped to SDR by Core Image, as macOS makes the SDR version of an HDR photo.
+    private var sdrFromHDR = false
+
+    /// An HDR frame tone mapped to SDR white, as an SDR frame (BGRA8 sRGB).
+    private func toneMappedFrame(_ hdr: Frame) throws -> Frame {
+        let (w, h) = (hdr.width, hdr.height)
+        var rolled = hdr.pixels
+        rolled.withUnsafeMutableBytes { GainMapPreview.rollOffToSDR($0.bindMemory(to: Float.self)) }
+        guard let space = hdr.image.colorSpace else { throw EngineError(message: "Couldn't tone map the HDR render.") }
+        let out = CIImage(bitmapData: rolled, bytesPerRow: w * 16, size: CGSize(width: w, height: h), format: .RGBAf, colorSpace: space)
+        var pixels = Data(count: w * h * 4)
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+        pixels.withUnsafeMutableBytes { buf in
+            Self.toneMapContext.render(out, toBitmap: buf.baseAddress!, rowBytes: w * 4,
+                                       bounds: CGRect(x: 0, y: 0, width: w, height: h), format: .BGRA8, colorSpace: srgb)
+        }
+        return Frame(image: try makeImage(pixels, width: w, height: h, space: CGColorSpace.sRGB, hdr: false),
+                     isHDR: false, analysis: nil, overlay: nil,
+                     histogram: RGBHistogram(bgra: pixels, width: w, height: h), ms: hdr.ms,
+                     pixels: pixels, width: w, height: h)
+    }
+
+    private static let toneMapContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!])
 
     /// The edit's position in darktable's history after the last reply; the
     /// undo stack records it.

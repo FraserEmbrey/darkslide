@@ -555,6 +555,8 @@ static void _apply_overrides(view_t *v, JsonArray *ov)
       }
     }
     pending[k].enable |= json_object_get_boolean_member_with_default(e, "enable", FALSE);
+    // "disable": runs the render without the module (a look's previews start from the photo without it)
+    if(json_object_get_boolean_member_with_default(e, "disable", FALSE)) pending[k].enable = FALSE;
   }
   for(int k = 0; k < n; k++)
   {

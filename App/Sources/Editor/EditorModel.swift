@@ -114,7 +114,18 @@ final class EditorModel {
             Task { await loadLook() }
         }
     }
-    var filmLooks: [FilmLook] = []
+    var filmLooks: [FilmLook] = [] {
+        didSet { films = Film.gather(filmLooks) }
+    }
+    var films: [Film] = []
+    /// starred films, by Film.id
+    var favouriteLooks = Set(UserDefaults.standard.stringArray(forKey: "FavouriteLooks") ?? []) {
+        didSet { UserDefaults.standard.set(Array(favouriteLooks).sorted(), forKey: "FavouriteLooks") }
+    }
+    var lookBrowserOpen = false
+    /// a small render of the photo without its film look, for the look previews
+    var lookPreviewBase: CGImage?
+    var lookPreviewBaseID = 0
     /// the open photo's film look (a path in the folder) and its strength, 0 to 100
     var currentLook: String?
     var lookStrength = 100.0
@@ -839,6 +850,9 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("applied")
                     setLookStrength(50)
                     try? await Task.sleep(for: .seconds(3)); log("half")
+                    if let f = films.first(where: { $0.name.contains("Velvia") }) { favouriteLooks.insert(f.id) }
+                    lookBrowserOpen = true
+                    try? await Task.sleep(for: .seconds(6)); log("browser")
                 }
             }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
@@ -2372,6 +2386,25 @@ extension EditorModel {
         guard let engine, url != nil, let r = try? await engine.look(folder: lutFolder?.path, file: nil, strength: nil) else { return }
         currentLook = r.file.isEmpty ? nil : r.file
         lookStrength = r.strength
+    }
+
+    /// the photo as it is without its look, small, for the browser's previews
+    func loadLookPreviewBase() async {
+        guard let engine, url != nil else { return }
+        await settleEdits()
+        var overrides: [Engine.Override] = []
+        if let lut = modules.first(where: { $0.op == "lut3d" && $0.key.hasSuffix(":0") }), lut.enabled {
+            overrides.append(.init(module: lut.key, field: "", value: 0, disable: true))
+        }
+        if let frame = try? await engine.render(maxPixels: 280, hdr: false, displayHeadroom: 1, wantOverlay: false,
+                                                overrides: overrides) {
+            lookPreviewBase = frame.image
+            lookPreviewBaseID += 1
+        }
+    }
+
+    func toggleFavourite(_ film: Film) {
+        if favouriteLooks.contains(film.id) { favouriteLooks.remove(film.id) } else { favouriteLooks.insert(film.id) }
     }
 
     /// applies a film look, or none, as one edit; a new look starts at full strength

@@ -49,3 +49,24 @@ struct FilmLook: Hashable, Identifiable {
         return (String(m.output.1), label)
     }
 }
+
+/// A film with its push and pull variants, as the browser shows it.
+struct Film: Identifiable, Hashable {
+    let group: [String]
+    let name: String
+    let looks: [FilmLook]
+    var id: String { (group + [name]).joined(separator: "/") }
+    /// the one a click applies: the normal one, or the only one
+    var main: FilmLook { looks.first { $0.variant == "Normal" } ?? looks[0] }
+
+    static func gather(_ looks: [FilmLook]) -> [Film] {
+        var order: [String] = []
+        var byID: [String: (group: [String], name: String, looks: [FilmLook])] = [:]
+        for l in looks {
+            let id = (l.group + [l.film]).joined(separator: "/")
+            if byID[id] == nil { order.append(id); byID[id] = (l.group, l.film, []) }
+            byID[id]!.looks.append(l)
+        }
+        return order.map { Film(group: byID[$0]!.group, name: byID[$0]!.name, looks: byID[$0]!.looks) }
+    }
+}

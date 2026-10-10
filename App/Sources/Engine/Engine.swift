@@ -391,6 +391,7 @@ actor Engine {
     struct Override: Sendable {
         let module: String, field: String, value: Double
         var enable = false
+        var disable = false
     }
 
     func render(maxPixels: Int, hdr: Bool, displayHeadroom: Double, wantOverlay: Bool,
@@ -399,7 +400,7 @@ actor Engine {
         var body: [String: Any] = ["cmd": "render", "max": maxPixels, "hdr": hdr, "before": before]
         if !overrides.isEmpty {
             body["overrides"] = overrides.map {
-                ["module": $0.module, "field": $0.field, "value": $0.value, "enable": $0.enable] as [String: Any]
+                ["module": $0.module, "field": $0.field, "value": $0.value, "enable": $0.enable, "disable": $0.disable] as [String: Any]
             }
         }
         if let crop {

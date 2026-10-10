@@ -27,6 +27,7 @@
                                                      -> exports through darktable's disk storage;
                                                         the extension is added; replies with the file
     {"cmd":"apply_style","name":"..."}              -> appends a style to the edit, returns modules
+    {"cmd":"add_instance","module":"rgbcurve:0","name":"channels"} -> a new instance after it
 
   GPL-3.0-or-later, as it links darktable.
 */
@@ -899,6 +900,48 @@ static void _cmd_modules(void)
   _ok_done(b);
 }
 
+// A new instance of a module, placed right after it with default settings:
+// {"cmd":"add_instance","module":"rgbcurve:0","name":"channels"} -> its key
+// and the module list. As darktable's duplicate button does, without the
+// GUI: the instance goes into the history (and so the sidecar, with its
+// name), and the pipe's nodes are rebuilt to include it.
+static void _cmd_add_instance(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *base = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!base) return _error("unknown module");
+  if(base->flags() & IOP_FLAGS_ONE_INSTANCE) return _error("this module can only be used once");
+  // the base must be in the history for the instance to be placed after it
+  dt_dev_add_history_item_ext(&H.edit.dev, base, FALSE, TRUE);
+  dt_iop_module_t *m = dt_dev_module_duplicate(&H.edit.dev, base);
+  if(!m) return _error("couldn't add an instance");
+  dt_iop_reload_defaults(m);
+  const char *name = json_object_get_string_member_with_default(o, "name", "");
+  if(*name)
+  {
+    g_strlcpy(m->multi_name, name, sizeof(m->multi_name));
+    m->multi_name_hand_edited = TRUE;
+  }
+  // off until it's given settings
+  dt_dev_add_history_item_ext(&H.edit.dev, m, FALSE, TRUE);
+  m->enabled = FALSE;
+  dt_dev_add_history_item_ext(&H.edit.dev, m, FALSE, TRUE);
+
+  dt_dev_pixelpipe_cleanup_nodes(&H.edit.pipe);
+  dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+  H.edit.dirty = TRUE;
+
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "added");
+  gchar *key = _module_key(m);
+  json_builder_add_string_value(b, key);
+  g_free(key);
+  _add_modules(b);
+  _ok_done(b);
+}
+
 static void _cmd_styles(void)
 {
   JsonBuilder *b = _ok();
@@ -1423,6 +1466,18 @@ static void _cmd_curve(JsonObject *o)
     for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
       json_builder_add_int_value(b, (gint64)piece->histogram[4 * i] + piece->histogram[4 * i + 1] + piece->histogram[4 * i + 2]);
   json_builder_end_array(b);
+  // and each channel's, for the red, green and blue curves
+  json_builder_set_member_name(b, "channels");
+  json_builder_begin_array(b);
+  for(int c = 0; c < 3; c++)
+  {
+    json_builder_begin_array(b);
+    if(piece && piece->histogram && piece->histogram_stats.bins_count > 0)
+      for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
+        json_builder_add_int_value(b, (gint64)piece->histogram[4 * i + c]);
+    json_builder_end_array(b);
+  }
+  json_builder_end_array(b);
   _ok_done(b);
 }
 
@@ -1545,6 +1600,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "set_curve")) _cmd_set_curve(o);
     else if(!strcmp(cmd, "curve")) _cmd_curve(o);
     else if(!strcmp(cmd, "auto_exposure")) _cmd_auto_exposure(o);
+    else if(!strcmp(cmd, "add_instance")) _cmd_add_instance(o);
     else if(!strcmp(cmd, "reset_all")) _cmd_reset_all();
     else if(!strcmp(cmd, "reset")) _cmd_reset(o);
     else if(!strcmp(cmd, "modules")) _cmd_modules();

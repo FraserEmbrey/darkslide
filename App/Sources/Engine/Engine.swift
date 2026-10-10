@@ -212,6 +212,18 @@ actor Engine {
         let linked: Bool
         let nodes: [[[Double]]]   // per channel: [x, y] points
         let histogram: [Int]      // the curve's input, 256 bins on its scale
+        var channels: [[Int]]? = nil   // the same, per red, green and blue
+    }
+
+    struct InstanceReply: Decodable {
+        let added: String
+        let modules: [EngineModule]
+    }
+
+    /// a new instance of a module, after it, off and at defaults; `name` is
+    /// kept in the sidecar, so the app can find the instance again
+    func addInstance(of module: String, name: String) async throws -> InstanceReply {
+        try await request(["cmd": "add_instance", "module": module, "name": name], as: InstanceReply.self)
     }
 
     /// an rgb curve's points and the histogram of its input (from the last render)

@@ -95,6 +95,10 @@ final class EditorModel {
         didSet { if curveEditorModule != oldValue, curveEditorModule != nil, url != nil { requestRender() } }
     }
     private(set) var curveInfo: Engine.CurveReply?
+    /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
+    var curveChannel = 0
+    /// the module curveInfo describes
+    private(set) var curveInfoKey: String?
     /// the latest curve edit, sent before the next render
     private var pendingCurve: (module: String, channel: Int, nodes: [CGPoint], linked: Bool)?
 
@@ -131,6 +135,8 @@ final class EditorModel {
     private var styleHistoryEnds: [Int] = []
     /// edits since the last style; undo is only offered while this is zero
     private(set) var editsSinceStyle = 0
+    private var creatingChannelCurve = false
+    private var stashedChannelCurve: (Int, [CGPoint])?
     /// the exposure Auto sets for the open photo (darktable's automatic rule)
     private(set) var autoExposure: Double?
 
@@ -481,7 +487,17 @@ final class EditorModel {
     /// darktable hides deprecated modules unless the photo uses one, and
     /// modules that can't work on this image (raw-only ones on a non-raw)
     private var usableModules: [EngineModule] {
-        modules.filter { ($0.applicable ?? true) && (!($0.deprecated ?? false) || $0.enabled || $0.inHistory) }
+        // the colour curves instance shows through the RGB curve card: the card
+        // is on, and in Active, when either curve is
+        let channels = channelCurveModule
+        return modules.filter { ($0.applicable ?? true) && (!($0.deprecated ?? false) || $0.enabled || $0.inHistory)
+            && !Self.isChannelCurve($0) }
+            .map { m in
+                guard let channels, m.op == "rgbcurve" else { return m }
+                var shown = m
+                shown.enabled = m.enabled || channels.enabled
+                return shown
+            }
     }
 
     var visibleModules: [EngineModule] {
@@ -666,6 +682,22 @@ final class EditorModel {
                     cropAspect = .r3x2
                     cropRect = CGRect(x: 0.1, y: 0.15, width: 0.6, height: 0.6)
                     fitCropToAspect()
+                }
+            }
+            // TestChannelCurve: launch argument (-TestChannelCurve YES) for testing: shows the
+            // RGB curve card on its red tab and lifts red, logging the frame's means
+            if UserDefaults.standard.bool(forKey: "TestChannelCurve") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    filter = .all
+                    search = "rgb curve"
+                    curveChannel = 1
+                    if let base = modules.first(where: { $0.op == "rgbcurve" && !Self.isChannelCurve($0) }) { expanded.insert(base.key) }
+                    try? await Task.sleep(for: .seconds(2))
+                    guard let base = modules.first(where: { $0.op == "rgbcurve" && !Self.isChannelCurve($0) }) else { return }
+                    setChannelCurve(base: base.key, channel: 0, nodes: [.zero, CGPoint(x: 0.5, y: 0.65), CGPoint(x: 1, y: 1)])
+                    try? await Task.sleep(for: .seconds(4))
+                    FileHandle.standardError.write("Develop channel test: instances \(modules.filter { $0.op == "rgbcurve" }.map { "\($0.key) '\($0.instanceName)' \($0.enabled)" }), shown \(curveInfoKey ?? "-")\n".data(using: .utf8)!)
                 }
             }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
@@ -995,10 +1027,14 @@ final class EditorModel {
         modules[m].enabled = on
         hasUnsavedChanges = true
         recordUndoStep(label: "\(on ? "Turn On" : "Turn Off") \(Presentation.title(of: modules[m]))")
+        // the RGB curve card switches its colour curves with it
+        let channels = modules[m].op == "rgbcurve" ? channelCurveModule?.key : nil
+        if let channels, let c = modules.firstIndex(where: { $0.key == channels }) { modules[c].enabled = on }
         // queued behind pending sets so the undo step resolves before it
         Task {
             await settleEdits()
             try? await engine?.enable(module: module, on: on)
+            if let channels { try? await engine?.enable(module: channels, on: on) }
             requestRender()
         }
     }
@@ -1009,7 +1045,10 @@ final class EditorModel {
             guard let engine else { return }
             await settleEdits()
             do {
+                // the RGB curve card resets its colour curves too
+                let channels = modules.first { $0.key == module }?.op == "rgbcurve" ? channelCurveModule?.key : nil
                 modules = try await engine.reset(module: module)
+                if let channels { modules = try await engine.reset(module: channels) }
                 hasUnsavedChanges = true
                 requestRender()
             } catch {
@@ -1088,8 +1127,14 @@ final class EditorModel {
                     if frame.processedSize.width > 0 { imageSize = frame.processedSize }
                     // the curve's histogram is of the module's input, which a curve edit
                     // doesn't change; and the points on screen are newer than the engine's
-                    if let key = curveEditorModule, crop == nil, curve == nil, pendingCurve == nil {
+                    // a curve shown for the first time (or a new colour curves instance)
+                    // is fetched whatever; asking turns its histogram on, so one more
+                    // render fills it
+                    if let key = curveEditorModule, crop == nil, (curve == nil && pendingCurve == nil) || curveInfoKey != key {
+                        let fresh = curveInfoKey != key
                         curveInfo = try? await engine.curve(module: key)
+                        curveInfoKey = key
+                        if fresh { renderRequested = true }
                     }
                     frameStraighten = renderStraighten
                     if crop == nil, !isCropping, !isSimulatingHeadroom { thumbnailFrame = frame.image }
@@ -1835,6 +1880,46 @@ extension EditorModel {
         return [Engine.Override(module: key, field: "", value: 0, enable: true)]
     }
 
+    /// The red, green and blue curves live in a second rgb curve instance
+    /// named "channels", in independent-channel mode, right after the linked
+    /// RGB curve: darktable's rgb curve holds either one linked curve or three
+    /// separate ones, and Photomator-style editing wants both. It's shown as
+    /// part of the RGB curve card, not as a module of its own.
+    nonisolated static let channelCurveName = "channels"
+    nonisolated static func isChannelCurve(_ m: EngineModule) -> Bool {
+        m.op == "rgbcurve" && m.instanceName == channelCurveName
+    }
+    var channelCurveModule: EngineModule? { modules.first(where: Self.isChannelCurve) }
+
+    /// A red, green or blue curve edit (channel 0, 1 or 2). The channel
+    /// instance is made on the first edit; points arriving while it's being
+    /// made are kept and the latest applied once it exists.
+    func setChannelCurve(base key: String, channel: Int, nodes: [CGPoint]) {
+        if let m = channelCurveModule {
+            setCurve(module: m.key, channel: channel, nodes: nodes, linked: false)
+            return
+        }
+        stashedChannelCurve = (channel, nodes)
+        guard !creatingChannelCurve, let engine else { return }
+        creatingChannelCurve = true
+        Task {
+            defer { creatingChannelCurve = false }
+            await settleEdits()
+            recordUndoStep(label: "RGB curve")
+            do {
+                let reply = try await engine.addInstance(of: key, name: Self.channelCurveName)
+                modules = reply.modules
+                curveEditorModule = reply.added
+                if let (c, n) = stashedChannelCurve {
+                    stashedChannelCurve = nil
+                    setCurve(module: reply.added, channel: c, nodes: n, linked: false)
+                }
+            } catch {
+                errorMessage = "Couldn't add the colour curves: \(error.localizedDescription)"
+            }
+        }
+    }
+
     /// A curve edit from the editor: shown at once, sent with the next render,
     /// one undo step per drag.
     func setCurve(module key: String, channel: Int, nodes: [CGPoint], linked: Bool = true) {
@@ -1844,10 +1929,11 @@ extension EditorModel {
         if editsSinceStyle == 0 { editsSinceStyle = 1 }
         if !modules[m].enabled { modules[m].enabled = true }
         if !hasUnsavedChanges { hasUnsavedChanges = true }
-        if var info = curveInfo {
+        if curveInfoKey == key, var info = curveInfo {
             var nodesByChannel = info.nodes
             if nodesByChannel.indices.contains(channel) { nodesByChannel[channel] = nodes.map { [Double($0.x), Double($0.y)] } }
-            info = Engine.CurveReply(enabled: true, compensated: true, linked: linked, nodes: nodesByChannel, histogram: info.histogram)
+            info = Engine.CurveReply(enabled: true, compensated: true, linked: linked, nodes: nodesByChannel,
+                                     histogram: info.histogram, channels: info.channels)
             curveInfo = info
         }
         pendingCurve = (key, channel, nodes, linked)

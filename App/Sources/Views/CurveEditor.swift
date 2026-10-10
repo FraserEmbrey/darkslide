@@ -46,6 +46,7 @@ enum CurveMath {
 struct CurveEditor: View {
     let nodes: [CGPoint]
     let histogram: [Int]
+    var tint: Color = .primary          // a colour curve's channel
     let onChange: ([CGPoint]) -> Void
 
     /// the nodes while a drag is under way, ahead of the model
@@ -85,7 +86,7 @@ struct CurveEditor: View {
                         }
                         path.addLine(to: CGPoint(x: plot.maxX, y: plot.maxY))
                         path.closeSubpath()
-                        ctx.fill(path, with: .color(.primary.opacity(0.12)))
+                        ctx.fill(path, with: .color(tint.opacity(tint == .primary ? 0.12 : 0.22)))
                     }
                     // guides
                     for g in Self.guides {
@@ -102,7 +103,7 @@ struct CurveEditor: View {
                         let p = toView(CGPoint(x: x, y: CurveMath.evaluate(nodes, at: x)))
                         if i == 0 { curve.move(to: p) } else { curve.addLine(to: p) }
                     }
-                    ctx.stroke(curve, with: .color(.primary.opacity(0.9)), lineWidth: 1.5)
+                    ctx.stroke(curve, with: .color(tint.opacity(0.9)), lineWidth: 1.5)
                 }
                 // guide labels: name and stops from middle grey
                 ForEach(Array(Self.guides.enumerated()), id: \.offset) { i, g in
@@ -231,34 +232,68 @@ struct CurveEditor: View {
     }
 }
 
-/// The rgb curve card: the linked RGB curve, darktable's "preserve colors"
-/// and a note on the scale.
+/// The rgb curve card: the linked RGB curve and the red, green and blue
+/// curves (a second rgb curve instance, see EditorModel.setChannelCurve),
+/// darktable's "preserve colors" and a note on the scale.
 struct RGBCurveControls: View {
     @Environment(EditorModel.self) private var model
     let module: EngineModule
+    private var channel: Int { model.curveChannel }
+
+    private static let tints: [Color] = [.primary, Color(.sRGB, red: 0.95, green: 0.3, blue: 0.3),
+                                         Color(.sRGB, red: 0.3, green: 0.85, blue: 0.35), Color(.sRGB, red: 0.35, green: 0.5, blue: 1)]
+
+    /// the instance the shown curve lives in
+    private var shownKey: String? { channel == 0 ? module.key : model.channelCurveModule?.key }
 
     private var nodes: [CGPoint] {
-        let raw = model.curveInfo?.nodes.first?.map { CGPoint(x: $0[0], y: $0[1]) } ?? []
+        let identity = [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)]
+        guard let key = shownKey, model.curveInfoKey == key, let info = model.curveInfo else { return identity }
+        let index = channel == 0 ? 0 : channel - 1
+        guard info.nodes.indices.contains(index) else { return identity }
+        let raw = info.nodes[index].map { CGPoint(x: $0[0], y: $0[1]) }
         // an untouched curve is its two ends; the guide handles ride on it
-        if raw.count < 2 || raw.allSatisfy({ abs($0.x - $0.y) < 1e-4 }) {
-            return [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)]
-        }
+        if raw.count < 2 || raw.allSatisfy({ abs($0.x - $0.y) < 1e-4 }) { return identity }
         return raw
+    }
+
+    private var histogram: [Int] {
+        guard let info = model.curveInfo else { return [] }
+        if channel == 0 { return info.histogram }
+        return info.channels?[safe: channel - 1] ?? info.histogram
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CurveEditor(nodes: nodes, histogram: model.curveInfo?.histogram ?? []) { updated in
-                model.setCurve(module: module.key, channel: 0, nodes: updated)
+            WideSegments(options: ["RGB", "Red", "Green", "Blue"],
+                         selection: Binding(get: { model.curveChannel }, set: { model.curveChannel = $0 }))
+            CurveEditor(nodes: nodes, histogram: histogram, tint: Self.tints[channel]) { updated in
+                if channel == 0 {
+                    model.setCurve(module: module.key, channel: 0, nodes: updated)
+                } else {
+                    model.setChannelCurve(base: module.key, channel: channel - 1, nodes: updated)
+                }
             }
-            if let field = module.fields.first(where: { $0.name == "preserve_colors" }) {
+            if channel == 0, let field = module.fields.first(where: { $0.name == "preserve_colors" }) {
                 FieldControl(op: module.op, field: field) { model.setValue($0, module: module.key, field: field.name) }
             }
-            Text("Middle grey is at the centre. Brighter than the top (+2.4 EV), the curve carries on along its last slope, so HDR highlights aren't clipped.")
+            Text(channel == 0
+                 ? "Middle grey is at the centre. Brighter than the top (+2.4 EV), the curve carries on along its last slope, so HDR highlights aren't clipped."
+                 : "Raise a colour's curve to add it, lower it to add its opposite. Applied after the RGB curve.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .onAppear { model.curveEditorModule = module.key }
-        .onDisappear { if model.curveEditorModule == module.key { model.curveEditorModule = nil } }
+        .onAppear { model.curveEditorModule = shownKey ?? module.key }
+        .onChange(of: model.curveChannel) { model.curveEditorModule = shownKey ?? module.key }
+        .onChange(of: model.channelCurveModule?.key) { model.curveEditorModule = shownKey ?? module.key }
+        .onDisappear {
+            if model.curveEditorModule == module.key || model.curveEditorModule == model.channelCurveModule?.key {
+                model.curveEditorModule = nil
+            }
+        }
     }
+}
+
+private extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }

@@ -44,6 +44,15 @@ struct InspectorView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 4)
                         }
+                        // the Look and Local adjustments cards come up in searches too
+                        if !model.search.isEmpty, model.url != nil {
+                            if FuzzySearch.matches(model.search, in: ["look", "film look", "film simulation", "lut", "camera style", "style", "preset look"]) {
+                                LookCard()
+                            }
+                            if FuzzySearch.matches(model.search, in: ["local adjustments", "linear gradient", "radial gradient", "graduated filter", "mask", "dodge", "burn", "vignette"]) {
+                                LocalAdjustmentsCard()
+                            }
+                        }
                         if model.search.isEmpty {
                             AutoButton()
                             // the SDR card first, so switching views with its Show button

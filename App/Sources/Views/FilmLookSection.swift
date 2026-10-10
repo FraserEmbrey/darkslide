@@ -69,12 +69,8 @@ struct LookBrowser: View {
         case "Favourites": films = films.filter { model.favouriteLooks.contains($0.id) }
         default: films = films.filter { $0.group.first == scope }
         }
-        let words = search.lowercased().split(separator: " ").map(String.init)
-        guard !words.isEmpty else { return films }
-        return films.filter { f in
-            let text = (f.group + [f.name]).joined(separator: " ").lowercased()
-            return words.allSatisfy { text.contains($0) }
-        }
+        guard !search.trimmingCharacters(in: .whitespaces).isEmpty else { return films }
+        return films.filter { FuzzySearch.matches(search, in: $0.group + [$0.name]) }
     }
 
     /// by folder below the scope; films at the top level last, as Other

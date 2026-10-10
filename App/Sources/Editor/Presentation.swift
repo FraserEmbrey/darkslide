@@ -153,7 +153,8 @@ enum Presentation {
 
     static func matches(_ module: EngineModule, search: String) -> Bool {
         let names = [module.name, displayNames[module.op] ?? ""] + (searchAliases[module.op] ?? [])
-        return names.contains { $0.localizedCaseInsensitiveContains(search) }
+        // every word must match one name, forgiving typing mistakes
+        return names.contains { FuzzySearch.matches(search, in: [$0]) }
     }
 
     /// Enum choices in a chosen order, with an explanation of each, keyed

@@ -45,8 +45,12 @@ struct ContentView: View {
                 InspectorView()
                     .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
             }
-            .navigationTitle(model.showingLibrary ? (model.library.source?.title ?? "Library")
-                                                  : (model.url?.lastPathComponent ?? "Develop"))
+            // editing: the photo's name can be renamed from the title, and its
+            // file icon dragged, as for any document
+            .navigationTitle(Binding(
+                get: { model.showingLibrary ? (model.library.source?.title ?? "Library") : (model.url?.lastPathComponent ?? "Develop") },
+                set: { if !model.showingLibrary { model.renamePhoto(to: $0) } }))
+            .background(DocumentIcon(url: model.showingLibrary ? nil : model.url))
             .navigationSubtitle(subtitle)
             // One customisable toolbar (right-click it, or View › Customize Toolbar).
             // The library and the editor show different items by hiding the
@@ -613,5 +617,19 @@ private struct CompareLabel: View {
             .padding(.vertical, 3)
             .background(.black.opacity(0.55), in: Capsule())
             .foregroundStyle(.white)
+    }
+}
+
+/// The open photo as the window's document: its file icon in the title,
+/// which can be dragged, and the folder path on Command-click, as in other
+/// Mac apps (AppKit's representedURL).
+struct DocumentIcon: NSViewRepresentable {
+    let url: URL?
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let url = url
+        DispatchQueue.main.async { view.window?.representedURL = url }
     }
 }

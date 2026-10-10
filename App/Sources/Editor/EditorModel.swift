@@ -855,6 +855,17 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(6)); log("browser")
                 }
             }
+            // TestRename: launch argument (-TestRename name) for testing: renames the photo
+            if let newName = UserDefaults.standard.string(forKey: "TestRename"), !newName.isEmpty {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    if let key = modules.first(where: { $0.op == "exposure" })?.key { setValue(.number(1), module: key, field: "exposure") }
+                    try? await Task.sleep(for: .seconds(2))
+                    renamePhoto(to: newName)
+                    try? await Task.sleep(for: .seconds(5))
+                    FileHandle.standardError.write("Develop rename test: now \(self.url?.lastPathComponent ?? "-"), files \((try? FileManager.default.contentsOfDirectory(atPath: self.url?.deletingLastPathComponent().path ?? "")) ?? [])\n".data(using: .utf8)!)
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -1757,6 +1768,8 @@ extension EditorModel {
                 .init(module: m.key, field: "cw", value: 1), .init(module: m.key, field: "ch", value: 1)]
     }
 
+    /// the straightened photo's full size in pixels while cropping
+    var imageSizeForCrop: CGSize { imageSize }
     /// the straightened photo's aspect (width over height) while cropping
     var croppingImageAspect: Double { imageSize.width / max(imageSize.height, 1) }
 
@@ -2444,6 +2457,45 @@ extension EditorModel {
                 _ = try? await engine.look(folder: nil, file: nil, strength: s)
                 requestRender()
             }
+        }
+    }
+}
+
+// MARK: - Renaming
+
+extension EditorModel {
+    /// Renames the open photo from the window title: saves its edit, moves the
+    /// file with darktable's sidecar and any Apple-decode one, and reopens it.
+    /// The extension stays if it's left off.
+    func renamePhoto(to newName: String) {
+        guard let current = url else { return }
+        var name = newName.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "/", with: ":")
+        guard !name.isEmpty, name != current.lastPathComponent else { return }
+        if (name as NSString).pathExtension.lowercased() != current.pathExtension.lowercased() {
+            name += "." + current.pathExtension
+        }
+        let target = current.deletingLastPathComponent().appendingPathComponent(name)
+        guard !FileManager.default.fileExists(atPath: target.path) else {
+            errorMessage = "There's already a file called \(name) in this folder."
+            return
+        }
+        Task {
+            await leaveCurrentPhoto()
+            do {
+                try FileManager.default.moveItem(at: current, to: target)
+                for suffix in [".xmp", ".apple.xmp"] {
+                    let side = URL(fileURLWithPath: current.path + suffix)
+                    if FileManager.default.fileExists(atPath: side.path) {
+                        try? FileManager.default.moveItem(at: side, to: URL(fileURLWithPath: target.path + suffix))
+                    }
+                }
+            } catch {
+                errorMessage = "Couldn't rename \(current.lastPathComponent): \(error.localizedDescription)"
+                return
+            }
+            reopening = true
+            defer { reopening = false }
+            await open(target)
         }
     }
 }

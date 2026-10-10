@@ -147,7 +147,7 @@ struct ModuleCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 6) {
-                if model.filter == .essentials, model.isEssential(module.op) {
+                if model.filter == .essentials, model.search.isEmpty, model.isEssential(module.op) {
                     Image(systemName: "line.3.horizontal")
                         .foregroundStyle(.tertiary)
                         .help("Drag to reorder")
@@ -179,6 +179,12 @@ struct ModuleCard: View {
                     .transition(.opacity)
             } else if expandedBinding.wrappedValue, module.op == "rgbcurve" {
                 RGBCurveControls(module: module)
+                    .transition(.opacity)
+            } else if expandedBinding.wrappedValue, module.op == "bilat" {
+                LocalContrastControls(module: module)
+                    .transition(.opacity)
+            } else if expandedBinding.wrappedValue, module.op == "ashift" {
+                RotatePerspectiveSummary(module: module)
                     .transition(.opacity)
             } else if expandedBinding.wrappedValue, module.op == "colorequal" {
                 HueCurveControls(module: module)
@@ -832,18 +838,26 @@ struct LensControls: View {
             VStack(alignment: .leading, spacing: 2) {
                 if method == 2 {
                     Text("Manual vignette only")
+                } else if method == 1 {
+                    // the lens name opens the profile picker, as a pop-up button does
+                    Button { showPicker = true } label: {
+                        HStack(spacing: 4) {
+                            if let lensName { Text(lensName) } else {
+                                Label("Choose a lens", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                            }
+                            Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Choose the Lensfun profile, if the photo's lens isn't the one used")
+                    .popover(isPresented: $showPicker, arrowEdge: .leading) {
+                        LensfunPicker(module: module)
+                    }
                 } else if let lensName {
                     Text(lensName)
                 } else {
                     Label("Lens not recognised", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                }
-                if method == 1 {
-                    Button(lensName == nil ? "Choose Lens…" : "Change Lens…") { showPicker = true }
-                        .buttonStyle(.link)
-                        .font(.caption)
-                        .popover(isPresented: $showPicker, arrowEdge: .leading) {
-                            LensfunPicker(module: module)
-                        }
                 }
                 Text(method == 0 ? "Corrected with the data the camera embeds in the raw"
                      : method == 1 ? (lensfun.isEmpty || lensfun.caseInsensitiveCompare(lensName ?? "") == .orderedSame || (lensName ?? "").hasPrefix("Built-in") ? "Corrected with its Lensfun profile" : "Corrected with the Lensfun profile for \(lensfun)")
@@ -992,11 +1006,14 @@ struct LensfunPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            WideSegments(options: ["Lens", "Camera"], selection: $tab)
+            // the camera only needs choosing when Lensfun didn't recognise it
+            if camera.isEmpty && !loading {
+                WideSegments(options: ["Lens", "Camera"], selection: $tab)
+            }
             if tab == 0 {
                 TextField("Search lenses", text: $search)
                     .textFieldStyle(.roundedBorder)
-                Text(camera.isEmpty ? "Lensfun doesn't know this camera, so every lens is listed." : "Lenses that fit the \(camera)")
+                Text(camera.isEmpty ? "Lensfun doesn't know this camera, so every lens is listed. Choose the camera to narrow them." : "Lenses that fit the \(camera)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 List(shown) { lens in
@@ -1135,5 +1152,87 @@ struct ModuleMenu: View {
 
     private func presetItem(_ p: Engine.PresetInfo, label: String) -> some View {
         Button(label) { model.applyPreset(p, module: module.key) }
+    }
+}
+
+/// darktable's local contrast in its usual (local laplacian) mode, as its own
+/// interface shows it: detail, highlights and shadows as percentages.
+struct LocalContrastControls: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+    @State private var showAdvanced = false
+
+    private func value(_ f: String) -> Double { module.fields.first { $0.name == f }?.value.number ?? 0 }
+    private var laplacian: Bool { value("mode") == 1 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Brings out texture and detail by raising contrast between neighbouring tones, without changing the overall brightness, as Clarity does elsewhere.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if laplacian {
+                slider("Detail", "detail", scale: 100, offset: 100, range: 0...300, defaultValue: 125,
+                       help: "How much local contrast is added: 100% leaves the photo as it is")
+                slider("Highlights", "sigma_r", scale: 100, offset: 0, range: 0...200, defaultValue: 50,
+                       help: "How much the bright areas take part")
+                slider("Shadows", "sigma_s", scale: 100, offset: 0, range: 0...200, defaultValue: 50,
+                       help: "How much the dark areas take part")
+            } else {
+                slider("Detail", "detail", scale: 100, offset: 100, range: 0...300, defaultValue: 125,
+                       help: "How much local contrast is added")
+                slider("Coarseness", "sigma_s", scale: 1, offset: 0, range: 1...100, defaultValue: 50,
+                       help: "The size of the detail affected")
+                slider("Contrast", "sigma_r", scale: 1, offset: 0, range: 1...100, defaultValue: 20,
+                       help: "Which tonal differences count as edges")
+            }
+            DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if laplacian {
+                        slider("Midtone range", "midtone", scale: 100, offset: 0, range: 0...100, defaultValue: 50,
+                               help: "How wide a range of tones counts as midtones")
+                    }
+                    if let mode = module.fields.first(where: { $0.name == "mode" }) {
+                        FieldControl(op: module.op, field: mode) { model.setValue($0, module: module.key, field: "mode") }
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    private func slider(_ label: String, _ field: String, scale: Double, offset: Double, range: ClosedRange<Double>,
+                        defaultValue: Double, help: String) -> some View {
+        ParamSlider(label: label, value: value(field) * scale + offset, defaultValue: defaultValue, range: range,
+                    isInteger: true, unit: scale == 1 ? "" : "%", trackColors: nil) {
+            model.setValue(.number(($0 - offset) / scale), module: module.key, field: field)
+        }
+        .help(help)
+    }
+}
+
+/// Rotation and perspective are set in Crop and Straighten, which keeps the
+/// crop that goes with them; the card says what's set and opens it.
+struct RotatePerspectiveSummary: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+
+    var body: some View {
+        let g = model.perspective
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                row("Straighten", g.rotation == 0 ? "None" : String(format: "%.2f°", g.rotation))
+                row("Vertical", g.vertical == 0 ? "None" : "\(Int((g.vertical * 100).rounded()))")
+                row("Horizontal", g.horizontal == 0 ? "None" : "\(Int((g.horizontal * 100).rounded()))")
+            }
+            Button("Edit in Crop and Straighten") { model.beginCrop() }
+                .help("Opens Crop and Straighten (C), where rotation and perspective are set with the crop that goes with them")
+        }
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label).foregroundStyle(.secondary)
+            Text(value).monospacedDigit()
+        }
     }
 }

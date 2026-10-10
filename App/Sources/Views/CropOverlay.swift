@@ -12,6 +12,26 @@ struct CropOverlay: View {
     @State private var startRect: CGRect = .zero
 
     private static let minSize = 0.04
+
+    /// "3:2 · 5400 × 3600", or the nearest simple ratio when free
+    private var sizeLabel: String {
+        let w = Int((model.cropRect.width * model.imageSizeForCrop.width).rounded())
+        let h = Int((model.cropRect.height * model.imageSizeForCrop.height).rounded())
+        guard w > 0, h > 0 else { return "" }
+        let ratio: String
+        switch model.cropAspect {
+        case .free:
+            let r = Double(max(w, h)) / Double(min(w, h))
+            let known: [(Double, String)] = [(1, "1:1"), (1.25, "5:4"), (4.0 / 3, "4:3"), (1.4, "7:5"), (1.5, "3:2"), (16.0 / 9, "16:9"), (2, "2:1")]
+            let near = known.min { abs($0.0 - r) < abs($1.0 - r) }!
+            ratio = abs(near.0 - r) < 0.01 ? (w >= h ? near.1 : near.1.split(separator: ":").reversed().joined(separator: ":"))
+                                          : String(format: "%.2f:1", r)
+        default:
+            let t = model.cropAspect == .original ? "Original" : model.cropAspect.title
+            ratio = w < h && t.contains(":") ? t.split(separator: ":").reversed().joined(separator: ":") : t
+        }
+        return "\(ratio) · \(w) × \(h)"
+    }
     private static let handleReach: CGFloat = 14
 
     var body: some View {
@@ -56,6 +76,16 @@ struct CropOverlay: View {
                 }
                 .stroke(Color.white, style: StrokeStyle(lineWidth: 3.5, lineCap: .square))
                 .shadow(color: .black.opacity(0.4), radius: 1)
+
+                // the crop's shape and size, under the box (or inside it at the bottom edge)
+                Text(sizeLabel)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .fixedSize()
+                    .position(x: box.midX, y: min(box.maxY + 16, geo.size.height - 12))
+                    .allowsHitTesting(false)
             }
             .contentShape(Rectangle())
             .gesture(
@@ -170,35 +200,41 @@ struct CropPanel: View {
 
     var body: some View {
         @Bindable var model = model
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             Text("Crop and Straighten")
                 .font(.headline)
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Aspect")
-                    Spacer()
-                    Picker("Aspect", selection: $model.cropAspect) {
-                        ForEach(CropAspect.allCases) { Text($0.title).tag($0) }
+            section("Aspect") {
+                if model.cropAspect != .free && model.cropAspect != .original && model.cropAspect != .square {
+                    Button {
+                        model.cropPortrait.toggle()
+                    } label: {
+                        Image(systemName: model.cropPortrait ? "rectangle.portrait" : "rectangle")
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                    if model.cropAspect != .free && model.cropAspect != .original && model.cropAspect != .square {
-                        Button {
-                            model.cropPortrait.toggle()
-                        } label: {
-                            Image(systemName: model.cropPortrait ? "rectangle.portrait" : "rectangle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help(model.cropPortrait ? "Portrait: click for landscape" : "Landscape: click for portrait")
-                    }
+                    .buttonStyle(.borderless)
+                    .help(model.cropPortrait ? "Portrait: click for landscape" : "Landscape: click for portrait")
+                }
+            } content: {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                    ForEach(CropAspect.allCases) { a in AspectTile(aspect: a) }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                ParamSlider(label: "Straighten", value: model.straighten, defaultValue: 0, range: -45...45,
+            section("Straighten") {
+                Button("Level", systemImage: "level") { Task { await model.autoStraighten() } }
+                    .buttonStyle(.borderless)
+                    .help("Levels the photo from its straight lines, or failing those its horizon")
+            } content: {
+                ParamSlider(label: "Angle", value: model.straighten, defaultValue: 0, range: -45...45,
                             isInteger: false, unit: "°", trackColors: nil) { model.setStraighten(($0 * 100).rounded() / 100) }
-                // perspective: darktable's lens shifts, shown as Lightroom's -100 to 100
+            }
+
+            section("Perspective") {
+                Button("Upright", systemImage: "building.2") { Task { await model.autoUpright() } }
+                    .buttonStyle(.borderless)
+                    .help("For buildings: makes vertical lines vertical, levelling the photo and correcting lines that lean in when the camera was tilted up")
+            } content: {
+                // darktable's lens shifts, shown as Lightroom's −100 to 100
                 ParamSlider(label: "Vertical", value: model.perspective.vertical * 100, defaultValue: 0, range: -100...100,
                             isInteger: true, unit: "", trackColors: nil) { v in
                     var g = model.perspective
@@ -213,15 +249,12 @@ struct CropPanel: View {
                     model.setGeometry(g)
                 }
                 .help("Corrects a wall shot at an angle, turning it to face the camera")
-                HStack {
-                    Button("Level", systemImage: "level") { Task { await model.autoStraighten() } }
-                        .help("Levels the photo from its straight lines, or failing those its horizon")
-                    Button("Upright", systemImage: "building.2") { Task { await model.autoUpright() } }
-                        .help("Makes the photo's vertical lines vertical: levels it and corrects converging verticals")
-                    Spacer()
-                    Button("Reset") { model.resetCrop() }
-                        .help("Back to the whole photo, unrotated and uncorrected")
-                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Reset All") { model.resetCrop() }
+                    .help("Back to the whole photo, unrotated and uncorrected")
             }
 
             Text("Drag the corners or edges to crop, or inside the box to move it. Straightening crops off the corners the rotation brings in, keeping the photo's shape.")
@@ -242,5 +275,60 @@ struct CropPanel: View {
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+extension CropPanel {
+    /// a titled group, with controls beside the title
+    fileprivate func section<Accessory: View, Content: View>(_ title: String, @ViewBuilder accessory: () -> Accessory,
+                                                             @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                accessory()
+            }
+            content()
+        }
+    }
+}
+
+/// An aspect ratio drawn as its shape, as Photos shows them.
+struct AspectTile: View {
+    @Environment(EditorModel.self) private var model
+    let aspect: CropAspect
+
+    var body: some View {
+        let selected = model.cropAspect == aspect
+        let imageAspect = model.croppingImageAspect
+        // width over height of the shape, following the orientation chosen
+        let r: Double = {
+            guard let ratio = aspect.ratio(original: max(imageAspect, 1 / imageAspect)) else { return 1.4 }
+            let landscape = aspect == .original ? imageAspect >= 1 : !model.cropPortrait
+            return landscape ? ratio : 1 / ratio
+        }()
+        let box: CGFloat = 26
+        let size = r >= 1 ? CGSize(width: box, height: box / r) : CGSize(width: box * r, height: box)
+        Button {
+            model.cropAspect = aspect
+        } label: {
+            VStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(selected ? Color.accentColor : .secondary,
+                                  style: StrokeStyle(lineWidth: 1.5, dash: aspect == .free ? [3, 2] : []))
+                    .background(RoundedRectangle(cornerRadius: 2).fill(selected ? Color.accentColor.opacity(0.2) : .clear))
+                    .frame(width: size.width, height: size.height)
+                    .frame(height: box)
+                Text(aspect == .free ? "Free" : aspect.title)
+                    .font(.caption2)
+                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(selected ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(aspect.title)
     }
 }

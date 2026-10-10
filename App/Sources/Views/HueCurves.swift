@@ -100,9 +100,9 @@ struct HueCurveControls: View {
             ) { i, v in
                 model.setValue(.number(v), module: module.key, field: "\(prefix)_\(Self.colours[i])")
             }
-            Text(["Turns each colour towards its neighbours.",
-                  "Makes each colour more or less saturated.",
-                  "Makes each colour lighter or darker."][tab])
+            Text(["Drag a colour up to shift it towards the next colour along the strip (red towards orange), or down towards the one before (red towards magenta). The curve shows how colours in between are carried along.",
+                  "Drag a colour up to make it richer, or down to mute it, as far as grey.",
+                  "Drag a colour up to make it lighter, or down to make it darker."][tab])
                 .font(.caption)
                 .foregroundStyle(.secondary)
             DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
@@ -179,6 +179,24 @@ struct HueCurveEditor: View {
                     }
                     ctx.stroke(curve, with: .color(.primary.opacity(0.9)), lineWidth: 1.5)
                 }
+                // the scale, top and bottom of the plot
+                VStack {
+                    Text(kind == .hue ? "+90°" : "200%")
+                    Spacer()
+                    Text(kind == .hue ? "−90°" : "0%")
+                }
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .frame(height: plot.height + 8)
+                .position(x: plot.minX + 14, y: plot.midY)
+                .allowsHitTesting(false)
+                // the strip wraps round, so red shows again at the right end
+                Circle()
+                    .fill(Self.swatches[0].opacity(0.5))
+                    .overlay(Circle().strokeBorder(.primary.opacity(0.5), lineWidth: 1))
+                    .frame(width: 12, height: 12)
+                    .position(x: plot.maxX, y: toY(values[0]))
+                    .allowsHitTesting(false)
                 ForEach(0..<HueCurveMath.nodes, id: \.self) { k in
                     let moved = abs(values[k] - neutral) > 1e-3
                     Circle()

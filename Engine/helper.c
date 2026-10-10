@@ -720,6 +720,12 @@ static void _cmd_render(JsonObject *o)
 
 static void _commit(dt_iop_module_t *m, const gboolean enable)
 {
+  // modules with automatic defaults (lens correction) ignore their params
+  // until has_been_set, which darktable's interface sets on the first change;
+  // without it, choosing a lens or changing a correction did nothing
+  dt_introspection_field_t *set = _find_field(m, "has_been_set");
+  if(set && set->header.type == DT_INTROSPECTION_TYPE_BOOL)
+    *(gboolean *)((char *)m->params + set->header.offset) = TRUE;
   // keep this module's input cached (patch 0003), as darktable's darkroom does
   // for the module being edited, so the next change reruns the pipe from here
   H.edit.pipe.input_hint = m;
@@ -1088,6 +1094,10 @@ static void _cmd_set_text(JsonObject *o)
   g_strlcpy((char *)m->params + f->header.offset, json_object_get_string_member_with_default(o, "value", ""),
             f->Array.count);
   _commit(m, TRUE);
+  // the pipe cache keys each module on its committed data, which for lens
+  // correction holds a pointer to the Lensfun lens rather than the lens, so a
+  // new lens can look unchanged; run the module and what follows it again
+  dt_dev_pixelpipe_cache_invalidate_later(&H.edit.pipe, m->iop_order, "text setting: ");
   _ok_done(_ok());
 }
 

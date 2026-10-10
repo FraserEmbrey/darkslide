@@ -185,6 +185,25 @@ enum Perspective {
             if !improved { stepR /= 2; stepV /= 2 }
             if stepR < 0.02 { break }
         }
+        // only where lines really are vertical once corrected: buildings, frames,
+        // poles. In a natural scene the edges are scattered (trees, rocks) and the
+        // best fit is just whatever leans most, so nothing is changed.
+        let m = homography(best, width: w, height: h)
+        var inline = 0.0, total = 0.0
+        for s in pts {
+            let a = apply(m, s.p)
+            let b = apply(m, CGPoint(x: s.p.x + s.d.dx * 8, y: s.p.y + s.d.dy * 8))
+            let dev = abs(remainder(atan2(Double(b.x - a.x), Double(b.y - a.y)), .pi) * 180 / .pi)
+            total += s.w
+            if dev < 1 { inline += s.w }
+        }
+        lastConfidence = total > 0 ? inline / total : 0
+        guard lastConfidence >= minimumConfidence else { return nil }
         return Geometry(rotation: (best.rotation * 100).rounded() / 100, vertical: (best.vertical * 1000).rounded() / 1000)
     }
+
+    /// the share of edge strength within 1° of vertical after the last fit
+    nonisolated(unsafe) static var lastConfidence = 0.0
+    // the Z50 sample (buildings among trees) scores 0.27, a landscape 0.14
+    static let minimumConfidence = 0.2
 }

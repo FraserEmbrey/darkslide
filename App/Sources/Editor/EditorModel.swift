@@ -1870,7 +1870,7 @@ extension EditorModel {
         guard let image = await renderUncorrected(engine) else { return }
         let fit = await Task.detached(priority: .userInitiated) { Perspective.fitUpright(image, inputSize: size) }.value
         guard let fit else {
-            errorMessage = "No vertical lines found to correct in this photo."
+            errorMessage = "Upright needs clear vertical lines, such as buildings, door frames or poles, and this photo hasn't enough of them, so it was left as it is."
             return
         }
         var g = perspective

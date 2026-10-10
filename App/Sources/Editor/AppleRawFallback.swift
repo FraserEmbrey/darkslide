@@ -154,14 +154,48 @@ enum AppleRawFallback {
               let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.tiff.identifier as CFString, 1, nil) else {
             throw EngineError(message: "Couldn't decode \(url.lastPathComponent).")
         }
-        CGImageDestinationAddImage(dest, cg, nil)
+        // LZW, which darktable's TIFF reader (libtiff) takes: a 24 MP decode is
+        // 196 MB uncompressed
+        let props = [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 5]] as CFDictionary
+        CGImageDestinationAddImage(dest, cg, props)
         guard CGImageDestinationFinalize(dest) else { throw EngineError(message: "Couldn't write the decoded image.") }
+        trimCache(keeping: url)
     }
 
-    private static func cacheURL(for url: URL, suffix: String) throws -> URL {
+    /// The decoded files kept at most, newest used first. A Nikon HE raw
+    /// decodes to a couple of hundred megabytes, and a card of them would
+    /// otherwise fill the disk as they're opened. Edits are safe: each
+    /// decode's sidecar is copied beside the original when saved, and back
+    /// when the photo is opened and decoded again.
+    static let cacheLimit: Int64 = 6_000_000_000
+
+    private static func trimCache(keeping current: URL) {
+        let fm = FileManager.default
+        guard let dir = try? cacheDirectory(),
+              let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
+        else { return }
+        let tiffs = files.filter { $0.pathExtension == "tif" }.map { f -> (URL, Date, Int64) in
+            let v = try? f.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            return (f, v?.contentModificationDate ?? .distantPast, Int64(v?.fileSize ?? 0))
+        }.sorted { $0.1 > $1.1 }
+        var total: Int64 = 0
+        for (f, _, size) in tiffs {
+            total += size
+            guard total > cacheLimit, f.standardizedFileURL != current.standardizedFileURL else { continue }
+            try? fm.removeItem(at: f)
+            try? fm.removeItem(at: URL(fileURLWithPath: f.path + ".xmp"))
+        }
+    }
+
+    private static func cacheDirectory() throws -> URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Develop/decoded", isDirectory: true)
         try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        return caches
+    }
+
+    private static func cacheURL(for url: URL, suffix: String) throws -> URL {
+        let caches = try cacheDirectory()
         let key = SHA256.hash(data: Data(url.path.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
         return caches.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-\(key)-\(suffix).tif")
     }
@@ -169,7 +203,10 @@ enum AppleRawFallback {
     private static func isFresh(_ tiff: URL, for url: URL) -> Bool {
         let source = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
         let made = (try? tiff.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        return made.map { $0 >= source } ?? false
+        guard let made, made >= source else { return false }
+        // marked as used now, so the cache keeps the photos in use (trimCache)
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: tiff.path)
+        return true
     }
 
     /// Where the edit of a macOS decode is kept beside the original. For a

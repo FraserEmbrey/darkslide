@@ -51,6 +51,9 @@ struct ContentView: View {
                 get: { model.showingLibrary ? (model.library.source?.title ?? "Library") : (model.url?.lastPathComponent ?? "Develop") },
                 set: { if !model.showingLibrary { model.renamePhoto(to: $0) } }))
             .background(DocumentIcon(url: model.showingLibrary ? nil : model.url))
+            .sheet(isPresented: Binding(get: { model.choosingAdjustmentsToCopy }, set: { model.choosingAdjustmentsToCopy = $0 })) {
+                CopyAdjustmentsSheet()
+            }
             .navigationSubtitle(subtitle)
             // One customisable toolbar (right-click it, or View › Customize Toolbar).
             // The library and the editor show different items by hiding the

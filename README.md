@@ -129,6 +129,17 @@ darktable's LUT 3D module applies it. The engine's `look` command sets the modul
 
 Film LUTs only cover 0 to 1. Engine patch 0004 makes LUT 3D scale any pixel brighter than white into range by its largest channel, look it up, and scale it back, so in HDR the highlights keep their brightness and take the film's colour. Pixels in range are unchanged, so SDR results are as before. On the Z50 with sigmoid's target white at 400%, the HDR peak is 2.17× white without a look, 2.14× with Velvia and 2.17× with HP5, where unpatched darktable clips at 1. The module now runs on the CPU, because the step is only in its CPU code.
 
+### Copy and paste adjustments
+
+As in Photos:
+- **Edit › Copy Adjustments (⇧⌘C)** copies the open photo's edit, or the selected one's in the library.
+- **Copy Some Adjustments… (⌥⇧⌘C)** gives a checklist of the edit's modules, with white balance, lens correction and orientation unticked because they belong to the photo.
+- **Paste Adjustments (⇧⌘V)** pastes onto the open photo, or the photo selected in the library.
+- **Right-click menu:** library photos also have Copy Adjustments and Paste Adjustments.
+- **Camera style shortcut:** Apply Camera Style moves to ⌥⌘C.
+
+The engine's `paste` uses darktable's own history copy (`dt_history_copy_and_paste_on_image`), which carries module instances, masks and module order. It merges: the modules copied replace the same ones on the target, and the rest stay. A copy of everything is darktable's Copy: every module the photo has changed, except those its modules mark unsafe to copy. A chosen set is passed as indices of each module's last history item, as darktable's selective copy does. The open photo's edit goes to darktable's library before copying. Other targets get their sidecars written. A paste onto the open photo reloads it, and it's one undo step: the step records its history position before the paste. darktable reports a paste as `TRUE`, not as a failure.
+
 ### Presets and instances
 
 Each card's ⋯ menu lists darktable's presets for the module, with names written "group | name" gathered into submenus. It can also save the current settings as a preset (any camera, lens and exposure, not applied automatically, as darktable's "store new preset" defaults), delete your own presets, add a new instance of the module, and delete an extra instance.

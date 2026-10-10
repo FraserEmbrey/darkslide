@@ -1952,6 +1952,83 @@ static gboolean _write_sidecar(const dt_imgid_t imgid)
   return !failed;
 }
 
+// ------------------------------------------------------- copy and paste
+
+// Pastes adjustments with darktable's own history copy, which carries
+// instances, masks and module order:
+// {"cmd":"paste","source":"/a.NEF","modules":["exposure:0",...],"targets":["/b.NEF",...]}
+// Without "modules" it copies as darktable's Copy does: every module the
+// source has changed, except those unsafe between photos (white balance, lens
+// correction, orientation, raw preparation). Pasting merges: the modules
+// copied replace the same ones on the target and the rest are kept. Targets
+// other than the open photo get their sidecar written; the open photo is
+// reloaded, its history extended so the app's undo steps back over the paste.
+static void _cmd_paste(JsonObject *o)
+{
+  const char *source = json_object_get_string_member_with_default(o, "source", "");
+  JsonArray *targets = json_object_has_member(o, "targets") ? json_object_get_array_member(o, "targets") : NULL;
+  if(!*source || !targets) return _error("nothing to paste");
+
+  gchar *open_path = NULL;
+  if(H.edit.loaded)
+  {
+    char p[PATH_MAX] = { 0 };
+    gboolean from_cache = FALSE;
+    dt_image_full_path(H.imgid, p, sizeof(p), &from_cache);
+    open_path = g_strdup(p);
+  }
+  const gboolean source_is_open = open_path && !g_strcmp0(open_path, source);
+  // the open photo's edits go to the library first, as the copy reads them from there
+  if(H.edit.loaded) dt_dev_write_history(&H.edit.dev);
+  const dt_imgid_t src = source_is_open ? H.imgid : _import_path(source);
+  if(!dt_is_valid_imgid(src)) { g_free(open_path); return _error("couldn't read the photo to copy from"); }
+
+  // chosen modules, as indices of their last history item (darktable's form)
+  GList *ops = NULL;
+  if(json_object_has_member(o, "modules"))
+  {
+    if(!source_is_open) { g_free(open_path); return _error("choosing adjustments needs the photo open"); }
+    JsonArray *mods = json_object_get_array_member(o, "modules");
+    for(guint k = 0; k < json_array_get_length(mods); k++)
+    {
+      dt_iop_module_t *m = _find_module(json_array_get_string_element(mods, k));
+      int index = -1, n = 0;
+      for(GList *h = H.edit.dev.history; h && n < H.edit.dev.history_end; h = g_list_next(h), n++)
+        if(((dt_dev_history_item_t *)h->data)->module == m) index = n;
+      if(index >= 0) ops = g_list_append(ops, GINT_TO_POINTER(index));
+    }
+    if(!ops) { g_free(open_path); return _error("none of those adjustments are in this photo's edit"); }
+  }
+
+  int pasted = 0;
+  gboolean open_changed = FALSE;
+  for(guint k = 0; k < json_array_get_length(targets); k++)
+  {
+    const char *path = json_array_get_string_element(targets, k);
+    const gboolean is_open = open_path && !g_strcmp0(open_path, path);
+    const dt_imgid_t dst = is_open ? H.imgid : _import_path(path);
+    if(!dt_is_valid_imgid(dst) || dst == src) continue;
+    if(!dt_history_copy_and_paste_on_image(src, dst, TRUE, ops, TRUE, FALSE, FALSE))
+      continue;   // FALSE means not pasted
+    pasted++;
+    if(is_open) open_changed = TRUE;
+    else _write_sidecar(dst);
+  }
+  g_list_free(ops);
+  g_free(open_path);
+
+  if(open_changed)
+  {
+    const char *err = _load(H.imgid);
+    if(err) return _error(err);
+  }
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "pasted");
+  json_builder_add_int_value(b, pasted);
+  if(open_changed) _add_modules(b);
+  _ok_done(b);
+}
+
 // Sets a photo's title, caption, keywords and/or rating in its sidecar, as
 // darktable's metadata, tagging and rating tools do.
 // {"cmd":"set_info","path":...,"title":"...","caption":"...","addTag":"...","removeTag":"...","rating":3}
@@ -2243,6 +2320,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
     else if(!strcmp(cmd, "presets")) _cmd_presets();
     else if(!strcmp(cmd, "look")) _cmd_look(o);
+    else if(!strcmp(cmd, "paste")) _cmd_paste(o);
     else if(!strcmp(cmd, "apply_preset")) _cmd_apply_preset(o);
     else if(!strcmp(cmd, "save_preset")) _cmd_save_preset(o);
     else if(!strcmp(cmd, "delete_preset")) _cmd_delete_preset(o);

@@ -70,6 +70,12 @@ struct ItemMenu: View {
 
     var body: some View {
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+        if let model {
+            Divider()
+            Button("Copy Adjustments") { model.copyAdjustments(from: item.url) }
+            Button("Paste Adjustments") { model.pasteAdjustments(onto: [item.url]) }
+                .disabled(model.copiedAdjustments == nil || model.copiedAdjustments?.source == item.url)
+        }
         let exports = (model?.catalog.exports(of: item.url) ?? []).sorted { $0.date > $1.date }
         if !exports.isEmpty {
             Section("Exports") {

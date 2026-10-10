@@ -349,6 +349,19 @@ actor Engine {
         return try await request(body, as: LookReply.self)
     }
 
+    struct PasteReply: Decodable {
+        let pasted: Int
+        var modules: [EngineModule]? = nil
+    }
+
+    /// pastes `source`'s adjustments (only `modules`, if given) onto `targets`;
+    /// modules come back when the open photo was one of them
+    func paste(from source: URL, modules: [String]?, onto targets: [URL]) async throws -> PasteReply {
+        var body: [String: Any] = ["cmd": "paste", "source": source.path, "targets": targets.map(\.path)]
+        if let modules { body["modules"] = modules }
+        return try await request(body, as: PasteReply.self)
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

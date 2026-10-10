@@ -133,6 +133,9 @@ final class EditorModel {
     var sendingLook = false
     /// darktable's presets for the open photo's modules
     var presetList: [Engine.PresetInfo] = []
+    /// adjustments copied for pasting onto other photos
+    var copiedAdjustments: CopiedAdjustments?
+    var choosingAdjustmentsToCopy = false
     /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
     var curveChannel = 0
     /// the module curveInfo describes
@@ -864,6 +867,27 @@ final class EditorModel {
                     renamePhoto(to: newName)
                     try? await Task.sleep(for: .seconds(5))
                     FileHandle.standardError.write("Develop rename test: now \(self.url?.lastPathComponent ?? "-"), files \((try? FileManager.default.contentsOfDirectory(atPath: self.url?.deletingLastPathComponent().path ?? "")) ?? [])\n".data(using: .utf8)!)
+                }
+            }
+            // TestPaste: launch argument (-TestPaste /path/to/other.NEF) for testing: edits this
+            // photo, copies, opens the other, pastes, then undoes
+            if let other = UserDefaults.standard.string(forKey: "TestPaste"), !other.isEmpty, self.url?.path != other {
+                Task { @MainActor in
+                    @MainActor func ev() -> String { "\(modules.first { $0.key == "exposure:0" }?.fields.first { $0.name == "exposure" }?.value.number ?? -99)" }
+                    try? await Task.sleep(for: .seconds(4))
+                    setValue(.number(1.8), module: "exposure:0", field: "exposure")
+                    try? await Task.sleep(for: .seconds(2))
+                    copyAdjustments()
+                    try? await Task.sleep(for: .seconds(1))
+                    await open(URL(fileURLWithPath: other))
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop paste test: opened \(self.url?.lastPathComponent ?? "-") exposure \(ev()), can paste \(canPaste)\n".data(using: .utf8)!)
+                    pasteAdjustments()
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop paste test: pasted, exposure \(ev()), undo \(undoTitle ?? "-")\n".data(using: .utf8)!)
+                    await undo()
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop paste test: undone, exposure \(ev())\n".data(using: .utf8)!)
                 }
             }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
@@ -2496,6 +2520,93 @@ extension EditorModel {
             reopening = true
             defer { reopening = false }
             await open(target)
+        }
+    }
+}
+
+// MARK: - Copy and paste adjustments
+
+/// Adjustments copied from a photo: all of them, or chosen modules (keys).
+struct CopiedAdjustments {
+    let source: URL
+    let modules: [String]?
+    let summary: String
+}
+
+extension EditorModel {
+    /// Modules darktable doesn't copy between photos unless asked, as they
+    /// belong to the photo: white balance, lens, orientation, raw preparation.
+    nonisolated static let photoSpecificOps: Set<String> = ["rawprepare", "temperature", "lens", "flip", "gamma",
+                                                           "scalepixels", "rotatepixels", "mask_manager"]
+
+    /// the photo adjustments are copied from: the open one, or the library's selection
+    var copySource: URL? { showingLibrary ? library.selection : url }
+
+    /// where Paste puts them: the open photo, or the library's selection
+    var pasteTargets: [URL] {
+        if showingLibrary { return library.selection.map { [$0] } ?? [] }
+        return url.map { [$0] } ?? []
+    }
+
+    var canPaste: Bool {
+        guard let copied = copiedAdjustments else { return false }
+        return !pasteTargets.isEmpty && pasteTargets != [copied.source]
+    }
+
+    /// the edit's adjustments that could be copied, for Copy Some Adjustments
+    var copyableModules: [EngineModule] {
+        modules.filter { $0.enabled && $0.inHistory && $0.instanceName != Self.deletedLocalName
+            && $0.instanceName != Self.deletedInstanceName }
+    }
+
+    func copyAdjustments() {
+        if let source = copySource { copyAdjustments(from: source) }
+    }
+
+    func copyAdjustments(from source: URL) {
+        Task {
+            await settleEdits()
+            copiedAdjustments = CopiedAdjustments(source: source, modules: nil,
+                                                  summary: "the adjustments of \(source.lastPathComponent)")
+        }
+    }
+
+    func copyAdjustments(_ keys: [String]) {
+        guard let source = url, !keys.isEmpty else { return }
+        Task {
+            await settleEdits()
+            copiedAdjustments = CopiedAdjustments(source: source, modules: keys,
+                                                  summary: "\(keys.count) adjustment\(keys.count == 1 ? "" : "s") from \(source.lastPathComponent)")
+        }
+    }
+
+    func pasteAdjustments() { pasteAdjustments(onto: pasteTargets) }
+
+    func pasteAdjustments(onto chosen: [URL]) {
+        guard let engine, let copied = copiedAdjustments else { return }
+        let targets = chosen.filter { $0 != copied.source }
+        guard !targets.isEmpty else { return }
+        Task {
+            await settleEdits()
+            let intoOpen = url.map(targets.contains) ?? false
+            if intoOpen {
+                recordUndoStep(label: "Paste Adjustments")
+                // the step takes its history position from the engine; let it,
+                // before the paste moves that position on
+                await settleEdits()
+            }
+            do {
+                let reply = try await engine.paste(from: copied.source, modules: copied.modules, onto: targets)
+                if let m = reply.modules {
+                    modules = m
+                    hasUnsavedChanges = true
+                    editedSinceOpen = true
+                    requestRender()
+                }
+                if reply.pasted == 0 { errorMessage = "Nothing was pasted: \(copied.summary) didn't include anything to paste." }
+            } catch {
+                errorMessage = "Couldn't paste: \(error.localizedDescription)"
+            }
         }
     }
 }

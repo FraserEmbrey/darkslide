@@ -46,6 +46,19 @@ struct DevelopApp: App {
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(model.redoTitle == nil && !(NSApp.keyWindow?.firstResponder is NSText))
             }
+            CommandGroup(after: .pasteboard) {
+                Divider()
+                // as Photos: copy a photo's adjustments and paste them onto others
+                Button("Copy Adjustments") { model.copyAdjustments() }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .disabled(model.copySource == nil)
+                Button("Copy Some Adjustments…") { model.choosingAdjustmentsToCopy = true }
+                    .keyboardShortcut("c", modifiers: [.command, .shift, .option])
+                    .disabled(model.url == nil || model.showingLibrary)
+                Button("Paste Adjustments") { model.pasteAdjustments() }
+                    .keyboardShortcut("v", modifiers: [.command, .shift])
+                    .disabled(!model.canPaste)
+            }
             CommandGroup(replacing: .saveItem) {
                 Button("Save Edits") { Task { await model.save() } }
                     .keyboardShortcut("s")
@@ -91,7 +104,7 @@ struct DevelopApp: App {
                 Button("Apply Camera Style") {
                     if let style = model.suggestedStyle { Task { await model.applyStyle(style) } }
                 }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(model.suggestedStyle == nil || model.url == nil)
                 Divider()
                 Toggle("Preview HDR", isOn: Binding(get: { model.viewHDR }, set: { model.viewHDR = $0 }))

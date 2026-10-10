@@ -37,15 +37,9 @@ struct FilmLook: Hashable, Identifiable {
     /// a film's files so they sort pulled to pushed, 2 being the normal one
     /// where there are pulled ones
     private static func split(_ name: String) -> (String, String?) {
-        guard let m = name.wholeMatch(of: /(.+?) ([1-9])( (\+\+|\+|--|-))?/) else { return (name, nil) }
+        guard let m = name.wholeMatch(of: /(.+?) ([1-9])( (\++|-+))?/) else { return (name, nil) }
         let sign = m.output.4.map(String.init) ?? ""
-        let label = switch sign {
-        case "--": "−−"
-        case "-": "−"
-        case "+": "+"
-        case "++": "++"
-        default: "Normal"
-        }
+        let label = sign.isEmpty ? "Normal" : sign.replacingOccurrences(of: "-", with: "−")
         return (String(m.output.1), label)
     }
 }

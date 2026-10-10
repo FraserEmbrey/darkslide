@@ -2,6 +2,7 @@ import AppKit
 import CoreLocation
 import Foundation
 import Photos
+import Synchronization
 import UniformTypeIdentifiers
 
 /// Apple Photos as a library source, through PhotoKit.
@@ -18,8 +19,6 @@ enum PhotosLibrary {
     /// identifies Develop's edits among Photos' adjustment data
     static let formatIdentifier = "me.frsr.develop"
     static let formatVersion = "1"
-    /// the newest photos shown for All Photos; more would make the grid slow
-    static let limit = 3000
 
     struct Album: Identifiable, Hashable {
         let id: String
@@ -43,8 +42,15 @@ enum PhotosLibrary {
     }
 
     static func asset(_ id: String) -> PHAsset? {
-        PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
+        if let a = known.withLock({ $0[id] }) { return a }
+        let a = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
+        if let a { known.withLock { $0[id] = a } }
+        return a
     }
+
+    /// the assets of the last fetch, by identifier: a fetch per thumbnail
+    /// (thousands, as a grid or map fills) loaded the whole Mac
+    private static let known = Mutex<[String: PHAsset]>([:])
 
     // MARK: access
 
@@ -61,31 +67,35 @@ enum PhotosLibrary {
 
     // MARK: collections
 
-    /// Favourites, then the user's albums, by name
+    /// Favourites, then the user's albums, by name. Counts are Photos'
+    /// estimates (videos included): counting each album's photos meant a
+    /// fetch per album, slow with hundreds of them.
     static func albums() -> [Album] {
         guard authorised else { return [] }
         var out: [Album] = []
-        let images = PHFetchOptions()
-        images.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
         if let fav = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumFavorites, options: nil).firstObject {
-            out.append(Album(id: fav.localIdentifier, title: "Favourites", count: PHAsset.fetchAssets(in: fav, options: images).count))
+            out.append(Album(id: fav.localIdentifier, title: "Favourites", count: estimate(fav)))
         }
         let user = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
         var albums: [Album] = []
         user.enumerateObjects { c, _, _ in
-            let n = PHAsset.fetchAssets(in: c, options: images).count
-            if n > 0 { albums.append(Album(id: c.localIdentifier, title: c.localizedTitle ?? "Album", count: n)) }
+            let n = estimate(c)
+            if n != 0 { albums.append(Album(id: c.localIdentifier, title: c.localizedTitle ?? "Album", count: n)) }
         }
         return out + albums.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
-    /// the photos of an album, or the newest of the whole library, newest first
+    /// -1 when Photos has no estimate
+    private static func estimate(_ c: PHAssetCollection) -> Int {
+        c.estimatedAssetCount == NSNotFound ? -1 : c.estimatedAssetCount
+    }
+
+    /// the photos of an album, or of the whole library, newest first
     static func assets(in albumID: String?) -> [(url: URL, title: String, edited: Bool)] {
         guard authorised else { return [] }
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.fetchLimit = limit
         let result: PHFetchResult<PHAsset>
         if let albumID, let album = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [albumID], options: nil).firstObject {
             result = PHAsset.fetchAssets(in: album, options: options)
@@ -97,9 +107,14 @@ enum PhotosLibrary {
         format.dateStyle = .medium
         format.timeStyle = .short
         var out: [(URL, String, Bool)] = []
+        out.reserveCapacity(result.count)
+        var byID: [String: PHAsset] = [:]
+        byID.reserveCapacity(result.count)
         result.enumerateObjects { a, _, _ in
+            byID[a.localIdentifier] = a
             out.append((url(for: a.localIdentifier), a.creationDate.map(format.string) ?? "Photo", a.hasAdjustments))
         }
+        known.withLock { $0.merge(byID) { $1 } }
         return out
     }
 
@@ -110,10 +125,17 @@ enum PhotosLibrary {
         let ids = urls.compactMap(assetID)
         guard authorised, !ids.isEmpty else { return [:] }
         var out: [URL: CLLocationCoordinate2D] = [:]
-        PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil).enumerateObjects { a, _, _ in
+        func note(_ a: PHAsset) {
             if let c = a.location?.coordinate, CLLocationCoordinate2DIsValid(c), !(c.latitude == 0 && c.longitude == 0) {
                 out[url(for: a.localIdentifier)] = c
             }
+        }
+        // the grid's fetch has them all already
+        let cached = known.withLock { k in ids.compactMap { k[$0] } }
+        cached.forEach(note)
+        if cached.count < ids.count {
+            let have = Set(cached.map(\.localIdentifier))
+            PHAsset.fetchAssets(withLocalIdentifiers: ids.filter { !have.contains($0) }, options: nil).enumerateObjects { a, _, _ in note(a) }
         }
         return out
     }
@@ -146,29 +168,38 @@ enum PhotosLibrary {
         func photoLibraryDidChange(_ change: PHChange) {
             guard let fetch = PhotosLibrary.lastFetch, let details = change.changeDetails(for: fetch) else { return }
             PhotosLibrary.lastFetch = details.fetchResultAfterChanges
-            let changed = details.changedObjects.map { PhotosLibrary.url(for: $0.localIdentifier) }
+            // only photos whose picture changed (an edit), not the metadata
+            // Photos updates all the time as it analyses the library
+            let changed = details.changedObjects
+                .filter { change.changeDetails(for: $0)?.assetContentChanged == true }
+                .map { PhotosLibrary.url(for: $0.localIdentifier) }
             // photos added, removed or moved reload the grid; edits only redraw
             let reload = !details.hasIncrementalChanges || !details.insertedObjects.isEmpty
                 || !details.removedObjects.isEmpty || details.hasMoves
+            guard reload || !changed.isEmpty else { return }
             onChange(changed, reload)
         }
     }
 
     // MARK: thumbnails
 
+    /// Thumbnails come from what Photos keeps on the Mac: allowing iCloud
+    /// downloads here fetched thousands of photos as a grid or map filled.
     static func thumbnail(_ id: String, size: CGFloat) async -> CGImage? {
         guard let asset = asset(id) else { return nil }
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
+        options.isNetworkAccessAllowed = false
         options.resizeMode = .fast
         return await withCheckedContinuation { c in
-            PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: size, height: size),
+            imageManager.requestImage(for: asset, targetSize: CGSize(width: size, height: size),
                                                   contentMode: .aspectFit, options: options) { image, _ in
                 c.resume(returning: image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
             }
         }
     }
+
+    private static let imageManager = PHCachingImageManager()
 
     // MARK: opening
 

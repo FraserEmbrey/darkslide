@@ -27,6 +27,10 @@ struct LibraryMap: View {
     @State private var draggedURL: URL?
     /// the map's camera as the user leaves it, so jumping to a photo keeps the zoom
     @State private var camera: MapCamera?
+    /// what the map shows, for gathering nearby photos into one pin
+    @State private var visibleRect: MKMapRect?
+    @State private var stripPosition = ScrollPosition(edge: .leading)
+    @State private var stripWidth = 0.0
     @State private var query = ""
     @State private var results: [MKMapItem] = []
     @State private var found: MKMapItem?
@@ -39,14 +43,15 @@ struct LibraryMap: View {
         VStack(spacing: 0) {
             MapReader { proxy in
                 Map(position: $position) {
-                    ForEach(placed) { item in
-                        if let coordinate = library.locations[item.url] {
-                            Annotation(item.name, coordinate: coordinate, anchor: .bottom) {
-                                // MapKit hosts pins apart from the window's views: pass the model on
-                                pin(item).environment(model)
+                    ForEach(clusters(placed)) { cluster in
+                        Annotation(cluster.item.name, coordinate: cluster.coordinate, anchor: .bottom) {
+                            // MapKit hosts pins apart from the window's views: pass the model on
+                            Group {
+                                if cluster.count == 1 { pin(cluster.item) } else { clusterPin(cluster) }
                             }
-                            .annotationTitles(.hidden)
+                            .environment(model)
                         }
+                        .annotationTitles(.hidden)
                     }
                     if let found {
                         Marker(found.name ?? query, coordinate: found.location.coordinate)
@@ -73,7 +78,10 @@ struct LibraryMap: View {
                         }
                     }
                 }
-                .onMapCameraChange(frequency: .onEnd) { context in camera = context.camera }
+                .onMapCameraChange(frequency: .onEnd) { context in
+                    camera = context.camera
+                    visibleRect = context.rect
+                }
                 .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll))
                 .mapControls {
                     MapZoomStepper()
@@ -120,6 +128,82 @@ struct LibraryMap: View {
         }
     }
 
+    /// Photos near each other on screen, as one pin. A pin per photo, each
+    /// with its thumbnail, stalled the Mac with a whole Photos library (tens
+    /// of thousands of photos); this keeps it to a hundred or so, in view.
+    struct Cluster: Identifiable {
+        let item: LibraryItem         // the one shown: the selected photo, or the newest
+        let coordinate: CLLocationCoordinate2D
+        let count: Int
+        let rect: MKMapRect           // around all of them, to zoom to
+        var id: URL { item.url }
+    }
+
+    private func clusters(_ placed: [LibraryItem]) -> [Cluster] {
+        let library = model.library
+        let points = placed.compactMap { item in library.locations[item.url].map { (item, MKMapPoint($0)) } }
+        guard !points.isEmpty else { return [] }
+        let view = visibleRect ?? points.dropFirst().reduce(MKMapRect(origin: points[0].1, size: .init())) {
+            $0.union(MKMapRect(origin: $1.1, size: .init()))
+        }
+        // about ten pins across the map; photos just outside it are kept, so panning shows pins at once
+        let cell = max(max(view.width, view.height) / 10, 1)
+        let area = view.insetBy(dx: -view.width * 0.25, dy: -view.height * 0.25)
+        struct Key: Hashable { let x: Int, y: Int }
+        var groups: [Key: [(LibraryItem, MKMapPoint)]] = [:]
+        var order: [Key] = []
+        for (item, p) in points where area.contains(p) || item.url == library.selection {
+            let key = Key(x: Int((p.x / cell).rounded(.down)), y: Int((p.y / cell).rounded(.down)))
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append((item, p))
+        }
+        return order.compactMap { key in
+            guard let members = groups[key], let first = members.first else { return nil }
+            let shown = members.first { $0.0.url == library.selection } ?? first
+            let rect = members.dropFirst().reduce(MKMapRect(origin: first.1, size: .init())) {
+                $0.union(MKMapRect(origin: $1.1, size: .init()))
+            }
+            return Cluster(item: shown.0, coordinate: shown.1.coordinate, count: members.count, rect: rect)
+        }
+    }
+
+    /// several photos: the newest (or the selected one), with how many; click to zoom in on them
+    private func clusterPin(_ cluster: Cluster) -> some View {
+        let selected = model.library.selection == cluster.item.url
+        return Thumbnail(item: cluster.item, fill: true)
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .background(
+                // a second card behind, so it reads as a pile
+                RoundedRectangle(cornerRadius: 6).fill(.white).offset(x: 3, y: -3)
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1))
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(selected ? Color.accentColor : .white, lineWidth: selected ? 3 : 2))
+            .overlay(alignment: .topTrailing) {
+                Text(cluster.count, format: .number)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.accentColor))
+                    .offset(x: 6, y: -6)
+            }
+            .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+            .onTapGesture { zoom(to: cluster) }
+            .help("\(cluster.count) photos here: click to zoom in")
+    }
+
+    private func zoom(to cluster: Cluster) {
+        let r = cluster.rect
+        // photos all at one spot: there's no zooming them apart
+        let minimum = MKMapPointsPerMeterAtLatitude(cluster.coordinate.latitude) * 200
+        guard max(r.width, r.height) > minimum else { model.library.selection = cluster.item.url; return }
+        withAnimation {
+            position = .rect(MKMapRect(x: r.minX - r.width * 0.3, y: r.minY - r.height * 0.3,
+                                       width: r.width * 1.6, height: r.height * 1.6))
+        }
+    }
+
     private func pin(_ item: LibraryItem) -> some View {
         let selected = model.library.selection == item.url
         return Thumbnail(item: item, fill: true)
@@ -160,7 +244,6 @@ struct LibraryMap: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
 
-            ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 6) {
                     ForEach(library.items) { item in
@@ -187,19 +270,21 @@ struct LibraryMap: View {
                             .onDrag { dragItem(item) } preview: { DragPreview() }
                             .contextMenu { menu(item) }
                             .help(item.name)
-                            .id(item.url)
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
             }
             .scrollIndicators(.never)
+            .scrollPosition($stripPosition)
+            .onGeometryChange(for: Double.self) { $0.size.width } action: { stripWidth = $0 }
             .frame(height: stripHeight + 12)
             // a pin clicked on the map shows its photo in the strip
             .onChange(of: model.library.selection) { _, url in
-                guard let url else { return }
-                withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(url, anchor: .center) }
-            }
+                guard let i = model.library.index(of: url) else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    stripPosition.scrollTo(x: FilmstripSettings.centring(index: i, height: stripHeight, viewWidth: stripWidth))
+                }
             }
         }
         .background(.bar)

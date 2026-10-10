@@ -103,6 +103,14 @@ enum FilmstripSettings {
     static let range: ClosedRange<Double> = 36...180
     /// thumbnail width for a height: the 3:2 of most cameras, near enough
     static func width(_ height: Double) -> Double { (height * 1.4).rounded() }
+
+    /// The scroll offset that centres a strip's photo. Worked out, as every
+    /// cell is the same width: scrollTo(id:) laid out the strip up to the
+    /// photo, seconds into a whole Photos library.
+    static func centring(index: Int, height: Double, viewWidth: Double) -> Double {
+        let cell = width(height) + 6        // the thumbnail and its padding
+        return max(0, 10 + Double(index) * (cell + 6) + cell / 2 - viewWidth / 2)
+    }
 }
 
 /// The top edge of a filmstrip: drag to make the thumbnails bigger or smaller.
@@ -133,9 +141,10 @@ struct FilmstripResizeHandle: View {
 struct Filmstrip: View {
     @Environment(EditorModel.self) private var model
     @AppStorage(FilmstripSettings.heightKey) private var height = 60.0
+    @State private var position = ScrollPosition(edge: .leading)
+    @State private var viewWidth = 0.0
 
     var body: some View {
-        ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 6) {
                     ForEach(model.library.items) { item in
@@ -152,20 +161,22 @@ struct Filmstrip: View {
                             .onTapGesture { Task { await model.open(item.url) } }
                             .contextMenu { ItemMenu(item: item) }
                             .help(item.name)
-                            .id(item.url)
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
             }
             .scrollIndicators(.never)
+            .scrollPosition($position)
+            .onGeometryChange(for: Double.self) { $0.size.width } action: { viewWidth = $0 }
             .frame(height: height + 18)
             .background(.bar)
             .onChange(of: model.libraryURL, initial: true) { _, url in
-                guard let url = model.library.items.first(where: { $0.url.standardizedFileURL == url?.standardizedFileURL })?.url else { return }
-                withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(url, anchor: .center) }
+                guard let i = model.library.items.firstIndex(where: { $0.url.standardizedFileURL == url?.standardizedFileURL }) else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    position.scrollTo(x: FilmstripSettings.centring(index: i, height: height, viewWidth: viewWidth))
+                }
             }
-        }
     }
 }
 
@@ -175,6 +186,19 @@ struct LibraryGrid: View {
     @FocusState private var focused: Bool
 
     private let columns = [GridItem(.adaptive(minimum: 170, maximum: 240), spacing: 14)]
+    @State private var position = ScrollPosition(edge: .top)
+    @State private var viewSize = CGSize.zero
+    @State private var rowHeight = 0.0
+
+    /// Centres a photo, working out its row as the grid lays out its
+    /// columns (adaptive, 170 points and up, 14 apart, inside 20 of padding):
+    /// scrollTo(id:) laid out every row above it, seconds into a whole Photos library.
+    private func scroll(to url: URL) {
+        guard rowHeight > 0, let i = model.library.index(of: url) else { return }
+        let perRow = max(1, Int((viewSize.width - 40 + 14) / (170 + 14)))
+        let row = Double(i / perRow)
+        position.scrollTo(y: max(0, 20 + row * (rowHeight + 18) + rowHeight / 2 - viewSize.height / 2))
+    }
 
     var body: some View {
         Group {
@@ -186,20 +210,24 @@ struct LibraryGrid: View {
                                            description: Text(emptyText))
                 }
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 18) {
-                            ForEach(model.library.items) { item in
-                                cell(item)
-                                    .id(item.url)
-                            }
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 18) {
+                        ForEach(model.library.items) { item in
+                            cell(item)
+                                .onGeometryChange(for: Double.self) { $0.size.height } action: { rowHeight = $0 }
                         }
-                        .padding(20)
                     }
-                    .onAppear {
-                        model.library.selection = model.libraryURL ?? model.library.items.first?.url
-                        if let s = model.library.selection { proxy.scrollTo(s, anchor: .center) }
-                        focused = true
+                    .padding(20)
+                }
+                .scrollPosition($position)
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { viewSize = $0 }
+                .onAppear {
+                    model.library.selection = model.libraryURL ?? model.library.items.first?.url
+                    focused = true
+                    Task { @MainActor in
+                        // once the first row is laid out and measured
+                        try? await Task.sleep(for: .milliseconds(50))
+                        if let s = model.library.selection { scroll(to: s) }
                     }
                 }
             }
@@ -250,7 +278,7 @@ struct LibraryGrid: View {
         case .edited: "Photos you edit and save appear here, from every folder."
         case .exported: "Photos you export appear here, from every folder."
         case .map: "Add folders to the library to see their photos on the map."
-        case .photos: PhotosLibrary.authorised ? "No photos here." : "Allow Develop to use Photos in System Settings › Privacy & Security › Photos."
+        case .photos, .photosPlaces: PhotosLibrary.authorised ? "No photos here." : "Allow Develop to use Photos in System Settings › Privacy & Security › Photos."
         case .folder: model.library.includeSubfolders ? "No raw files or images in this folder or its subfolders."
                                                       : "No raw files or images in this folder. Turn on Include Subfolders to look further down."
         }

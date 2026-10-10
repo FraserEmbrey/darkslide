@@ -26,8 +26,18 @@ enum LibrarySource: Hashable {
     case exported
     /// every photo in the library's folders, on a map
     case map
-    /// Apple Photos: an album, or the newest of the whole library
+    /// Apple Photos: an album, or the whole library
     case photos(album: String?, title: String)
+    /// every photo in Apple Photos, on a map
+    case photosPlaces
+
+    /// from Apple Photos rather than the folders on this Mac
+    var isPhotos: Bool {
+        switch self {
+        case .photos, .photosPlaces: true
+        default: false
+        }
+    }
 
     var title: String {
         switch self {
@@ -36,6 +46,7 @@ enum LibrarySource: Hashable {
         case .exported: "Exported"
         case .map: "Map"
         case .photos(_, let title): title
+        case .photosPlaces: "Places"
         }
     }
 }
@@ -102,7 +113,7 @@ final class Library {
         case .map: catalog.folders + (lastFolder.map { [$0] } ?? [])
         // a collection's photos are spread across folders: watch those
         case .edited, .exported: Array(Set(items.map { $0.url.deletingLastPathComponent() }))
-        case .photos: []
+        case .photos, .photosPlaces: []
         case nil: []
         }
         watcher.watch(folders)
@@ -171,7 +182,7 @@ final class Library {
     }
 
     /// whether the photos show on the map: the Map source, or another in map view
-    var showsMap: Bool { source == .map || viewMode == .map }
+    var showsMap: Bool { source == .map || source == .photosPlaces || viewMode == .map }
 
     /// Shows a folder or collection. Nothing happens if it's already showing,
     /// so opening a photo from it keeps the thumbnails.
@@ -195,7 +206,9 @@ final class Library {
         let generation = scanGeneration
         isScanning = true
         let recursive = includeSubfolders
-        if case .photos(let album, _) = source {
+        if source.isPhotos {
+            var album: String? = nil
+            if case .photos(let a, _) = source { album = a }
             Task.detached(priority: .userInitiated) {
                 let found = PhotosLibrary.assets(in: album).map { LibraryItem(url: $0.url, title: $0.title, hasEdit: $0.edited) }
                 await MainActor.run {
@@ -210,7 +223,7 @@ final class Library {
             return
         }
         let collection: [URL]? = switch source {
-        case .folder, .map, .photos: nil
+        case .folder, .map, .photos, .photosPlaces: nil
         case .edited: catalog.editedPhotos
         case .exported: catalog.exportedPhotos
         }
@@ -285,6 +298,8 @@ final class Library {
 
     func index(of url: URL?) -> Int? {
         guard let url else { return nil }
+        // a Photos address is never a file path to tidy
+        if PhotosLibrary.assetID(url) != nil { return items.firstIndex { $0.url == url } }
         let path = url.standardizedFileURL.path
         return items.firstIndex { $0.url.standardizedFileURL.path == path }
     }
@@ -303,13 +318,18 @@ final class Library {
     /// first (darktable's map view geotags there), then the file's own EXIF.
     func loadLocations() {
         var todo = items.map(\.url).filter { !locationsChecked.contains($0) }
-        // Photos has its photos' places already: one fetch, no files read
+        // Photos has its photos' places already: no files read, but tens of
+        // thousands of them take a moment, so off the main thread
         let fromPhotos = todo.filter { PhotosLibrary.assetID($0) != nil }
         if !fromPhotos.isEmpty {
-            let found = PhotosLibrary.locations(of: fromPhotos)
-            for url in fromPhotos {
-                locationsChecked.insert(url)
-                if let c = found[url] { locations[url] = c }
+            fromPhotos.forEach { locationsChecked.insert($0) }
+            isLoadingLocations = true
+            Task.detached(priority: .userInitiated) {
+                let found = PhotosLibrary.locations(of: fromPhotos)
+                await MainActor.run {
+                    if self.locations.isEmpty { self.locations = found } else { self.locations.merge(found) { $1 } }
+                    self.isLoadingLocations = false
+                }
             }
             todo.removeAll { PhotosLibrary.assetID($0) != nil }
         }
@@ -352,12 +372,17 @@ final class Library {
         guard photosObserver == nil else { return }
         photosObserver = PhotosLibrary.Observer { [weak self] changed, reload in
             Task { @MainActor in
-                guard let self, case .photos = self.source else { return }
-                for url in changed {
-                    self.thumbnails[url] = nil
-                    self.locationsChecked.remove(url)
+                guard let self, self.source?.isPhotos == true else { return }
+                // in one go: a change per photo redrew the grid each time, and
+                // Photos reports thousands at once while it analyses the library
+                let stale = changed.filter { self.thumbnails[$0] != nil }
+                if !stale.isEmpty {
+                    var thumbnails = self.thumbnails
+                    stale.forEach { thumbnails[$0] = nil }
+                    self.thumbnails = thumbnails
                 }
-                if reload { self.rescan() } else if self.showsMap { self.loadLocations() }
+                if !changed.isEmpty { self.locationsChecked.subtract(changed) }
+                if reload { self.rescan() } else if self.showsMap, !changed.isEmpty { self.loadLocations() }
             }
         }
     }

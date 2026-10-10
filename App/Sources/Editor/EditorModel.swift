@@ -958,10 +958,14 @@ final class EditorModel {
             // TestPhotos: launch argument (-TestPhotos YES) for testing: reads Photos (access,
             // albums, the newest photos) and opens the newest, logging only counts and names
             if UserDefaults.standard.bool(forKey: "TestPhotos"), openingPhotosAsset == nil {
+                UserDefaults.standard.set(false, forKey: "TestPhotos")
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(3))
                     FileHandle.standardError.write("Develop photos test: authorised \(PhotosLibrary.authorised)\n".data(using: .utf8)!)
-                    showPhotos(album: nil, title: "All Photos")
+                    let shown = Date()
+                    showPhotos(UserDefaults.standard.bool(forKey: "TestPhotosPlaces") ? .photosPlaces : .photos(album: nil, title: "All Photos"))
+                    while library.items.isEmpty || library.isScanning || library.isLoadingLocations { try? await Task.sleep(for: .milliseconds(50)) }
+                    FileHandle.standardError.write("Develop photos test: shown in \(String(format: "%.2f", Date().timeIntervalSince(shown)))s\n".data(using: .utf8)!)
                     try? await Task.sleep(for: .seconds(6))
                     let t0 = Date()
                     library.loadLocations()
@@ -2887,20 +2891,24 @@ extension EditorModel {
 // MARK: - Apple Photos
 
 extension EditorModel {
-    func showPhotos(album: String?, title: String) {
+    /// shows Apple Photos (All Photos, an album or Places), asking for access the first time
+    func showPhotos(_ source: LibrarySource) {
         Task {
             guard await PhotosLibrary.authorise() else {
                 errorMessage = "Develop needs access to Photos: allow it in System Settings › Privacy & Security › Photos."
                 return
             }
-            photosAlbums = PhotosLibrary.albums()
-            showSource(.photos(album: album, title: title))
+            if photosAlbums.isEmpty { loadPhotosAlbums() }
+            showSource(source)
         }
     }
 
+    /// off the main thread: a library with hundreds of albums takes a moment
     func loadPhotosAlbums() {
         guard PhotosLibrary.authorised else { return }
-        photosAlbums = PhotosLibrary.albums()
+        Task {
+            photosAlbums = await Task.detached(priority: .userInitiated) { PhotosLibrary.albums() }.value
+        }
     }
 
     /// Saves the edit to Photos as its edit of the original: a rendering in

@@ -243,11 +243,6 @@ struct ExportOptionsView: View {
                           systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                } else if s.format == .jpegGainMap && options.extras.any {
-                    Label("Frames and watermarks aren't added to JPEG with HDR gain map yet; choose another format for them.",
-                          systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 } else if target.isHDR && model.hdrLimitStops > 0 && s.format != .jpegGainMap {
                     Label("The HDR peak limit only applies to JPEG with HDR gain map. For \(s.format.title), lower your tone mapper's target white instead.",
                           systemImage: "info.circle")

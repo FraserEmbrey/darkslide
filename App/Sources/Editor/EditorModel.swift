@@ -983,6 +983,33 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop heif test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
+            // TestExtras: launch argument (-TestExtras /folder) for testing: exports with a frame
+            // and watermark as JPEG, PNG, HLG HEIF and a gain map JPEG, then one plain JPEG,
+            // restoring the saved frame and watermark settings afterwards
+            if let folder = UserDefaults.standard.string(forKey: "TestExtras"), !folder.isEmpty {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    let saved = ExportExtras.load()
+                    var e = ExportExtras(); e.frameOn = true; e.frameShape = .even; e.frameWidth = 5
+                    e.watermarkOn = true; e.watermarkText = "© Fraser Embrey"; e.watermarkPosition = 8
+                    e.save()
+                    var s = ExportSettings(); s.longEdge = 1200; s.quality = 90
+                    s.format = .jpeg; s.bitDepth = 8; s.profile = .sRGB
+                    await export(s, to: URL(fileURLWithPath: folder + "/x.jpg"), remember: false)
+                    s.format = .png; s.bitDepth = 16
+                    await export(s, to: URL(fileURLWithPath: folder + "/x.png"), remember: false)
+                    s.format = .heif; s.bitDepth = 10; s.profile = .hlgP3
+                    await export(s, to: URL(fileURLWithPath: folder + "/x.heic"), remember: false)
+                    s.format = .jpegGainMap; s.bitDepth = 8; s.profile = .hlgP3
+                    await export(s, to: URL(fileURLWithPath: folder + "/gainmap.jpg"), remember: false)
+                    saved.save()
+                    var none = ExportExtras(); none.frameOn = false; none.watermarkOn = false; none.save()
+                    s.format = .jpeg; s.bitDepth = 8; s.profile = .sRGB
+                    await export(s, to: URL(fileURLWithPath: folder + "/plain.jpg"), remember: false)
+                    saved.save()
+                    FileHandle.standardError.write("Develop extras test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -1571,16 +1598,16 @@ final class EditorModel {
                 try await exportGainMapJPEG(settings, to: url, engine: engine)
                 lastExport = url
                 FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
-            } else if settings.format == .heif {
-                try await exportHEIF(settings, to: url, engine: engine)
+            } else if settings.format == .heif || ExportExtras.load().any {
+                // HEIF, and anything with a frame or watermark, through Core Image
+                try await exportThroughCoreImage(settings, to: url, engine: engine)
                 lastExport = url
             } else {
                 // darktable adds the extension itself
                 lastExport = try await engine.export(
                     path: url.deletingPathExtension().path, format: settings.format.darktableName ?? "jpeg",
                     quality: settings.quality, bitDepth: settings.bitDepth, maxEdge: settings.longEdge,
-                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue,
-                    extras: ExportExtras.load(), photoSize: imageSize)
+                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue)
             }
             if let photo = self.url, let file = lastExport {
                 catalog.recordExport(photo, file: file, format: settings.format.title)
@@ -1591,46 +1618,70 @@ final class EditorModel {
         }
     }
 
-    /// HEIF, written by Core Image: darktable exports a 16-bit TIFF already
-    /// encoded in the export's profile (sRGB, Display P3, PQ or HLG, with any
-    /// frame and watermark), and Core Image writes those values unchanged into
-    /// a HEIC tagged with the matching colour space, 8-bit or 10-bit. Colour
-    /// management is off for that step, so nothing is converted twice.
-    private func exportHEIF(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
+    /// Exports through Core Image: darktable exports a 16-bit (or float) TIFF
+    /// already encoded in the export's profile (sRGB, Display P3, PQ, HLG and
+    /// so on), the frame and watermark are drawn on it, and Core Image writes
+    /// it as HEIF, JPEG, PNG or TIFF, tagged with the matching colour space.
+    /// Colour management is off for the encoding step, so nothing is converted
+    /// twice; the TIFF's metadata (EXIF and the rest) goes into the file.
+    /// Used for HEIF always, and for the others when there's a frame or watermark.
+    private func exportThroughCoreImage(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
         let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("develop-heif-\(UUID().uuidString)")
-        let tiff = try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: 16,
-                                           maxEdge: settings.longEdge, profile: profile,
-                                           extras: ExportExtras.load(), photoSize: imageSize)
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("develop-export-\(UUID().uuidString)")
+        let float = settings.format == .tiff && settings.bitDepth == 32
+        let extras = ExportExtras.load()
+        // smaller by the frame's share, so the framed picture is the size chosen
+        let tiff = try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: float ? 32 : 16,
+                                           maxEdge: extras.any ? extras.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge,
+                                           profile: profile)
         defer { try? FileManager.default.removeItem(at: tiff) }
         let quality = Double(settings.quality) / 100
-        let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
         try await Task.detached(priority: .userInitiated) {
-            if let space = Self.colourSpace(forDarktableProfile: profile) {
-                // the values as darktable encoded them, tagged with that encoding
-                guard let image = CIImage(contentsOf: tiff, options: [.colorSpace: NSNull()]) else {
-                    throw EngineError(message: "Couldn't read darktable's export.")
-                }
-                let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+            let tagged = Self.colourSpace(forDarktableProfile: profile)
+            // the values as darktable encoded them, or through its ICC profile
+            guard var image = tagged != nil ? CIImage(contentsOf: tiff, options: [.colorSpace: NSNull()]) : CIImage(contentsOf: tiff),
+                  let space = tagged ?? CIImage(contentsOf: tiff)?.colorSpace else {
+                throw EngineError(message: "Couldn't read darktable's export.")
+            }
+            if extras.any { image = extras.composite(image, white: tagged != nil ? Self.whiteLevel(forDarktableProfile: profile) : 1) }
+            let context = tagged != nil ? CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()]) : CIContext()
+            let lossy = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
+            switch settings.format {
+            case .heif:
                 if settings.bitDepth >= 10 {
-                    try context.writeHEIF10Representation(of: image, to: url, colorSpace: space, options: options)
+                    try context.writeHEIF10Representation(of: image, to: url, colorSpace: space, options: lossy)
                 } else {
-                    try context.writeHEIFRepresentation(of: image, to: url, format: .RGBA8, colorSpace: space, options: options)
+                    try context.writeHEIFRepresentation(of: image, to: url, format: .RGBA8, colorSpace: space, options: lossy)
                 }
-            } else {
-                // another profile: through its ICC profile, kept in the HEIC
-                guard let image = CIImage(contentsOf: tiff), let space = image.colorSpace else {
-                    throw EngineError(message: "Couldn't read darktable's export.")
-                }
-                let context = CIContext()
-                if settings.bitDepth >= 10 {
-                    try context.writeHEIF10Representation(of: image, to: url, colorSpace: space, options: options)
-                } else {
-                    try context.writeHEIFRepresentation(of: image, to: url, format: .RGBA8, colorSpace: space, options: options)
-                }
+            case .jpeg:
+                try context.writeJPEGRepresentation(of: image, to: url, colorSpace: space, options: lossy)
+            case .png:
+                try context.writePNGRepresentation(of: image, to: url, format: settings.bitDepth >= 16 ? .RGBA16 : .RGBA8,
+                                                   colorSpace: space, options: [:])
+            case .tiff:
+                let format: CIFormat = settings.bitDepth >= 32 ? .RGBAf : settings.bitDepth >= 16 ? .RGBA16 : .RGBA8
+                try context.writeTIFFRepresentation(of: image, to: url, format: format, colorSpace: space, options: [:])
+            case .jpegGainMap:
+                throw EngineError(message: "A gain map JPEG is made from renders, not an export.")
             }
         }.value
         FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+    }
+
+    /// the value that is white (203 nits, reference white) in darktable's
+    /// export encodings: 1 for SDR and linear ones, the HLG and PQ signal for it
+    nonisolated static func whiteLevel(forDarktableProfile type: Int) -> Double {
+        switch type {
+        case 23, 25: 0.75          // HLG: reference white at 75% signal (BT.2408)
+        case 22, 24:               // PQ: 203 of 10,000 nits
+            {
+                let y = 203.0 / 10_000, m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128
+                let c1 = 3424.0 / 4096, c2 = 2413.0 / 4096 * 32, c3 = 2392.0 / 4096 * 32
+                let p = pow(y, m1)
+                return pow((c1 + c2 * p) / (1 + c3 * p), m2)
+            }()
+        default: 1
+        }
     }
 
     /// macOS's colour space for darktable's export profiles that have one
@@ -1662,7 +1713,9 @@ final class EditorModel {
             throw EngineError(message: "A gain map needs an HDR edit: choose an HLG or PQ export format in the HDR card, or an HDR colour profile here.")
         }
         if settings.profile != .fromEdit { setOutputProfile(settings.profile.rawValue) }
-        let size = exportSize(longEdge: settings.longEdge)
+        // smaller by the frame's share, if there is one, so the framed picture is the size chosen
+        let extrasForSize = ExportExtras.load()
+        let size = exportSize(longEdge: extrasForSize.any ? extrasForSize.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge)
         let maxPixels = Int(max(size.width, size.height))
 
         let hdrFrame = try await engine.render(maxPixels: maxPixels, hdr: true, displayHeadroom: 16, wantOverlay: false,
@@ -1684,11 +1737,15 @@ final class EditorModel {
             sdr = out
         }
 
+        // the frame and watermark on both, so the gain map between them is the photo's
+        let extras = ExportExtras.load()
+        let framedHDR = extras.any ? extras.composite(hdr) : hdr
+        let framedSDR = extras.any ? extras.composite(sdr) : sdr
         let options: [CIImageRepresentationOption: Any] = [
             CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): Double(settings.quality) / 100,
-            .hdrImage: hdr,
+            .hdrImage: framedHDR,
         ]
-        try CIContext().writeJPEGRepresentation(of: sdr, to: url, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
+        try CIContext().writeJPEGRepresentation(of: framedSDR, to: url, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
                                                 options: options)
         // render the preview again at its own size (the frame file was reused)
         requestRender()
@@ -2828,7 +2885,7 @@ extension EditorModel {
                 } else if target.type.conforms(to: .heic) {
                     settings.format = .heif
                     settings.bitDepth = 8
-                    try await exportHEIF(settings, to: destination, engine: engine)
+                    try await exportThroughCoreImage(settings, to: destination, engine: engine)
                 } else {
                     let written = try await engine.export(
                         path: destination.deletingPathExtension().path, format: "jpeg",

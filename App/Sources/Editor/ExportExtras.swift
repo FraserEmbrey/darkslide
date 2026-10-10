@@ -1,13 +1,10 @@
 import AppKit
 import CoreText
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
+import CoreImage
 
 /// A frame and a text watermark, added to exports only (the edit is left as
-/// it is). darktable's framing and watermark modules do the work, appended
-/// to the export as a style; the watermark's text is drawn here, with
-/// macOS's text engine, into a PNG for darktable to place.
+/// it is), drawn by Core Image on darktable's output: no Cairo needed.
 struct ExportExtras: Codable, Equatable {
     enum Shape: String, Codable, CaseIterable, Identifiable {
         case even, square, portrait45
@@ -80,61 +77,73 @@ struct ExportExtras: Codable, Equatable {
         return (CGSize(width: cw, height: ch), CGRect(x: (cw - w) / 2, y: (ch - h) / 2, width: w, height: h))
     }
 
-    /// the modules for the engine's export, after drawing the watermark's PNG
-    /// into darktable's user watermarks folder (`configDir`); `photo` is the
-    /// edit's size, for placing the watermark on a frame
-    func engineExtras(configDir: URL, photo: CGSize) -> [[String: Any]] {
-        var out: [[String: Any]] = []
-        let text = watermarkText.trimmingCharacters(in: .whitespaces)
-        // darktable applies the watermark after the frame, to the whole picture
+    /// The long edge to export the photo at so that, framed, the picture's
+    /// long edge is `longEdge` (0, the original size, stays 0)
+    func photoLongEdge(for longEdge: Int, photo: CGSize) -> Int {
+        guard frameOn, longEdge > 0, photo.width > 0, photo.height > 0 else { return longEdge }
         let layout = frameLayout(photo: photo)
-        let c = layout.canvas, r = layout.photo
-        let column = watermarkPosition % 3
-        // on a frame it sits in the bottom border, in the frame's other tone
-        let onFrame = frameOn && r.minY > 0
-        let tone = onFrame ? (frameTone == .white ? Tone.black : Tone.white) : watermarkTone
-        if watermarkOn, !text.isEmpty, c.width > 0, c.height > 0,
-           let file = Self.drawText(text, tone: tone, into: configDir.appendingPathComponent("watermarks")) {
-            var fields: [String: Any] = ["filename": file, "opacity": watermarkOpacity]
-            if onFrame {
-                let border = c.height - r.maxY
-                // in proportion to the border, but never large on a deep one
-                let textHeight = min(border * 0.42, c.height * 0.03)
-                fields["alignment"] = 6 + column        // the bottom row
-                fields["scale_base"] = 4                 // advanced
-                fields["scale_img"] = 2                  // to the picture's height
-                fields["scale_svg"] = 1                  // by the marker's height
-                fields["scale"] = textHeight / c.height * 100
-                fields["yoffset"] = -((border - textHeight) / 2) / c.height
-                // in line with the photo's side, where it's at a side
-                fields["xoffset"] = column == 0 ? r.minX / c.width : column == 2 ? -(c.width - r.maxX) / c.width : 0
-            } else {
-                fields["alignment"] = watermarkPosition
-                fields["scale_base"] = 4
-                fields["scale_img"] = 3                  // to the larger side
-                fields["scale_svg"] = 0                  // by the marker's width
-                fields["scale"] = watermarkSize
-                // a little in from the edges it's aligned to
-                fields["xoffset"] = column == 0 ? 0.02 : column == 2 ? -0.02 : 0
-                fields["yoffset"] = watermarkPosition / 3 == 0 ? 0.03 : watermarkPosition / 3 == 2 ? -0.03 : 0
-            }
-            out.append(["op": "watermark", "fields": fields])
-        }
-        if frameOn {
-            var fields: [String: Any] = ["size": frameWidth / 100, "color": frameTone.rgb, "basis": 4]
-            switch frameShape {
-            case .even: fields["aspect"] = -1.0
-            case .square: fields["aspect"] = 1.0
-            case .portrait45: fields["aspect"] = 1.25; fields["aspect_orient"] = 1
-            }
-            out.append(["op": "borders", "fields": fields])
-        }
-        return out
+        let grow = max(layout.canvas.width, layout.canvas.height) / max(photo.width, photo.height)
+        return Int((Double(longEdge) / grow).rounded())
     }
 
-    /// the text as a transparent PNG, large enough to stay sharp at any size;
-    /// returns its file name in `folder`
-    static func drawText(_ text: String, tone: Tone, into folder: URL) -> String? {
+    /// The frame and watermark added to an image (origin at zero), drawn with
+    /// Core Image. `white` is the value that is white in the image's encoding:
+    /// 1 for SDR and linear images, lower for PQ and HLG, so a white frame
+    /// sits at reference white rather than the format's peak.
+    func composite(_ image: CIImage, white: Double = 1) -> CIImage {
+        let photo = image.extent.size
+        let layout = frameLayout(photo: photo)
+        let c = layout.canvas, r = layout.photo
+        // Core Image's origin is at the bottom: flip the layout's top-down y
+        func flipped(_ rect: CGRect) -> CGRect { CGRect(x: rect.minX, y: c.height - rect.maxY, width: rect.width, height: rect.height) }
+        let level = CGFloat(white)
+        var out = image
+        if frameOn {
+            let v = frameTone == .white ? level : 0
+            let frame = CIImage(color: CIColor(red: v, green: v, blue: v, alpha: 1))
+                .cropped(to: CGRect(origin: .zero, size: c))
+            let placed = flipped(r)
+            out = image.transformed(by: CGAffineTransform(translationX: placed.minX, y: placed.minY)).composited(over: frame)
+        }
+        let text = watermarkText.trimmingCharacters(in: .whitespaces)
+        let onFrame = frameOn && r.minY > 0
+        let tone = onFrame ? (frameTone == .white ? Tone.black : Tone.white) : watermarkTone
+        guard watermarkOn, !text.isEmpty, let mark = Self.textImage(text, tone: tone) else { return out }
+        // the text's size and place, top-down, as on the frame or on the photo
+        let column = watermarkPosition % 3, row = watermarkPosition / 3
+        let aspect = mark.extent.width / max(mark.extent.height, 1)
+        var box: CGRect
+        if onFrame {
+            let border = c.height - r.maxY
+            let h = min(border * 0.42, c.height * 0.03), w = h * aspect
+            let x = column == 0 ? r.minX : column == 2 ? r.maxX - w : (c.width - w) / 2
+            box = CGRect(x: x, y: r.maxY + (border - h) / 2, width: w, height: h)
+        } else {
+            let w = max(c.width, c.height) * watermarkSize / 100, h = w / aspect
+            let mx = c.width * 0.02, my = c.height * 0.03
+            let x = column == 0 ? mx : column == 2 ? c.width - mx - w : (c.width - w) / 2
+            let y = row == 0 ? my : row == 2 ? c.height - my - h : (c.height - h) / 2
+            box = CGRect(x: x, y: y, width: w, height: h)
+        }
+        box = flipped(box)
+        let scale = box.height / mark.extent.height
+        // white text at the encoding's white, and the opacity, before placing
+        let alpha = CGFloat(watermarkOpacity / 100)
+        let k = tone == .white ? level : 1
+        let tinted = mark.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: k * alpha, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: k * alpha, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: k * alpha, w: 0),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: alpha),
+        ])
+        let placed = tinted.transformed(by: CGAffineTransform(scaleX: scale, y: scale)
+            .concatenating(CGAffineTransform(translationX: box.minX, y: box.minY)))
+        return placed.composited(over: out).cropped(to: CGRect(origin: .zero, size: c))
+    }
+
+    /// the text, white or black on transparent (premultiplied), large enough
+    /// to stay sharp at any size
+    static func textImage(_ text: String, tone: Tone) -> CIImage? {
         let font = CTFontCreateUIFontForLanguage(.system, 200, nil) ?? CTFontCreateWithName("Helvetica" as CFString, 200, nil)
         let colour = tone == .white ? CGColor(gray: 1, alpha: 1) : CGColor(gray: 0, alpha: 1)
         let attributed = NSAttributedString(string: text, attributes: [
@@ -150,12 +159,8 @@ struct ExportExtras: Codable, Equatable {
                                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.textPosition = CGPoint(x: pad - bounds.minX, y: pad - bounds.minY)
         CTLineDraw(line, ctx)
-        guard let image = ctx.makeImage() else { return nil }
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let name = "develop-watermark-\(tone.rawValue).png"
-        guard let dest = CGImageDestinationCreateWithURL(folder.appendingPathComponent(name) as CFURL,
-                                                         UTType.png.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(dest, image, nil)
-        return CGImageDestinationFinalize(dest) ? name : nil
+        // the coverage only: the colour is set when it's placed
+        return ctx.makeImage().map { CIImage(cgImage: $0, options: [.colorSpace: NSNull()]) }
     }
+
 }

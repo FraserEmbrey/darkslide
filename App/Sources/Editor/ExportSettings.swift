@@ -2,7 +2,7 @@ import Foundation
 
 /// The export formats Develop offers: JPEG, TIFF and PNG from darktable, and
 /// a JPEG with an HDR gain map and HEIF from Core Image (see
-/// EditorModel.exportGainMapJPEG and exportHEIF). darktable is built without
+/// EditorModel.exportGainMapJPEG and exportThroughCoreImage). darktable is built without
 /// its HEIF, JPEG XL, WebP and OpenEXR modules: macOS writes HEIF itself.
 enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     case jpeg, jpegGainMap, heif, tiff, png

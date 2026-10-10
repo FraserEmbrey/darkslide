@@ -18,9 +18,12 @@ import subprocess
 import sys
 import tempfile
 
-# the interface libraries, by the start of their file name
+# the libraries replaced, by the start of their file name: the interface
+# stack, Cairo (drawing; the app draws frames and watermarks itself) and
+# potrace (tracing AI masks into paths, with darktable's AI off)
 GUI = ["libgtk-3", "libgdk-3", "libgdk_pixbuf-2", "libpango-1", "libpangocairo-1", "libpangoft2-1",
-       "librsvg-2", "libatk-1", "libharfbuzz", "libcairo-gobject", "libepoxy", "libfribidi"]
+       "librsvg-2", "libatk-1", "libharfbuzz", "libcairo-gobject", "libepoxy", "libfribidi",
+       "libcairo", "libpotrace"]
 
 engine = os.path.abspath(sys.argv[1])
 libdir = os.path.join(engine, "lib", "darktable")

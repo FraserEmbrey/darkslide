@@ -141,17 +141,16 @@ Photos assets aren't files, so library items address them as `photos://asset?id=
 
 ### Frames and watermarks
 
-The export panel can add a frame and a text watermark to the exported file, leaving the edit as it is.
+The export panel can add a frame and a text watermark to the exported file, leaving the edit as it is. Both work for every format, gain map JPEG included, and the framed picture comes out at the size chosen (the photo is exported smaller by the frame's share).
 - **Frame:** an even border, square or 4:5 portrait, in white or black, sized as a share of the longer side.
 - **Watermark:** your text in one of nine positions, white or black, with a size and opacity. With a frame on, it sits in the bottom border instead, sized to the border, in the frame's other colour, lined up with the photo's edge (or centred).
 
-darktable's framing and watermark modules do the work. The engine's export takes them as `extras` (module and settings), builds them from each module's defaults into a darktable style, appends it to the export (`fdata->style`), and deletes it afterwards.
-
-The watermark's text is drawn by the app with Core Text into a transparent PNG in darktable's user watermarks folder. darktable's text SVGs have no size, and it measures the text itself, which cut off the last letters.
-
-darktable applies the watermark after the frame, to the whole framed picture, so placing it in the border uses the frame's layout. `ExportExtras.frameLayout` ports `borders.c`'s `modify_roi_out`: the border's size is its share of the framed side, so it adds `L·s/(1−s)`.
-
-Not yet for JPEG with HDR gain map, which the app assembles from two renders rather than darktable's export.
+The app draws them with Core Image (`ExportExtras.composite`), not darktable's framing and watermark modules, which needed Cairo:
+- **The path:** darktable exports a 16-bit (or float) TIFF already encoded in the export's profile. The frame and watermark are drawn on it, and Core Image writes the chosen format, tagged with the matching colour space. Colour management is off for that step, so nothing is converted twice, and the TIFF's metadata goes into the file. Exports without a frame or watermark still come straight from darktable, except HEIF, which always takes this path.
+- **Gain map JPEGs:** these get them on both the HDR and SDR images before the gain map is computed.
+- **White:** the frame and white text sit at reference white in the file's encoding: 1 for SDR, 75% signal for HLG, and the PQ signal for 203 nits. In an HLG HEIF and a gain map JPEG the frame decodes to exactly 1.00, with the photo's highlights above it.
+- **Layout:** `frameLayout` ports `borders.c`'s `modify_roi_out`, the border's size being its share of the framed side, so frames match darktable's. With a frame on, the signature sits in the bottom border, sized to it, in the frame's other colour, lined up with the photo's edge.
+- **Text:** the text is drawn with Core Text.
 
 ### Copy and paste adjustments
 
@@ -264,5 +263,7 @@ darktable is built with only what Develop uses. Besides the extras that were alr
 
 **No interface libraries.** darktable's build requires GTK and the libraries under it, and its code refers to them throughout (every module has interface code), but Develop never runs darktable's interface. So the app build (`Scripts/stub-gui-libs.py`) gives the bundle's engine stand-ins instead. For each of GTK, GDK, gdk-pixbuf, Pango, Pango-Cairo, librsvg, ATK, HarfBuzz and cairo-gobject, it builds a small library exporting every function the engine refers to from it (646 for GTK, about 780 in all), each doing nothing and returning zero. It then points the engine's 148 binaries at those with `install_name_tool`. darktable itself is built unchanged against GTK's headers. A stand-in that is ever called logs `[gui stub] <name> called`. None has been, across opening, rendering in SDR and HDR, curves, hue curves, local adjustments, lens changes, film looks, perspective, presets and instances, copy and paste, and JPEG, HEIF and framed, watermarked exports.
 
-The engine now links 18 Homebrew libraries rather than 39: the GLib family, json-glib, Little CMS, Exiv2, Lensfun, pugixml, libjpeg, libpng, libtiff, libomp, libintl, Cairo (which the watermark module composites with), potrace and Imath. Bundling those is what remains for a self-contained app.
+Cairo and potrace get stand-ins too. Homebrew's Cairo brought in X11 (libX11, libxcb, libXext, libXrender), fontconfig, freetype and pixman, about 24 MB. Develop only used it for darktable's watermark module, and now draws frames and watermarks itself. potrace traces darktable's AI masks into paths, and AI is off. The bundle also leaves out darktable's lighttable and view modules and its interface art (pixmaps, themes, the slideshow viewer), as well as its LaTeX and tools folders. The engine is 29 MB, down from 35 MB.
+
+The engine now links 16 Homebrew libraries rather than 39: the GLib family (GLib, GObject, GIO, GModule, GThread), json-glib, Little CMS, Exiv2, Lensfun, pugixml, libjpeg, libpng, libtiff, libomp, libintl and Imath. Bundling those is what remains for a self-contained app.
 

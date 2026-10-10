@@ -29,11 +29,14 @@ xcrun actool "$ROOT/Design/AppIcon.icon" --compile "$APP/Contents/Resources" --p
 # engine layout mirrors the install prefix so darktable finds its
 # modules (lib/darktable) and data (share/darktable) relative to the binary
 cp "$ENGINE_SRC/bin/darkroom-helper" "$APP/Contents/Resources/engine/bin/"
-cp -R "$ENGINE_SRC/lib" "$APP/Contents/Resources/engine/"
+# without darktable's interface parts: lighttable and view modules
+rsync -a --exclude 'plugins/lighttable' --exclude 'views' "$ENGINE_SRC/lib" "$APP/Contents/Resources/engine/"
 # MetalCL: darktable's GPU code on Metal (Engine/metalcl); kernels are in share/darktable/metal-kernels
 "$ROOT/Engine/metalcl/build.sh" > /dev/null
 cp "$ROOT/vendor/metalcl/libMetalCL.dylib" "$APP/Contents/Resources/engine/lib/"
-cp -R "$ENGINE_SRC/share/darktable" "$APP/Contents/Resources/engine/share/"
+# and without its interface art (pixmaps, themes, the slideshow) or its LaTeX and tools
+rsync -a --exclude 'pixmaps' --exclude 'themes' --exclude 'pswp' --exclude 'latex' --exclude 'tools' \
+  "$ENGINE_SRC/share/darktable" "$APP/Contents/Resources/engine/share/"
 
 # darktable's interface libraries (GTK and those under it) are never run:
 # point the engine at stand-ins, so they aren't loaded (Scripts/stub-gui-libs.py)

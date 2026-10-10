@@ -189,6 +189,9 @@ struct ModuleCard: View {
             } else if expandedBinding.wrappedValue, module.op == "rgbcurve" {
                 RGBCurveControls(module: module)
                     .transition(.opacity)
+            } else if expandedBinding.wrappedValue, module.op == "exposure", !EditorModel.isLocal(module) {
+                ExposureControls(module: module)
+                    .transition(.opacity)
             } else if expandedBinding.wrappedValue, module.op == "bilat" {
                 LocalContrastControls(module: module)
                     .transition(.opacity)
@@ -1242,6 +1245,41 @@ struct RotatePerspectiveSummary: View {
         GridRow {
             Text(label).foregroundStyle(.secondary)
             Text(value).monospacedDigit()
+        }
+    }
+}
+
+/// Exposure, with darktable's technical settings out of the way: its black
+/// level correction unclips negative values and isn't a Blacks slider.
+struct ExposureControls: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+    @State private var showAdvanced = false
+
+    private func field(_ name: String) -> EngineField? { module.fields.first { $0.name == name } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let ev = field("exposure") {
+                FieldControl(op: module.op, field: ev) { model.setValue($0, module: module.key, field: ev.name) }
+            }
+            DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(["compensate_exposure_bias", "compensate_hilite_pres"].compactMap(field)) { f in
+                        FieldControl(op: module.op, field: f) { model.setValue($0, module: module.key, field: f.name) }
+                    }
+                    if let black = field("black") {
+                        ParamSlider(label: "Black level correction", value: black.value.number * 100, defaultValue: 0,
+                                    range: -10...10, isInteger: false, unit: "%", trackColors: nil, step: 0.01) {
+                            model.setValue(.number(($0 / 100 * 10000).rounded() / 10000), module: module.key, field: "black")
+                        }
+                        Text("Lifts the deepest values so none are negative, which can happen with noisy shadows. It isn't a Blacks slider: pushed further it makes near-black colours go wrong. To darken or lift the blacks, use the tone equaliser's Shadows or the tone mapper's black target.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 8)
+            }
         }
     }
 }

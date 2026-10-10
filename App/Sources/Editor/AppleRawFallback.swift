@@ -149,21 +149,45 @@ enum AppleRawFallback {
     /// Through ImageIO, which writes strips: Core Image can write TIFFs
     /// tiled (it does for half-float), and darktable's TIFF reader doesn't
     /// take tiled ones.
+    ///
+    /// Written as RGB without the alpha Core Image renders, Deflate-compressed
+    /// (both of which darktable's reader, libtiff, takes): a 24 MP decode is
+    /// 196 MB as RGBA, 116 MB like this. It can't get near the raw's size: the
+    /// raw holds one value a pixel, compressed with a lossy codec (Nikon's HE),
+    /// and the decode three, whose noise barely compresses.
     private static func writeTIFF(_ image: CIImage, to url: URL, format: CIFormat, space: CGColorSpace, context: CIContext) throws {
-        guard let cg = context.createCGImage(image, from: image.extent, format: format, colorSpace: space),
+        let extent = image.extent.integral
+        let (w, h) = (Int(extent.width), Int(extent.height))
+        let half = format == .RGBAh
+        guard half || format == .RGBA16 else { throw EngineError(message: "Unsupported decode format.") }
+        var rgba = [UInt16](repeating: 0, count: w * h * 4)
+        context.render(image, toBitmap: &rgba, rowBytes: w * 8, bounds: extent, format: format, colorSpace: space)
+        var rgb = [UInt16](repeating: 0, count: w * h * 3)
+        rgba.withUnsafeBufferPointer { src in
+            rgb.withUnsafeMutableBufferPointer { dst in
+                for i in 0..<(w * h) {
+                    dst[3 * i] = src[4 * i]; dst[3 * i + 1] = src[4 * i + 1]; dst[3 * i + 2] = src[4 * i + 2]
+                }
+            }
+        }
+        rgba = []
+        let info = (half ? CGBitmapInfo.floatComponents.rawValue : 0) | CGBitmapInfo.byteOrder16Little.rawValue
+            | CGImageAlphaInfo.none.rawValue
+        guard let provider = CGDataProvider(data: Data(bytes: rgb, count: rgb.count * 2) as CFData),
+              let cg = CGImage(width: w, height: h, bitsPerComponent: 16, bitsPerPixel: 48, bytesPerRow: w * 6, space: space,
+                               bitmapInfo: CGBitmapInfo(rawValue: info), provider: provider, decode: nil,
+                               shouldInterpolate: false, intent: .defaultIntent),
               let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.tiff.identifier as CFString, 1, nil) else {
             throw EngineError(message: "Couldn't decode \(url.lastPathComponent).")
         }
-        // LZW, which darktable's TIFF reader (libtiff) takes: a 24 MP decode is
-        // 196 MB uncompressed
-        let props = [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 5]] as CFDictionary
+        let props = [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 8]] as CFDictionary
         CGImageDestinationAddImage(dest, cg, props)
         guard CGImageDestinationFinalize(dest) else { throw EngineError(message: "Couldn't write the decoded image.") }
         trimCache(keeping: url)
     }
 
     /// The decoded files kept at most, newest used first. A Nikon HE raw
-    /// decodes to a couple of hundred megabytes, and a card of them would
+    /// decodes to over a hundred megabytes, and a card of them would
     /// otherwise fill the disk as they're opened. Edits are safe: each
     /// decode's sidecar is copied beside the original when saved, and back
     /// when the photo is opened and decoded again.

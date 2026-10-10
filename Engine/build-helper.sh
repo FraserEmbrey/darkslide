@@ -28,5 +28,10 @@ link="${link//bin\/cli\/CMakeFiles\/darktable-cli.dir\/main.c.o/$OBJ}"
 link="${link//-o bin\/darktable-cli/-o $OUT}"
 link="${link//-Wl,-rpath,$BUILD\/bin/-Wl,-rpath,@loader_path\/..\/lib\/darktable}"
 
+# Lensfun, for the lens picker (libdarktable links the same library)
+LENSFUN="$(brew --prefix lensfun)"
+compile="$compile -I$LENSFUN/include/lensfun"
+link="$link -L$LENSFUN/lib -llensfun"
+
 (cd "$BUILD" && eval "$compile" && eval "$link")
 echo "built $OUT"

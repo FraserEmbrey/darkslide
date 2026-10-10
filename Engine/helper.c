@@ -58,6 +58,7 @@
 #include <json-glib/json-glib.h>
 #include <stdio.h>
 #include <sys/mman.h>
+#include <lensfun.h>
 #include <unistd.h>
 
 // one image loaded into darktable: its develop state, pipe and input
@@ -942,6 +943,127 @@ static void _cmd_add_instance(JsonObject *o)
   _ok_done(b);
 }
 
+// ------------------------------------------------------------ lens picker
+
+// The Lensfun database darktable's lens module has already loaded. Its global
+// data isn't in a header; this mirrors the start of dt_iop_lens_global_data_t
+// in iop/lens.cc (eight OpenCL kernel ids, then the database).
+typedef struct lens_global_head_t
+{
+  int kernels[8];
+  lfDatabase *db;
+} lens_global_head_t;
+
+static const lfDatabase *_lensfun_db(dt_iop_module_t **lens_module)
+{
+  for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+  {
+    dt_iop_module_t *m = l->data;
+    if(strcmp(m->op, "lens")) continue;
+    if(lens_module) *lens_module = m;
+    const lens_global_head_t *gd = m->so ? (const lens_global_head_t *)m->so->data : NULL;
+    return gd ? gd->db : NULL;
+  }
+  return NULL;
+}
+
+static const char *_param_text(dt_iop_module_t *m, const char *field)
+{
+  dt_introspection_field_t *f = _find_field(m, field);
+  return f && f->header.type == DT_INTROSPECTION_TYPE_ARRAY ? (const char *)m->params + f->header.offset : "";
+}
+
+// {"cmd":"lens_cameras","query":"z 50"} -> Lensfun's cameras matching the
+// query (loosely), for when the photo's camera isn't recognised
+static void _cmd_lens_cameras(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  const lfDatabase *db = _lensfun_db(NULL);
+  if(!db) return _error("Lensfun isn't available");
+  const char *query = json_object_get_string_member_with_default(o, "query", "");
+  dt_pthread_mutex_lock(&darktable.plugin_threadsafe);
+  const lfCamera **cams = *query ? lf_db_find_cameras_ext(db, NULL, query, LF_SEARCH_LOOSE | LF_SEARCH_SORT_AND_UNIQUIFY)
+                                 : (const lfCamera **)NULL;
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "cameras");
+  json_builder_begin_array(b);
+  for(int i = 0; cams && cams[i] && i < 60; i++)
+  {
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "maker");
+    json_builder_add_string_value(b, lf_mlstr_get(cams[i]->Maker));
+    json_builder_set_member_name(b, "model");
+    json_builder_add_string_value(b, lf_mlstr_get(cams[i]->Model));
+    json_builder_set_member_name(b, "mount");
+    json_builder_add_string_value(b, cams[i]->Mount ? cams[i]->Mount : "");
+    json_builder_set_member_name(b, "crop");
+    json_builder_add_double_value(b, cams[i]->CropFactor);
+    json_builder_end_object(b);
+  }
+  json_builder_end_array(b);
+  if(cams) lf_free(cams);
+  dt_pthread_mutex_unlock(&darktable.plugin_threadsafe);
+  _ok_done(b);
+}
+
+// {"cmd":"lens_lenses","query":"35mm"} -> Lensfun's lenses that fit the lens
+// module's camera (all of them if the query is empty), best match first
+static void _cmd_lens_lenses(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *lens = NULL;
+  const lfDatabase *db = _lensfun_db(&lens);
+  if(!db || !lens) return _error("Lensfun isn't available");
+  const char *query = json_object_get_string_member_with_default(o, "query", "");
+  const char *camera_name = _param_text(lens, "camera");
+  dt_pthread_mutex_lock(&darktable.plugin_threadsafe);
+  const lfCamera **cams = *camera_name ? lf_db_find_cameras_ext(db, NULL, camera_name, 0) : NULL;
+  const lfCamera *camera = cams ? cams[0] : NULL;
+  const lfLens **lenses = lf_db_find_lenses_hd(db, camera, NULL, *query ? query : NULL,
+                                              LF_SEARCH_LOOSE | LF_SEARCH_SORT_AND_UNIQUIFY);
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "camera");
+  json_builder_add_string_value(b, camera ? lf_mlstr_get(camera->Model) : "");
+  json_builder_set_member_name(b, "lenses");
+  json_builder_begin_array(b);
+  for(int i = 0; lenses && lenses[i] && i < 5000; i++)
+  {
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "maker");
+    json_builder_add_string_value(b, lf_mlstr_get(lenses[i]->Maker));
+    json_builder_set_member_name(b, "model");
+    json_builder_add_string_value(b, lf_mlstr_get(lenses[i]->Model));
+    json_builder_set_member_name(b, "minFocal");
+    json_builder_add_double_value(b, lenses[i]->MinFocal);
+    json_builder_set_member_name(b, "maxFocal");
+    json_builder_add_double_value(b, lenses[i]->MaxFocal);
+    json_builder_set_member_name(b, "aperture");
+    json_builder_add_double_value(b, lenses[i]->MinAperture);
+    json_builder_end_object(b);
+  }
+  json_builder_end_array(b);
+  if(lenses) lf_free(lenses);
+  if(cams) lf_free(cams);
+  dt_pthread_mutex_unlock(&darktable.plugin_threadsafe);
+  _ok_done(b);
+}
+
+// {"cmd":"set_text","module":"lens:0","field":"lens","value":"..."}: a text
+// setting (a char array), such as the lens module's camera and lens
+static void _cmd_set_text(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!m) return _error("unknown module");
+  dt_introspection_field_t *f = _find_field(m, json_object_get_string_member_with_default(o, "field", ""));
+  if(!f || f->header.type != DT_INTROSPECTION_TYPE_ARRAY || f->Array.type != DT_INTROSPECTION_TYPE_CHAR)
+    return _error("not a text setting");
+  g_strlcpy((char *)m->params + f->header.offset, json_object_get_string_member_with_default(o, "value", ""),
+            f->Array.count);
+  _commit(m, TRUE);
+  _ok_done(_ok());
+}
+
 static void _cmd_styles(void)
 {
   JsonBuilder *b = _ok();
@@ -1601,6 +1723,9 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "curve")) _cmd_curve(o);
     else if(!strcmp(cmd, "auto_exposure")) _cmd_auto_exposure(o);
     else if(!strcmp(cmd, "add_instance")) _cmd_add_instance(o);
+    else if(!strcmp(cmd, "lens_cameras")) _cmd_lens_cameras(o);
+    else if(!strcmp(cmd, "lens_lenses")) _cmd_lens_lenses(o);
+    else if(!strcmp(cmd, "set_text")) _cmd_set_text(o);
     else if(!strcmp(cmd, "reset_all")) _cmd_reset_all();
     else if(!strcmp(cmd, "reset")) _cmd_reset(o);
     else if(!strcmp(cmd, "modules")) _cmd_modules();

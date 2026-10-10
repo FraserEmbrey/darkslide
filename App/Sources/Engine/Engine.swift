@@ -215,6 +215,41 @@ actor Engine {
         var channels: [[Int]]? = nil   // the same, per red, green and blue
     }
 
+    struct LensfunLens: Decodable, Hashable, Identifiable {
+        let maker: String
+        let model: String
+        let minFocal: Double
+        let maxFocal: Double
+        let aperture: Double
+        var id: String { model }
+    }
+    struct LensfunCamera: Decodable, Hashable, Identifiable {
+        let maker: String
+        let model: String
+        let mount: String
+        let crop: Double
+        var id: String { maker + " " + model }
+    }
+    private struct LensesReply: Decodable { let camera: String; let lenses: [LensfunLens] }
+    private struct CamerasReply: Decodable { let cameras: [LensfunCamera] }
+
+    /// Lensfun's lenses that fit the lens module's camera
+    func lensfunLenses() async throws -> (camera: String, lenses: [LensfunLens]) {
+        let r = try await request(["cmd": "lens_lenses", "query": ""], as: LensesReply.self)
+        return (r.camera, r.lenses)
+    }
+
+    /// Lensfun's cameras matching a search
+    func lensfunCameras(matching query: String) async throws -> [LensfunCamera] {
+        try await request(["cmd": "lens_cameras", "query": query], as: CamerasReply.self).cameras
+    }
+
+    /// sets a text setting (a char array), such as the lens module's lens, and returns the modules
+    func setText(module: String, field: String, value: String) async throws -> [EngineModule] {
+        _ = try await request(["cmd": "set_text", "module": module, "field": field, "value": value])
+        return try await request(["cmd": "modules"], as: ModulesReply.self).modules
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

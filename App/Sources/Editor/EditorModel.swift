@@ -338,6 +338,8 @@ final class EditorModel {
         ?? ["exposure:0", "channelmixerrgb:0", "toneequal:0", "colorbalancergb:0", "filmicrgb:0", "sigmoid:0"]
 
     private var engine: Engine?
+    /// for read-only lookups from pickers (Lensfun's lists), which change nothing
+    var engineForPickers: Engine? { engine }
     private var canvasPixels = 1600
     private var canvasSizePx = CGSize(width: 1600, height: 1000)
 
@@ -1064,6 +1066,23 @@ final class EditorModel {
             try? await engine?.enable(module: module, on: on)
             if let channels { try? await engine?.enable(module: channels, on: on) }
             requestRender()
+        }
+    }
+
+    /// a text setting, such as the lens module's camera or lens, as one undo step
+    func setText(_ value: String, module: String, field: String) {
+        guard let m = modules.first(where: { $0.key == module }) else { return }
+        recordUndoStep(label: Presentation.title(of: m))
+        hasUnsavedChanges = true
+        Task {
+            guard let engine else { return }
+            await settleEdits()
+            do {
+                modules = try await engine.setText(module: module, field: field, value: value)
+                requestRender()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

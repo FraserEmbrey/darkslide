@@ -796,6 +796,7 @@ extension EnvironmentValues {
 struct LensControls: View {
     @Environment(EditorModel.self) private var model
     let module: EngineModule
+    @State private var showPicker = false
 
     private func number(_ name: String) -> Double? { module.fields.first { $0.name == name }?.value.number }
 
@@ -833,6 +834,14 @@ struct LensControls: View {
                     Text(lensName)
                 } else {
                     Label("Lens not recognised", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                if method == 1 {
+                    Button(lensName == nil ? "Choose Lens…" : "Change Lens…") { showPicker = true }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .popover(isPresented: $showPicker, arrowEdge: .leading) {
+                            LensfunPicker(module: module)
+                        }
                 }
                 Text(method == 0 ? "Corrected with the data the camera embeds in the raw"
                      : method == 1 ? (lensfun.isEmpty || lensfun.caseInsensitiveCompare(lensName ?? "") == .orderedSame || (lensName ?? "").hasPrefix("Built-in") ? "Corrected with its Lensfun profile" : "Corrected with the Lensfun profile for \(lensfun)")
@@ -950,5 +959,101 @@ struct WideSegments: View {
         }
         .padding(2)
         .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Picks the Lensfun profile by hand, for a lens the metadata names wrongly
+/// or not at all: the lenses that fit the camera, searchable by any words of
+/// their name, and the camera itself if Lensfun didn't recognise it.
+struct LensfunPicker: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+    @State private var lenses: [Engine.LensfunLens] = []
+    @State private var camera = ""
+    @State private var search = ""
+    @State private var cameraSearch = ""
+    @State private var cameras: [Engine.LensfunCamera] = []
+    @State private var tab = 0          // 0 lens, 1 camera
+    @State private var loading = true
+
+    private var current: String { module.text?["lens"] ?? "" }
+
+    private var shown: [Engine.LensfunLens] {
+        let words = search.lowercased().split(separator: " ").map(String.init)
+        return lenses
+            .filter { lens in
+                let name = (lens.maker + " " + lens.model).lowercased()
+                return words.allSatisfy { name.contains($0) }
+            }
+            .sorted { ($0.maker, $0.model) < ($1.maker, $1.model) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            WideSegments(options: ["Lens", "Camera"], selection: $tab)
+            if tab == 0 {
+                TextField("Search lenses", text: $search)
+                    .textFieldStyle(.roundedBorder)
+                Text(camera.isEmpty ? "Lensfun doesn't know this camera, so every lens is listed." : "Lenses that fit the \(camera)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                List(shown) { lens in
+                    Button { model.setText(lens.model, module: module.key, field: "lens") } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(PhotoMetadata.typesetApertures(lens.model))
+                                Text(lens.maker).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if lens.model == current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .overlay { if loading { ProgressView() } else if shown.isEmpty { Text("No lenses match").foregroundStyle(.secondary) } }
+            } else {
+                TextField("Search cameras", text: $cameraSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await findCameras() } }
+                    .onChange(of: cameraSearch) { Task { await findCameras() } }
+                Text("Now: \(module.text?["camera"] ?? "none")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                List(cameras) { cam in
+                    Button {
+                        model.setText(cam.model, module: module.key, field: "camera")
+                        Task { try? await Task.sleep(for: .milliseconds(400)); await loadLenses() }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(cam.maker) \(cam.model)")
+                            Text([cam.mount, cam.crop > 0 ? "crop \(PhotoMetadata.trim((cam.crop * 100).rounded() / 100))×" : ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 340, height: 420)
+        .task { await loadLenses() }
+    }
+
+    private func loadLenses() async {
+        guard let engine = model.engineForPickers else { return }
+        loading = true
+        if let r = try? await engine.lensfunLenses() {
+            camera = r.camera
+            lenses = r.lenses
+        }
+        loading = false
+    }
+
+    private func findCameras() async {
+        guard let engine = model.engineForPickers, cameraSearch.count >= 2 else { cameras = []; return }
+        cameras = (try? await engine.lensfunCameras(matching: cameraSearch)) ?? []
     }
 }

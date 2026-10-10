@@ -126,6 +126,8 @@ The RGB curve card (darktable's rgb curve, linked channels, preserve colours on)
 
 Lens correction shows the lens darktable matched (the engine now sends modules' text settings), where the correction data comes from (the camera's own, Lensfun, or a manual vignette) and switches for distortion, vignetting and chromatic aberration, with strength sliders for the camera's own data. darktable's other lens settings stay at their defaults.
 
+
+**Lens picker.** With Lensfun chosen, "Change Lens…" opens a picker for when the metadata names the lens wrongly or not at all. It lists every Lensfun lens that fits the camera, filtered by any words of its name. A Camera tab searches Lensfun's cameras, for a camera it didn't recognise. The engine reads the Lensfun database darktable has already loaded, through the lens module's global data. That struct isn't in a header, so the helper mirrors the start of it. The engine's commands are `lens_lenses`, `lens_cameras` and `set_text`; `set_text` sets any char-array setting, such as the lens module's camera and lens. Lensfun's own loose search ranks poorly ("16-50" doesn't find the Z DX 16-50 first), so the app filters the full list itself.
 ### Looks
 
 - **Default tone mapper.** darktable's workflow setting (sigmoid, filmic or AgX), chosen in Settings (⌘,). Develop defaults to filmic. darktable registers the matching presets at startup, so changing this restarts the engine. If edits are unsaved, the restart waits until the next photo is opened.

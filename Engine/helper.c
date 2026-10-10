@@ -1480,6 +1480,89 @@ static void _cmd_delete_preset(JsonObject *o)
   _ok_done(_ok());
 }
 
+// ------------------------------------------------------------ film looks
+
+// Film looks are Hald CLUTs (or .cube files) applied by darktable's LUT 3D
+// module, whose file paths are relative to its LUT folder setting.
+// {"cmd":"look","folder":"/path","file":"Color/Kodak/Kodak Portra 400.png","strength":80}
+// applies one; "file":"" switches the look off. Most film LUTs are made for
+// display-referred sRGB, so the module moves after the tone mapper (darktable
+// places it before, for scene-referred LUTs). Strength is its blend opacity.
+// Without "file" or "strength" it only reports the current look.
+static dt_iop_module_t *_first_module(const char *op)
+{
+  for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+  {
+    dt_iop_module_t *m = l->data;
+    if(!strcmp(m->op, op) && m->multi_priority == 0) return m;
+  }
+  return NULL;
+}
+
+static void _cmd_look(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _first_module("lut3d");
+  if(!m) return _error("darktable's LUT 3D module isn't available");
+  const char *folder = json_object_get_string_member_with_default(o, "folder", "");
+  if(*folder) dt_conf_set_string("plugins/darkroom/lut3d/def_path", folder);
+  const char *file = json_object_get_string_member_with_default(o, "file", NULL);
+
+  dt_introspection_field_t *f = _find_field(m, "filepath");
+  if(!f) return _error("unexpected LUT 3D layout");
+  gboolean reordered = FALSE;
+  const gboolean change = file || json_object_has_member(o, "strength");
+  if(!change)
+  {
+    // only asking what the look is
+  }
+  else if(file && !*file)
+  {
+    m->enabled = FALSE;
+    _commit(m, FALSE);
+  }
+  else
+  {
+    if(file)
+    {
+      g_strlcpy((char *)m->params + f->header.offset, file, f->Array.count);
+      dt_introspection_field_t *cs = _find_field(m, "colorspace");
+      if(cs) *(int *)((char *)m->params + cs->header.offset) = 0;   // sRGB
+      // after the tone mapper in use
+      static const char *mappers[] = { "sigmoid", "filmicrgb", "agx", "basecurve" };
+      for(int i = 0; i < 4; i++)
+      {
+        dt_iop_module_t *tm = _first_module(mappers[i]);
+        if(tm && tm->enabled && m->iop_order < tm->iop_order)
+        {
+          reordered = dt_ioppr_move_iop_after(&H.edit.dev, m, tm);
+          break;
+        }
+      }
+    }
+    if(json_object_has_member(o, "strength") && m->blend_params)
+    {
+      m->blend_params->mask_mode = DEVELOP_MASK_ENABLED;
+      m->blend_params->opacity = CLAMP((float)json_object_get_double_member(o, "strength"), 0.0f, 100.0f);
+    }
+    _commit(m, TRUE);
+  }
+  if(reordered)
+  {
+    dt_dev_pixelpipe_cleanup_nodes(&H.edit.pipe);
+    dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
+    dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
+    dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+  }
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "file");
+  json_builder_add_string_value(b, m->enabled ? (const char *)m->params + f->header.offset : "");
+  json_builder_set_member_name(b, "strength");
+  json_builder_add_double_value(b, m->blend_params ? m->blend_params->opacity : 100.0);
+  _add_modules(b);
+  _ok_done(b);
+}
+
 static void _cmd_styles(void)
 {
   JsonBuilder *b = _ok();
@@ -2147,6 +2230,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "shape")) _cmd_shape(o);
     else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
     else if(!strcmp(cmd, "presets")) _cmd_presets();
+    else if(!strcmp(cmd, "look")) _cmd_look(o);
     else if(!strcmp(cmd, "apply_preset")) _cmd_apply_preset(o);
     else if(!strcmp(cmd, "save_preset")) _cmd_save_preset(o);
     else if(!strcmp(cmd, "delete_preset")) _cmd_delete_preset(o);

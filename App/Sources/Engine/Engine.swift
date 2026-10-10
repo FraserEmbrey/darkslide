@@ -309,6 +309,22 @@ actor Engine {
         _ = try await request(["cmd": "delete_preset", "op": op, "name": name])
     }
 
+    struct LookReply: Decodable {
+        let file: String
+        let strength: Double
+        let modules: [EngineModule]
+    }
+
+    /// a film look: `file` relative to `folder` ("" for none), `strength` 0 to
+    /// 100; with neither, only reports the current look
+    func look(folder: String?, file: String?, strength: Double?) async throws -> LookReply {
+        var body: [String: Any] = ["cmd": "look"]
+        if let folder { body["folder"] = folder }
+        if let file { body["file"] = file }
+        if let strength { body["strength"] = strength }
+        return try await request(body, as: LookReply.self)
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

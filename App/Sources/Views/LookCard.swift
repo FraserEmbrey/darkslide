@@ -48,6 +48,8 @@ struct LookCard: View {
                         }
                     }
                 }
+                FilmLookSection()
+                Divider()
                 Menu("Add a style") {
                     ForEach(groups, id: \.title) { group in
                         Menu(group.title) {

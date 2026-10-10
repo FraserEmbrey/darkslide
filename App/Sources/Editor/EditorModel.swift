@@ -106,6 +106,20 @@ final class EditorModel {
     var localShape: LocalShape?
     var pendingShape: ShapeEdit?
     var sendingShape = false
+    /// the folder of film-look LUTs (Settings, or the Look card) and what's in it
+    var lutFolder: URL? = UserDefaults.standard.url(forKey: "LUTFolder") {
+        didSet {
+            UserDefaults.standard.set(lutFolder, forKey: "LUTFolder")
+            filmLooks = lutFolder.map(FilmLook.scan) ?? []
+            Task { await loadLook() }
+        }
+    }
+    var filmLooks: [FilmLook] = []
+    /// the open photo's film look (a path in the folder) and its strength, 0 to 100
+    var currentLook: String?
+    var lookStrength = 100.0
+    var pendingLookStrength: Double?
+    var sendingLook = false
     /// darktable's presets for the open photo's modules
     var presetList: [Engine.PresetInfo] = []
     /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
@@ -811,6 +825,22 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("deleted")
                 }
             }
+            // TestLook: launch argument (-TestLook YES) for testing: applies the first Portra
+            // look in the LUT folder, then 50% strength, and logs the catalogue and state
+            if UserDefaults.standard.bool(forKey: "TestLook") {
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let films = Set(filmLooks.map(\.film)).count
+                        FileHandle.standardError.write("Develop look test: \(s): looks \(filmLooks.count) in \(films) films, current \(currentLook ?? "none") at \(lookStrength)\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    log("start")
+                    applyLook(filmLooks.first { $0.film.contains("Portra 400") && $0.variant == "Normal" })
+                    try? await Task.sleep(for: .seconds(3)); log("applied")
+                    setLookStrength(50)
+                    try? await Task.sleep(for: .seconds(3)); log("half")
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -889,6 +919,7 @@ final class EditorModel {
             lensInfo = await Task.detached { Self.readLens(url) }.value
             await measureAutoExposure()
             await loadPresets()
+            await loadLook()
             if !reply.hadSidecar { await applyNewPhotoDefaults() }
             requestRender()
         } catch {
@@ -2328,6 +2359,57 @@ extension EditorModel {
                 requestRender()
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+// MARK: - Film looks
+
+extension EditorModel {
+    func loadLook() async {
+        if filmLooks.isEmpty, let lutFolder { filmLooks = FilmLook.scan(lutFolder) }
+        guard let engine, url != nil, let r = try? await engine.look(folder: lutFolder?.path, file: nil, strength: nil) else { return }
+        currentLook = r.file.isEmpty ? nil : r.file
+        lookStrength = r.strength
+    }
+
+    /// applies a film look, or none, as one edit; a new look starts at full strength
+    func applyLook(_ look: FilmLook?) {
+        guard let engine else { return }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: look.map { "Film Look \($0.title)" } ?? "No Film Look")
+            do {
+                let r = try await engine.look(folder: lutFolder?.path, file: look?.path ?? "",
+                                              strength: look == nil ? nil : (currentLook == nil ? 100 : lookStrength))
+                modules = r.modules
+                currentLook = r.file.isEmpty ? nil : r.file
+                lookStrength = r.strength
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't apply the look: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// the strength slider: only the latest value goes to the engine
+    func setLookStrength(_ v: Double) {
+        guard let engine, currentLook != nil else { return }
+        lookStrength = v
+        recordUndoStep(label: "Film Look Strength", gesture: "lookStrength")
+        hasUnsavedChanges = true
+        pendingLookStrength = v
+        guard !sendingLook else { return }
+        sendingLook = true
+        Task {
+            defer { sendingLook = false }
+            await settleEdits()
+            while let s = pendingLookStrength {
+                pendingLookStrength = nil
+                _ = try? await engine.look(folder: nil, file: nil, strength: s)
+                requestRender()
             }
         }
     }

@@ -118,6 +118,14 @@ Image › Crop and Straighten (⌘K, or C on its own), or the toolbar's crop but
 
 Both are ordinary edits, so they undo, save to the XMP and open in darktable.
 
+### Film looks
+
+The Look card's "Film look" applies a LUT from a folder you choose: Hald CLUT images (.png, .tif) or .cube and .3dl files, such as the RawTherapee film simulation collection (CC BY-SA 4.0, not included). Menus follow the folder's own folders. Files of one film pushed and pulled, numbered as that pack numbers them ("… 1 -", "… 2", "… 3 +", "… 4 ++"), sit together under the film as −, Normal, + and ++. A strength slider blends the look in.
+
+darktable's LUT 3D module applies it. The engine's `look` command sets the module's LUT folder setting and its file path (relative to that folder, as darktable stores it), with sRGB as the LUT's colour space. darktable places LUT 3D before the tone mapper, for scene-referred LUTs, but film LUTs are made for display-referred sRGB, so the engine moves it after the tone mapper in use; the order is saved with the edit. Strength is the module's blend opacity.
+
+Film LUTs only cover 0 to 1, so in HDR view a look clips everything brighter than white, and the card says so.
+
 ### Presets and instances
 
 Each card's ⋯ menu lists darktable's presets for the module, with names written "group | name" gathered into submenus. It can also save the current settings as a preset (any camera, lens and exposure, not applied automatically, as darktable's "store new preset" defaults), delete your own presets, add a new instance of the module, and delete an extra instance.

@@ -288,6 +288,16 @@ actor Engine {
         let points: [Double]
         var compression: Double? = nil
         var border: Double? = nil
+        /// a subject's traced outlines, each x, y, x, y…
+        var outlines: [[Double]]? = nil
+    }
+
+    /// A local adjustment masked to a subject: `mask` holds one byte a pixel
+    /// (255 inside), `width` × `height`, over the photo as processed. The
+    /// engine traces it into darktable paths, as darktable's AI masks are.
+    func addSubject(base: String, name: String, mask: URL, width: Int, height: Int) async throws -> InstanceReply {
+        try await request(["cmd": "add_local", "module": base, "shape": "subject", "name": name,
+                           "mask": mask.path, "maskWidth": width, "maskHeight": height], as: InstanceReply.self)
     }
 
     func addLocal(base: String, shape: String, name: String) async throws -> InstanceReply {

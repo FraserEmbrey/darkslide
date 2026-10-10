@@ -19,11 +19,11 @@ import sys
 import tempfile
 
 # the libraries replaced, by the start of their file name: the interface
-# stack, Cairo (drawing; the app draws frames and watermarks itself) and
-# potrace (tracing AI masks into paths, with darktable's AI off)
+# stack and Cairo (drawing; the app draws frames and watermarks itself).
+# potrace stays: it traces subject masks into darktable paths.
 GUI = ["libgtk-3", "libgdk-3", "libgdk_pixbuf-2", "libpango-1", "libpangocairo-1", "libpangoft2-1",
        "librsvg-2", "libatk-1", "libharfbuzz", "libcairo-gobject", "libepoxy", "libfribidi",
-       "libcairo", "libpotrace"]
+       "libcairo"]
 
 engine = os.path.abspath(sys.argv[1])
 libdir = os.path.join(engine, "lib", "darktable")

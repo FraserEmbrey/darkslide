@@ -104,6 +104,8 @@ final class EditorModel {
     }
     /// its shape in output pixels, as the engine has it
     var localShape: LocalShape?
+    /// Vision is looking for the subject
+    var isFindingSubject = false
     var pendingShape: ShapeEdit?
     var sendingShape = false
     /// the folder of film-look LUTs (Settings, or the Look card) and what's in it
@@ -953,6 +955,23 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(4))
                     let dir = self.url?.deletingLastPathComponent().path ?? ""
                     FileHandle.standardError.write("Develop multi test: sidecars \(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted())\n".data(using: .utf8)!)
+                }
+            }
+            // TestSubject: launch argument (-TestSubject YES) for testing: adds a subject
+            // adjustment, brightens it by 2 EV and logs its outlines
+            if UserDefaults.standard.bool(forKey: "TestSubject") {
+                UserDefaults.standard.set(false, forKey: "TestSubject")
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    let t0 = Date()
+                    addSubject()
+                    try? await Task.sleep(for: .milliseconds(200))
+                    while isFindingSubject { try? await Task.sleep(for: .milliseconds(50)) }
+                    let found = Date().timeIntervalSince(t0)
+                    try? await Task.sleep(for: .seconds(2))
+                    if let key = selectedLocal { setValue(.number(2), module: key, field: "exposure") }
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop subject test: \(String(format: "%.2f", found))s, selected \(selectedLocal ?? "-"), kind \(String(describing: localShape?.kind)), outlines \(localShape?.outlines.map(\.count) ?? []), error \(errorMessage ?? "-")\n".data(using: .utf8)!)
                 }
             }
             // TestPhotos: launch argument (-TestPhotos YES) for testing: reads Photos (access,
@@ -2492,8 +2511,10 @@ extension EditorModel {
 /// A local adjustment's shape in output pixels (the photo as processed, at
 /// full size): see LocalAdjustments.swift for how it's drawn and edited.
 struct LocalShape: Equatable {
-    enum Kind { case gradient, ellipse }
+    enum Kind { case gradient, ellipse, subject }
     let kind: Kind
+    /// a subject's outlines, traced from Vision's mask (it has no handles)
+    var outlines: [[CGPoint]] = []
     /// gradient: anchor, a point along the line, the side it fades in toward,
     /// and the two edges of its transition. Ellipse: 64 points of its outline,
     /// 64 of its outline with the border, then its centre and the ends of its
@@ -2539,11 +2560,48 @@ extension EditorModel {
                     let r = min(w, h) * 0.25
                     try await engine.setEllipse(module: reply.added, center: c, a: CGPoint(x: c.x + r, y: c.y),
                                                 b: CGPoint(x: c.x, y: c.y + r), border: 0.5)
+                case .subject:
+                    break   // addSubject
                 }
                 selectedLocal = reply.added
                 requestRender()
             } catch {
                 errorMessage = "Couldn't add the adjustment: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// A local adjustment masked to the photo's subject, which Apple's Vision
+    /// finds (the subject lifting Photos and Preview use): every foreground
+    /// thing it picks out, people, animals or objects. It runs on a render of
+    /// the photo as it looks now; the engine traces the mask into darktable
+    /// paths, so the edit stays darktable's own and exports anywhere.
+    func addSubject() {
+        guard let engine, url != nil,
+              let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
+        let used = Set(localAdjustments.map(\.instanceName))
+        let name = (1...).lazy.map { "Local \($0)" }.first { !used.contains($0) }!
+        Task {
+            await settleEdits()
+            isFindingSubject = true
+            defer { isFindingSubject = false }
+            do {
+                let frame = try await engine.render(maxPixels: 2048, hdr: false, displayHeadroom: 1, wantOverlay: false)
+                requestRender()
+                guard let mask = try await Task.detached(priority: .userInitiated, operation: { try SubjectMask.find(in: frame.image) }).value else {
+                    errorMessage = "No subject found in this photo. Vision looks for people, animals and objects that stand out from their background; try a radial gradient instead."
+                    return
+                }
+                recordUndoStep(label: "Add Subject")
+                let reply = try await engine.addSubject(base: base.key, name: name, mask: mask.file,
+                                                        width: mask.width, height: mask.height)
+                try? FileManager.default.removeItem(at: mask.file)
+                modules = reply.modules
+                hasUnsavedChanges = true
+                selectedLocal = reply.added
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't select the subject: \(error.localizedDescription)"
             }
         }
     }
@@ -2573,7 +2631,9 @@ extension EditorModel {
         guard let engine, let key = selectedLocal, let r = try? await engine.shape(module: key) else { return }
         let pts = stride(from: 0, to: r.points.count - 1, by: 2).map { CGPoint(x: r.points[$0], y: r.points[$0 + 1]) }
         guard selectedLocal == key, pendingShape == nil, !sendingShape else { return }
-        localShape = LocalShape(kind: r.kind == "ellipse" ? .ellipse : .gradient, points: pts,
+        let kind: LocalShape.Kind = switch r.kind { case "ellipse": .ellipse; case "subject": .subject; default: .gradient }
+        let outlines = (r.outlines ?? []).map { o in stride(from: 0, to: o.count - 1, by: 2).map { CGPoint(x: o[$0], y: o[$0 + 1]) } }
+        localShape = LocalShape(kind: kind, outlines: outlines, points: pts,
                                 compression: r.compression ?? 0.3, border: r.border ?? 0.5)
     }
 

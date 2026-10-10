@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The local adjustments card: linear and radial gradients, each its own
-/// masked exposure instance. Selecting one shows its shape on the photo.
+/// The local adjustments card: linear and radial gradients and the subject,
+/// each its own masked exposure instance. Selecting one shows its shape on the photo.
 struct LocalAdjustmentsCard: View {
     @Environment(EditorModel.self) private var model
     @State private var expanded = true
@@ -10,7 +10,10 @@ struct LocalAdjustmentsCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 CardTitle(title: "Local adjustments", isExpanded: $expanded)
+                if model.isFindingSubject { ProgressView().controlSize(.small) }
                 Menu {
+                    Button("Subject", systemImage: "person.crop.rectangle") { model.addSubject() }
+                    Divider()
                     Button("Linear Gradient", systemImage: "square.tophalf.filled") { model.addLocal(.gradient) }
                     Button("Radial Gradient", systemImage: "circle.dashed") { model.addLocal(.ellipse) }
                 } label: {
@@ -19,11 +22,12 @@ struct LocalAdjustmentsCard: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Add a linear or radial gradient that brightens or darkens part of the photo")
+                .disabled(model.isFindingSubject)
+                .help("Brighten or darken the subject, or part of the photo with a linear or radial gradient")
             }
             if expanded {
                 if model.localAdjustments.isEmpty {
-                    Text("Brighten or darken part of the photo with a linear or radial gradient.")
+                    Text("Brighten or darken the subject (found by macOS), or part of the photo with a linear or radial gradient.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -33,6 +37,14 @@ struct LocalAdjustmentsCard: View {
             }
         }
         .cardStyle()
+    }
+
+    private var hint: String {
+        switch model.localShape?.kind {
+        case .ellipse: "Drag the centre to move it, the side handles to size it, the outer handle for a softer edge."
+        case .subject: "The subject as macOS found it, outlined on the photo."
+        default: "Drag the centre to move it, the arrow to turn it, the dashed line for a softer edge."
+        }
     }
 
     @ViewBuilder
@@ -70,9 +82,7 @@ struct LocalAdjustmentsCard: View {
                         .buttonStyle(.link)
                         .font(.caption)
                 }
-                Text(model.localShape?.kind == .ellipse
-                     ? "Drag the centre to move it, the side handles to size it, the outer handle for a softer edge."
-                     : "Drag the centre to move it, the arrow to turn it, the dashed line for a softer edge.")
+                Text(hint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -100,6 +110,7 @@ struct LocalShapeOverlay: View {
                     switch shape.kind {
                     case .gradient: drawGradient(shape, in: &ctx, size: size)
                     case .ellipse: drawEllipse(shape, in: &ctx)
+                    case .subject: drawOutlines(shape, in: &ctx)
                     }
                 }
                 .allowsHitTesting(false)
@@ -150,6 +161,18 @@ struct LocalShapeOverlay: View {
         ctx.stroke(ring(64..<128), with: .color(.white.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
     }
 
+    private func drawOutlines(_ s: LocalShape, in ctx: inout GraphicsContext) {
+        let path = Path { p in
+            for o in s.outlines where o.count > 2 {
+                p.addLines(o.map(toView))
+                p.closeSubpath()
+            }
+        }
+        // dark under light, so the outline shows on any photo
+        ctx.stroke(path, with: .color(.black.opacity(0.5)), lineWidth: 3)
+        ctx.stroke(path, with: .color(.white), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+    }
+
     // MARK: handles, in output pixels
 
     private func handles(_ s: LocalShape) -> [CGPoint] {
@@ -164,6 +187,8 @@ struct LocalShapeOverlay: View {
             let k = 1 + s.border
             let outer = CGPoint(x: c.x + (a.x - c.x) * k, y: c.y + (a.y - c.y) * k)
             return [c, a, s.points[130], outer]
+        case .subject:
+            return []
         }
     }
 
@@ -227,6 +252,8 @@ struct LocalShapeOverlay: View {
                 s.points = ellipsePoints(c: c, a: a, b: b, border: border)
                 model.moveShape(.ellipse(center: c, a: a, b: b, border: border))
             }
+        case .subject:
+            return
         }
         live = s
     }

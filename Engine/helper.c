@@ -54,6 +54,7 @@
 #include "develop/imageop.h"
 #include "develop/blend.h"
 #include "develop/masks.h"
+#include "common/ras2vect.h"
 #include "develop/pixelpipe_cache.h"
 #include "develop/pixelpipe_hb.h"
 #include "imageio/imageio_common.h"
@@ -1166,11 +1167,72 @@ static void _cmd_add_local(JsonObject *o)
   dt_iop_module_t *base = _find_module(json_object_get_string_member_with_default(o, "module", ""));
   if(!base) return _error("unknown module");
   if(!(base->flags() & IOP_FLAGS_SUPPORTS_BLENDING)) return _error("this module can't be masked");
-  const gboolean ellipse = !g_strcmp0(json_object_get_string_member_with_default(o, "shape", "gradient"), "ellipse");
+  const char *shape = json_object_get_string_member_with_default(o, "shape", "gradient");
+  const gboolean ellipse = !g_strcmp0(shape, "ellipse");
+  const gboolean subject = !g_strcmp0(shape, "subject");
+  // a subject's mask: 8-bit, one byte a pixel, over the photo as processed
+  GList *traced = NULL, *signs = NULL;
+  if(subject)
+  {
+    const char *path = json_object_get_string_member_with_default(o, "mask", "");
+    const int mw = json_object_get_int_member_with_default(o, "maskWidth", 0);
+    const int mh = json_object_get_int_member_with_default(o, "maskHeight", 0);
+    gchar *bytes = NULL;
+    gsize len = 0;
+    if(mw <= 0 || mh <= 0 || !g_file_get_contents(path, &bytes, &len, NULL) || len < (gsize)mw * mh)
+    {
+      g_free(bytes);
+      return _error("couldn't read the subject's mask");
+    }
+    // potrace's convention, as darktable's AI masks use it: below the threshold is inside
+    float *inv = g_new(float, (size_t)mw * mh);
+    for(size_t i = 0; i < (size_t)mw * mh; i++) inv[i] = 1.0f - (guchar)bytes[i] / 255.0f;
+    g_free(bytes);
+    // darktable's defaults for AI masks: specks under 10 pixels dropped, no extra smoothing
+    traced = ras2forms(inv, mw, mh, NULL, 0.5f, 10, 0.0, &signs);
+    g_free(inv);
+    if(!traced) { g_list_free(signs); return _error("no subject found"); }
+    // mask pixels to the photo as processed, then back through the pipe's
+    // distortions to darktable's input, normalised
+    _refresh_dimensions();
+    const float sx = (float)H.edit.pipe.processed_width / mw, sy = (float)H.edit.pipe.processed_height / mh;
+    const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+    const float feather = CLAMP((float)json_object_get_double_member_with_default(o, "feather", 0.001), 0.0005f, 0.1f);
+    for(GList *l = traced; l; l = g_list_next(l))
+    {
+      dt_masks_form_t *f = l->data;
+      const int n = g_list_length(f->points);
+      float *pts = g_new(float, 6 * n);
+      int i = 0;
+      for(GList *p = f->points; p; p = g_list_next(p))
+      {
+        const dt_masks_point_path_t *pt = p->data;
+        pts[i++] = pt->corner[0] * sx; pts[i++] = pt->corner[1] * sy;
+        pts[i++] = pt->ctrl1[0] * sx;  pts[i++] = pt->ctrl1[1] * sy;
+        pts[i++] = pt->ctrl2[0] * sx;  pts[i++] = pt->ctrl2[1] * sy;
+      }
+      _to_input(pts, 3 * n);
+      i = 0;
+      for(GList *p = f->points; p; p = g_list_next(p))
+      {
+        dt_masks_point_path_t *pt = p->data;
+        pt->corner[0] = pts[i++] / iw; pt->corner[1] = pts[i++] / ih;
+        pt->ctrl1[0] = pts[i++] / iw;  pt->ctrl1[1] = pts[i++] / ih;
+        pt->ctrl2[0] = pts[i++] / iw;  pt->ctrl2[1] = pts[i++] / ih;
+        pt->border[0] = pt->border[1] = feather;
+      }
+      g_free(pts);
+    }
+  }
 
   dt_dev_add_history_item_ext(&H.edit.dev, base, FALSE, TRUE);
   dt_iop_module_t *m = dt_dev_module_duplicate(&H.edit.dev, base);
-  if(!m) return _error("couldn't add an instance");
+  if(!m)
+  {
+    g_list_free_full(traced, (GDestroyNotify)dt_masks_free_form);
+    g_list_free(signs);
+    return _error("couldn't add an instance");
+  }
   dt_iop_reload_defaults(m);
   const char *name = json_object_get_string_member_with_default(o, "name", "");
   if(*name)
@@ -1180,8 +1242,27 @@ static void _cmd_add_local(JsonObject *o)
   }
   dt_dev_add_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
 
-  dt_masks_form_t *form = dt_masks_create(ellipse ? DT_MASKS_ELLIPSE : DT_MASKS_GRADIENT);
-  if(ellipse)
+  dt_masks_form_t *form = dt_masks_create(subject ? DT_MASKS_GROUP : ellipse ? DT_MASKS_ELLIPSE : DT_MASKS_GRADIENT);
+  if(subject)
+  {
+    // as darktable's AI masks: the traced paths in a group of their own,
+    // holes taken away, and that group the module's one shape
+    snprintf(form->name, sizeof(form->name), "%s", name);
+    GList *s = signs;
+    int k = 1;
+    for(GList *l = traced; l; l = g_list_next(l), s = s ? g_list_next(s) : NULL)
+    {
+      dt_masks_form_t *f = l->data;
+      snprintf(f->name, sizeof(f->name), "%s path %d", name, k++);
+      H.edit.dev.forms = g_list_append(H.edit.dev.forms, f);
+      dt_masks_point_group_t *gp = dt_masks_group_add_form(form, f);
+      if(gp && s && GPOINTER_TO_INT(s->data) == '-')
+        gp->state = (gp->state & ~DT_MASKS_STATE_UNION) | DT_MASKS_STATE_DIFFERENCE;
+    }
+    g_list_free(traced);
+    g_list_free(signs);
+  }
+  else if(ellipse)
   {
     dt_masks_point_ellipse_t *e = calloc(1, sizeof(dt_masks_point_ellipse_t));
     e->center[0] = e->center[1] = 0.5f;
@@ -1230,6 +1311,7 @@ static void _cmd_set_shape(JsonObject *o)
   dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
   dt_masks_form_t *form = m ? _local_shape(m) : NULL;
   if(!form || !form->points) return _error("not a local adjustment");
+  if(form->type & DT_MASKS_GROUP) return _error("a subject's outline can't be moved");
   const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
   const float mind = fminf(iw, ih);
 #define PT(name, i) (float)json_array_get_double_element(json_object_get_array_member(o, name), i)
@@ -1280,6 +1362,40 @@ static void _cmd_shape(JsonObject *o)
   const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
   const float mind = fminf(iw, ih), diag = hypotf(iw, ih);
   JsonBuilder *b = _ok();
+  if(form->type & DT_MASKS_GROUP)
+  {
+    // a subject: its traced outlines, each as corner points
+    json_builder_set_member_name(b, "kind");
+    json_builder_add_string_value(b, "subject");
+    json_builder_set_member_name(b, "points");
+    json_builder_begin_array(b);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "outlines");
+    json_builder_begin_array(b);
+    for(GList *l = form->points; l; l = g_list_next(l))
+    {
+      const dt_masks_point_group_t *gp = l->data;
+      dt_masks_form_t *path = dt_masks_get_from_id(&H.edit.dev, gp->formid);
+      if(!path || !(path->type & DT_MASKS_PATH)) continue;
+      const int n = g_list_length(path->points);
+      float *pts = g_new(float, 2 * n);
+      int i = 0;
+      for(GList *p = path->points; p; p = g_list_next(p))
+      {
+        const dt_masks_point_path_t *pt = p->data;
+        pts[i++] = pt->corner[0] * iw;
+        pts[i++] = pt->corner[1] * ih;
+      }
+      _to_output(pts, n);
+      json_builder_begin_array(b);
+      for(int k = 0; k < 2 * n; k++) json_builder_add_double_value(b, pts[k]);
+      json_builder_end_array(b);
+      g_free(pts);
+    }
+    json_builder_end_array(b);
+    _ok_done(b);
+    return;
+  }
   if(form->type & DT_MASKS_GRADIENT)
   {
     const dt_masks_point_gradient_t *g = form->points->data;

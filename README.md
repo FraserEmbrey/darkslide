@@ -43,7 +43,7 @@ The toolbar warning button tints pixels this display can't show.
 
 The HDR card has two further controls, following Greg Benz's advice on HDR photos:
 
-- **Peak limit** rolls the brightest highlights off smoothly so nothing goes past a set number of stops above reference white (from a stop below the limit, luminance eases towards it with hue kept). A lower peak glows rather than glares, and looks more alike across displays. It applies to the HDR view and to gain map JPEGs. darktable writes HEIF and JPEG XL itself, so for those, lower the tone mapper's target white instead.
+- **Peak limit** rolls the brightest highlights off smoothly so nothing goes past a set number of stops above reference white (from a stop below the limit, luminance eases towards it with hue kept). A lower peak glows rather than glares, and looks more alike across displays. It applies to the HDR view and to gain map JPEGs. HEIF is written from darktable's export, so for HEIF, lower the tone mapper's target white instead.
 - **Preview as** shows a gain map JPEG as a display with less headroom would: viewers blend the SDR base and the HDR rendition per pixel in log space, weighted by the display's headroom over the image's (the ISO 21496-1 weighting). It uses whichever SDR base the export is set to make.
 
 Both are sliders that don't touch the engine: the engine keeps the last HDR render's pipe output (and the SDR base rendered for it), so a change only reruns the app's HDR pass and the blend, about 15–30 ms. Switching between SDR and HDR drops darktable's cached output from colorout onwards, not the whole cache, since only colorout and gamma depend on the display profile.
@@ -60,8 +60,8 @@ Click the photo to zoom to 100% at that point, and drag to move around; click ag
 
 File › Export (⌘E) is the macOS save panel with the options underneath, as in Pixelmator: format, colour profile, size, quality, bit depth.
 
-- **Formats:** JPEG, HEIF, JPEG XL, TIFF, PNG and WebP go through darktable's own export path (the "disk" storage and format modules, as darktable-cli uses), so the output matches darktable's. OpenEXR is left out.
-- **Colour profile:** comes from the edit's output colour profile unless overridden, so HLG and PQ exports carry their HDR tagging. A 10-bit HLG HEIF is tagged Display P3 with ARIB (HLG), and a 12-bit PQ JPEG XL is tagged SMPTE (PQ).
+- **Formats:** JPEG, TIFF and PNG go through darktable's own export path (the "disk" storage and format modules, as darktable-cli uses), so the output matches darktable's. HEIF is darktable's 16-bit TIFF written to HEIC by Core Image (see A slimmer engine). JPEG XL, WebP and OpenEXR export are left out.
+- **Colour profile:** comes from the edit's output colour profile unless overridden, so HLG and PQ exports carry their HDR tagging. A 10-bit HLG HEIF is tagged Display P3 with ARIB (HLG), and a 10-bit PQ HEIF with SMPTE (PQ).
 - **JPEG with HDR gain map:** an ISO 21496-1 gain map, the standard behind Ultra HDR, written by Core Image. darktable 5.6.2 can't write it; darktable does it through its `ultrahdr` Lua script, and an unmerged PR (#21458) would add it with libultrahdr. The HDR image is the HDR preview's output. Following Greg Benz's advice that the SDR base matters most, the SDR base is by default darktable's own SDR rendering of the edit, with the tone mapper's target white back at 100% and the SDR version's adjustments, rendered without touching the edit. Apple's automatic tone mapping is the alternative. Checked by decoding: the SDR base peaks at 0.93, and expanded to HDR it peaks at 4.5× white with 41% above white, matching the HDR preview.
 
 ### Library and filmstrip

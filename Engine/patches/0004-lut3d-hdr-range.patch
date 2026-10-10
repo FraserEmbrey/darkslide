@@ -1,0 +1,74 @@
+--- a/src/iop/lut3d.c
++++ b/src/iop/lut3d.c
+@@ -1143,11 +1143,31 @@
+   const dt_iop_order_iccprofile_info_t *const work_profile
+     = dt_ioppr_get_iop_work_profile_info(self, self->dev->iop);
+   const gboolean transform = (work_profile != NULL && lut_profile != NULL) ? TRUE : FALSE;
++  // Develop: a LUT covers 0 to 1, so pixels brighter than white (HDR output
++  // from the tone mapper) are scaled into range by their largest channel,
++  // looked up, and scaled back: they take the look's colour and keep their
++  // brightness. Pixels in range are unchanged, so SDR results are the same.
++  const size_t npix = (size_t)width * height;
++  float *const restrict range = dt_alloc_align_float(npix);
++  float *const restrict scaled = range ? dt_alloc_align_float(npix * 4) : NULL;
++  const float *src = ibuf;
++  if(scaled)
++  {
++    const float *const restrict in = ibuf;
++    DT_OMP_FOR()
++    for(size_t k = 0; k < npix; k++)
++    {
++      const float m = fmaxf(1.0f, fmaxf(in[4 * k], fmaxf(in[4 * k + 1], in[4 * k + 2])));
++      range[k] = m;
++      for(int c = 0; c < 4; c++) scaled[4 * k + c] = c < 3 ? in[4 * k + c] / m : in[4 * k + c];
++    }
++    src = scaled;
++  }
+   if(clut)
+   {
+     if(transform)
+     {
+-      dt_ioppr_transform_image_colorspace_rgb(ibuf, obuf, width, height,
++      dt_ioppr_transform_image_colorspace_rgb(src, obuf, width, height,
+         work_profile, lut_profile, "work profile to LUT profile");
+       if(interpolation == DT_IOP_TETRAHEDRAL)
+         _correct_pixel_tetrahedral(obuf, obuf, (size_t)width * height, clut, level);
+@@ -1161,17 +1181,26 @@
+     else
+     {
+       if(interpolation == DT_IOP_TETRAHEDRAL)
+-        _correct_pixel_tetrahedral(ibuf, obuf, (size_t)width * height, clut, level);
++        _correct_pixel_tetrahedral(src, obuf, (size_t)width * height, clut, level);
+       else if(interpolation == DT_IOP_TRILINEAR)
+-        _correct_pixel_trilinear(ibuf, obuf, (size_t)width * height, clut, level);
++        _correct_pixel_trilinear(src, obuf, (size_t)width * height, clut, level);
+       else
+-        _correct_pixel_pyramid(ibuf, obuf, (size_t)width * height, clut, level);
++        _correct_pixel_pyramid(src, obuf, (size_t)width * height, clut, level);
+     }
++    if(scaled)
++    {
++      float *const restrict out = obuf;
++      DT_OMP_FOR()
++      for(size_t k = 0; k < npix; k++)
++        for(int c = 0; c < 3; c++) out[4 * k + c] *= range[k];
++    }
+   }
+   else  // no clut
+   {
+     dt_iop_image_copy_by_size(obuf, ibuf, width, height, ch);
+   }
++  dt_free_align(scaled);
++  dt_free_align(range);
+ }
+ 
+ void filepath_set_unix_separator(char *filepath)
+@@ -1419,6 +1448,8 @@
+ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
+                    dt_dev_pixelpipe_iop_t *piece)
+ {
++  // Develop: the HDR range handling is in process() only
++  piece->process_cl_ready = FALSE;
+   dt_iop_lut3d_params_t *p = (dt_iop_lut3d_params_t *)p1;
+   dt_iop_lut3d_data_t *d = piece->data;
+ 

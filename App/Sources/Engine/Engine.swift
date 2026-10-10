@@ -120,7 +120,31 @@ actor Engine {
         // the last photo's frame mustn't stand in for this one
         lastHDRSource = nil
         lastSDRBase = nil
-        return try await request(["cmd": "open", "path": url.path], as: OpenReply.self)
+        // Opening has hung once on a lock inside darktable that an earlier call
+        // left held. Rather than wait for ever, a stuck open stops the engine,
+        // which fails the request and makes the app start a fresh one.
+        openGeneration += 1
+        let generation = openGeneration
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(90))
+            guard !Task.isCancelled else { return }
+            await self?.stopIfStillOpening(generation)
+        }
+        defer { watchdog.cancel() }
+        do {
+            return try await request(["cmd": "open", "path": url.path], as: OpenReply.self)
+        } catch where hungOnOpen {
+            throw EngineError(message: "The engine stopped responding while opening it, so it has been restarted. Try opening it again.")
+        }
+    }
+
+    private var openGeneration = 0
+    private var hungOnOpen = false
+
+    private func stopIfStillOpening(_ generation: Int) {
+        guard generation == openGeneration, process.isRunning, !pending.isEmpty else { return }
+        hungOnOpen = true
+        process.terminate()
     }
 
     func set(module: String, field: String, value: FieldValue) async throws {

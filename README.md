@@ -126,7 +126,7 @@ Browse… opens a grid of the photo in each film, by folder, with a search acros
 
 darktable's LUT 3D module applies it. The engine's `look` command sets the module's LUT folder setting and its file path (relative to that folder, as darktable stores it), with sRGB as the LUT's colour space. darktable places LUT 3D before the tone mapper, for scene-referred LUTs, but film LUTs are made for display-referred sRGB, so the engine moves it after the tone mapper in use; the order is saved with the edit. Strength is the module's blend opacity.
 
-Film LUTs only cover 0 to 1, so in HDR view a look clips everything brighter than white, and the card says so.
+Film LUTs only cover 0 to 1. Engine patch 0004 makes LUT 3D scale any pixel brighter than white into range by its largest channel, look it up, and scale it back, so in HDR the highlights keep their brightness and take the film's colour. Pixels in range are unchanged, so SDR results are as before. On the Z50 with sigmoid's target white at 400%, the HDR peak is 2.17× white without a look, 2.14× with Velvia and 2.17× with HP5, where unpatched darktable clips at 1. The module now runs on the CPU, because the step is only in its CPU code.
 
 ### Presets and instances
 

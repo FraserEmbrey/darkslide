@@ -39,10 +39,9 @@ struct FilmLookSection: View {
                     model.setLookStrength($0.rounded())
                 }
                 if model.viewHDR {
-                    Label("Film LUTs are made for SDR, so in HDR the look clips everything brighter than white.",
-                          systemImage: "exclamationmark.triangle")
+                    Text("Brighter than white, the look keeps the photo's brightness and takes the film's colour.")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                 }
             }
         }

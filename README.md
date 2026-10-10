@@ -54,7 +54,7 @@ With an HDR export profile, the SDR view shows the edit's SDR rendition: the ton
 
 ### Zoom
 
-Click the photo to zoom to 100% at that point, and drag to move around; click again, or press ⌘0, to fit. The engine renders only the visible crop at the zoom scale, as darktable's darkroom does, so at 100% darktable runs its full demosaic rather than the fast preview one. Demosaic methods, capture sharpening and noise reduction can only be judged at 100%. While zoomed, the histograms still describe the whole photo.
+Click the photo to zoom to 100% at that point, and drag to move around; click again, or press ⌘0, to fit. The engine renders only the visible crop at the zoom scale, as darktable's darkroom does, so at 100% darktable runs its full demosaic rather than the fast preview one. Demosaic methods, capture sharpening and noise reduction can only be judged at 100%. While zoomed, the histograms still describe the whole photo. Panning moves the frame with the pointer straight away. Under it sits the last whole-photo frame (the fitted view, or the small frame rendered for the histograms after an edit while zoomed), scaled to the zoom, so the area a pan uncovers shows a soft version at once. darktable's sharp render then replaces it.
 
 ### Export
 

@@ -95,6 +95,9 @@ final class EditorModel {
         didSet { if curveEditorModule != oldValue, curveEditorModule != nil, url != nil { requestRender() } }
     }
     private(set) var curveInfo: Engine.CurveReply?
+    /// the last whole-photo frame, drawn soft under a zoomed crop so panning
+    /// shows the photo at once where the sharp render hasn't reached
+    private(set) var panBackdrop: (image: CGImage, isHDR: Bool)?
     /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
     var curveChannel = 0
     /// the module curveInfo describes
@@ -713,6 +716,17 @@ final class EditorModel {
                     setValue(.number(30), module: m.key, field: "hue_green")
                 }
             }
+            // TestPan: launch argument (-TestPan YES) for testing: zooms to 100%, then pans
+            // well past the rendered frame and says so, for a capture before the render lands
+            if UserDefaults.standard.bool(forKey: "TestPan") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    zoom = .scale(1)
+                    try? await Task.sleep(for: .seconds(4))
+                    pan(byPixels: CGSize(width: 900, height: 300))
+                    FileHandle.standardError.write("Develop pan test: panned\n".data(using: .utf8)!)
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -767,6 +781,7 @@ final class EditorModel {
             }
             sensor = reply.sensor ?? "bayer"
             modules = reply.modules
+            panBackdrop = nil
             hasUnsavedChanges = false
             image = nil
             beforeImage = nil
@@ -1150,7 +1165,10 @@ final class EditorModel {
                         if fresh { renderRequested = true }
                     }
                     frameStraighten = renderStraighten
-                    if crop == nil, !isCropping, !isSimulatingHeadroom { thumbnailFrame = frame.image }
+                    if crop == nil, !isCropping, !isSimulatingHeadroom {
+                        thumbnailFrame = frame.image
+                        panBackdrop = (frame.image, frame.isHDR)
+                    }
                     if let r = frame.rotateInSize { rotateInSize = r }
                     if let simulate, frame.isHDR {
                         image = try await gainMapPreview(frame, stops: simulate, maxPixels: pixels, crop: crop, engine: engine)
@@ -1177,6 +1195,7 @@ final class EditorModel {
                                                             hdrLimit: viewHDR ? hdrLimit : nil)
                         hdrAnalysis = whole.analysis
                         if let h = whole.histogram { rgbHistogram = h }
+                        if !isCropping { panBackdrop = (whole.image, whole.isHDR) }
                     }
                     headroomOverlay = frame.overlay
                     let elapsed = ContinuousClock.now - start

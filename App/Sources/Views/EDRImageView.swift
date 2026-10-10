@@ -16,6 +16,11 @@ struct EDRImageView: NSViewRepresentable {
     var pixelExact = false
     /// shifts the shown frame while a pan waits for its render, in points
     var panOffset: CGSize = .zero
+    /// the whole photo, soft, drawn under a zoomed frame at `backdropRect` (view
+    /// points, before the pan offset), so a pan shows something at once where
+    /// the sharp render hasn't reached yet
+    var backdrop: CGImage? = nil
+    var backdropRect: CGRect = .zero
     /// clicks (in view points, top-left origin) and pans (content movement in points)
     var canPan = false
     var onClick: ((CGPoint) -> Void)? = nil
@@ -47,9 +52,11 @@ struct EDRImageView: NSViewRepresentable {
         view.onPan = onPan
         view.canPan = canPan
         view.setPanOffset(panOffset)
+        view.setBackdrop(backdrop, rect: backdropRect, isHDR: isHDR)
     }
 
     final class LayerView: NSView {
+        private let backdropLayer = CALayer()
         private let imageLayer = CALayer()
         private let overlayLayer = CALayer()
         private let probeLayer = CALayer()
@@ -74,6 +81,9 @@ struct EDRImageView: NSViewRepresentable {
                 layer?.addSublayer(l)
             }
             overlayLayer.magnificationFilter = .nearest
+            backdropLayer.contentsGravity = .resize
+            backdropLayer.isHidden = true
+            layer?.insertSublayer(backdropLayer, below: imageLayer)
             beforeLayer.contentsGravity = .resizeAspect
             beforeLayer.minificationFilter = .trilinear
             beforeMask.backgroundColor = CGColor(gray: 1, alpha: 1)
@@ -125,6 +135,21 @@ struct EDRImageView: NSViewRepresentable {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer?.sublayerTransform = CATransform3DMakeTranslation(o.width, o.height, 0)
+            CATransaction.commit()
+        }
+
+        func setBackdrop(_ image: CGImage?, rect: CGRect, isHDR: Bool) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            backdropLayer.contents = image
+            backdropLayer.isHidden = image == nil
+            backdropLayer.frame = rect
+            backdropLayer.contentsScale = window?.backingScaleFactor ?? 2
+            if #available(macOS 26.0, *) {
+                backdropLayer.preferredDynamicRange = isHDR ? .high : .standard
+            } else {
+                backdropLayer.wantsExtendedDynamicRangeContent = isHDR
+            }
             CATransaction.commit()
         }
 

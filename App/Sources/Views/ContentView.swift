@@ -359,6 +359,8 @@ struct ZoomableImage: View {
                          split: model.compareSplit,
                          pixelExact: model.imageIsZoomed,
                          panOffset: panOffset,
+                         backdrop: backdrop(in: geo.size)?.image,
+                         backdropRect: backdrop(in: geo.size)?.rect ?? .zero,
                          canPan: model.imageIsZoomed && !model.comparing,
                          onClick: { p in if !model.isCropping { click(at: p, in: geo.size, frame: size) } },
                          onPan: { d in model.pan(byPixels: CGSize(width: d.width * displayScale, height: d.height * displayScale)) })
@@ -423,6 +425,20 @@ extension ZoomableImage {
         guard model.imageIsZoomed, let shown = model.shownCrop, let wanted = model.currentCrop,
               shown.scale == wanted.scale else { return .zero }
         return CGSize(width: CGFloat(shown.x - wanted.x) / displayScale, height: CGFloat(shown.y - wanted.y) / displayScale)
+    }
+
+    /// While zoomed: the last whole-photo frame, placed where the whole photo
+    /// would be at this zoom, under the sharp crop (only in the same HDR or
+    /// SDR mode, so it matches)
+    fileprivate func backdrop(in viewPoints: CGSize) -> (image: CGImage, rect: CGRect)? {
+        guard model.imageIsZoomed, !model.comparing, let shown = model.shownCrop,
+              let whole = model.panBackdrop, whole.isHDR == model.imageIsHDR else { return nil }
+        let frame = CGSize(width: image.width, height: image.height)
+        let r = EDRImageView.displayedRect(frame, in: viewPoints, pixelExact: true, displayScale: displayScale)
+        let size = CGSize(width: model.imageSize.width * shown.scale / displayScale,
+                          height: model.imageSize.height * shown.scale / displayScale)
+        return (whole.image, CGRect(x: r.minX - CGFloat(shown.x) / displayScale, y: r.minY - CGFloat(shown.y) / displayScale,
+                                    width: size.width, height: size.height))
     }
 
     /// click: zoom to 100% at the point, or back to fit

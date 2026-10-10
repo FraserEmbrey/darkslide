@@ -35,5 +35,9 @@ cp -R "$ENGINE_SRC/lib" "$APP/Contents/Resources/engine/"
 cp "$ROOT/vendor/metalcl/libMetalCL.dylib" "$APP/Contents/Resources/engine/lib/"
 cp -R "$ENGINE_SRC/share/darktable" "$APP/Contents/Resources/engine/share/"
 
+# darktable's interface libraries (GTK and those under it) are never run:
+# point the engine at stand-ins, so they aren't loaded (Scripts/stub-gui-libs.py)
+python3 "$ROOT/Scripts/stub-gui-libs.py" "$APP/Contents/Resources/engine"
+
 codesign --force --deep --sign "$IDENTITY" "$APP"
 echo "built $APP"

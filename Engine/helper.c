@@ -1821,6 +1821,84 @@ static void _cmd_toneequal_fit(void)
 // set there first. The colour profile is the edit's own (output color
 // profile module), so HDR profiles carry through to formats that support them.
 
+// Sets a field of a params buffer from JSON: numbers, choices, on/off,
+// text (char arrays) and lists of numbers (float arrays, such as colours)
+static void _set_param_json(dt_iop_module_t *m, void *params, const char *name, JsonNode *v)
+{
+  dt_introspection_field_t *f = _find_field(m, name);
+  if(!f || !v) return;
+  char *at = (char *)params + f->header.offset;
+  switch(f->header.type)
+  {
+    case DT_INTROSPECTION_TYPE_FLOAT: *(float *)at = (float)json_node_get_double(v); break;
+    case DT_INTROSPECTION_TYPE_INT:
+    case DT_INTROSPECTION_TYPE_ENUM: *(int *)at = (int)json_node_get_int(v); break;
+    case DT_INTROSPECTION_TYPE_BOOL: *(gboolean *)at = json_node_get_boolean(v); break;
+    case DT_INTROSPECTION_TYPE_ARRAY:
+      if(f->Array.type == DT_INTROSPECTION_TYPE_CHAR && JSON_NODE_HOLDS_VALUE(v))
+        g_strlcpy(at, json_node_get_string(v), f->Array.count);
+      else if(f->Array.type == DT_INTROSPECTION_TYPE_FLOAT && JSON_NODE_HOLDS_ARRAY(v))
+      {
+        JsonArray *a = json_node_get_array(v);
+        for(guint i = 0; i < MIN(json_array_get_length(a), (guint)f->Array.count); i++)
+          ((float *)at)[i] = (float)json_array_get_double_element(a, i);
+      }
+      break;
+    default: break;
+  }
+}
+
+// Modules added for one export only (a frame, a watermark): built from each
+// module's defaults and the given fields into a darktable style, which the
+// export appends; the style is deleted afterwards. Returns its name, or NULL.
+#define DEVELOP_EXPORT_STYLE "_develop_export_extras"
+static const char *_export_extras_style(JsonArray *extras)
+{
+  if(!extras || json_array_get_length(extras) == 0) return NULL;
+  sqlite3 *db = dt_database_get(darktable.db);
+  dt_styles_delete_by_name(DEVELOP_EXPORT_STYLE);
+  sqlite3_stmt *stmt;
+  sqlite3_prepare_v2(db, "INSERT INTO data.styles (name, description, id, iop_list)"
+                         " VALUES (?1, '', (SELECT COALESCE(MAX(id),0)+1 FROM data.styles), NULL)", -1, &stmt, NULL);
+  sqlite3_bind_text(stmt, 1, DEVELOP_EXPORT_STYLE, -1, SQLITE_STATIC);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  const int styleid = (int)sqlite3_last_insert_rowid(db);
+  int added = 0;
+  for(guint i = 0; i < json_array_get_length(extras); i++)
+  {
+    JsonObject *e = json_array_get_object_element(extras, i);
+    dt_iop_module_t *m = _first_module(json_object_get_string_member_with_default(e, "op", ""));
+    if(!m) continue;
+    void *params = g_malloc(m->params_size);
+    memcpy(params, m->default_params, m->params_size);
+    JsonObject *fields = json_object_has_member(e, "fields") ? json_object_get_object_member(e, "fields") : NULL;
+    if(fields)
+    {
+      GList *names = json_object_get_members(fields);
+      for(GList *n = names; n; n = g_list_next(n))
+        _set_param_json(m, params, n->data, json_object_get_member(fields, n->data));
+      g_list_free(names);
+    }
+    sqlite3_prepare_v2(db, "INSERT INTO data.style_items (styleid, num, module, operation, op_params, enabled,"
+                           " blendop_params, blendop_version, multi_priority, multi_name, multi_name_hand_edited)"
+                           " VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 0, '', 0)", -1, &stmt, NULL);
+    sqlite3_bind_int(stmt, 1, styleid);
+    sqlite3_bind_int(stmt, 2, added);
+    sqlite3_bind_int(stmt, 3, m->version());
+    sqlite3_bind_text(stmt, 4, m->op, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 5, params, m->params_size, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 6, m->default_blendop_params, sizeof(dt_develop_blend_params_t), SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 7, dt_develop_blend_version());
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    g_free(params);
+    added++;
+  }
+  if(!added) { dt_styles_delete_by_name(DEVELOP_EXPORT_STYLE); return NULL; }
+  return DEVELOP_EXPORT_STYLE;
+}
+
 static void _cmd_export(JsonObject *o)
 {
   if(!H.edit.loaded) return _error("no image open");
@@ -1865,7 +1943,9 @@ static void _cmd_export(JsonObject *o)
   g_strlcpy((char *)sdata, path, DT_MAX_PATH_FOR_PARAMS);
   fdata->max_width = MAX(max, 0);
   fdata->max_height = MAX(max, 0);
-  fdata->style[0] = '\0';
+  // a frame or watermark for this export only
+  const char *extras = _export_extras_style(json_object_has_member(o, "extras") ? json_object_get_array_member(o, "extras") : NULL);
+  g_strlcpy(fdata->style, extras ? extras : "", sizeof(fdata->style));
   fdata->style_append = 1;
 
   GList *ids = g_list_append(NULL, GINT_TO_POINTER(H.imgid));
@@ -1882,6 +1962,7 @@ static void _cmd_export(JsonObject *o)
                                     NULL, DT_INTENT_LAST, &metadata);
   gchar *file = g_strdup_printf("%s.%s", path, format->extension(fdata));
   if(storage->finalize_store) storage->finalize_store(storage, sdata);
+  if(extras) dt_styles_delete_by_name(extras);
   storage->free_params(storage, sdata);
   format->free_params(format, fdata);
   g_list_free(ids);

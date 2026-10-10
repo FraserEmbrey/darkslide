@@ -8,6 +8,8 @@ import Foundation
 /// needed. Pixels don't travel through the pipe: the helper writes BGRA8 into
 /// a shared frame file that we read after each render.
 actor Engine {
+    /// darktable's configuration folder (watermarks, presets and styles live here)
+    let configDir: URL
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
@@ -25,6 +27,7 @@ actor Engine {
         let support = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                   appropriateFor: nil, create: true)
             .appendingPathComponent("Develop/darktable", isDirectory: true)
+        configDir = support
         let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
                                 appropriateFor: nil, create: true)
             .appendingPathComponent("Develop", isDirectory: true)
@@ -194,9 +197,11 @@ actor Engine {
     /// darktable adds the format's. `maxEdge` 0 keeps the full size.
     /// `profile` is darktable's colour profile type, or nil for the edit's own.
     func export(path: String, format: String, quality: Int, bitDepth: Int, maxEdge: Int,
-                profile: Int?) async throws -> URL {
-        let reply = try await request(["cmd": "export", "path": path, "format": format, "quality": quality,
-                                       "bpp": bitDepth, "max": maxEdge, "icc": profile ?? -1], as: ExportReply.self)
+                profile: Int?, extras: ExportExtras = ExportExtras(), photoSize: CGSize = .zero) async throws -> URL {
+        var body: [String: Any] = ["cmd": "export", "path": path, "format": format, "quality": quality,
+                                   "bpp": bitDepth, "max": maxEdge, "icc": profile ?? -1]
+        if extras.any { body["extras"] = extras.engineExtras(configDir: configDir, photo: photoSize) }
+        let reply = try await request(body, as: ExportReply.self)
         return URL(fileURLWithPath: reply.file)
     }
 

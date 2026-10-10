@@ -1503,7 +1503,8 @@ final class EditorModel {
                 lastExport = try await engine.export(
                     path: url.deletingPathExtension().path, format: settings.format.darktableName ?? "jpeg",
                     quality: settings.quality, bitDepth: settings.bitDepth, maxEdge: settings.longEdge,
-                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue)
+                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue,
+                    extras: ExportExtras.load(), photoSize: imageSize)
             }
             if let photo = self.url, let file = lastExport {
                 catalog.recordExport(photo, file: file, format: settings.format.title)

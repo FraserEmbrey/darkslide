@@ -129,6 +129,20 @@ darktable's LUT 3D module applies it. The engine's `look` command sets the modul
 
 Film LUTs only cover 0 to 1. Engine patch 0004 makes LUT 3D scale any pixel brighter than white into range by its largest channel, look it up, and scale it back, so in HDR the highlights keep their brightness and take the film's colour. Pixels in range are unchanged, so SDR results are as before. On the Z50 with sigmoid's target white at 400%, the HDR peak is 2.17× white without a look, 2.14× with Velvia and 2.17× with HP5, where unpatched darktable clips at 1. The module now runs on the CPU, because the step is only in its CPU code.
 
+### Frames and watermarks
+
+The export panel can add a frame and a text watermark to the exported file, leaving the edit as it is.
+- **Frame:** an even border, square or 4:5 portrait, in white or black, sized as a share of the longer side.
+- **Watermark:** your text in one of nine positions, white or black, with a size and opacity. With a frame on, it sits in the bottom border instead, sized to the border, in the frame's other colour, lined up with the photo's edge (or centred).
+
+darktable's framing and watermark modules do the work. The engine's export takes them as `extras` (module and settings), builds them from each module's defaults into a darktable style, appends it to the export (`fdata->style`), and deletes it afterwards.
+
+The watermark's text is drawn by the app with Core Text into a transparent PNG in darktable's user watermarks folder. darktable's text SVGs have no size, and it measures the text itself, which cut off the last letters.
+
+darktable applies the watermark after the frame, to the whole framed picture, so placing it in the border uses the frame's layout. `ExportExtras.frameLayout` ports `borders.c`'s `modify_roi_out`: the border's size is its share of the framed side, so it adds `L·s/(1−s)`.
+
+Not yet for JPEG with HDR gain map, which the app assembles from two renders rather than darktable's export.
+
 ### Copy and paste adjustments
 
 As in Photos:

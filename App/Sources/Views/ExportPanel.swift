@@ -45,6 +45,10 @@ final class ExportOptions {
             }
         }
     }
+    /// a frame and watermark for exports, kept between them
+    var extras = ExportExtras.load() {
+        didSet { extras.save() }
+    }
     weak var panel: NSSavePanel?
     let model: EditorModel
 
@@ -143,6 +147,82 @@ struct ExportOptionsView: View {
                         .labelsHidden()
                     }
                 }
+                GridRow {
+                    label("Frame:")
+                    HStack {
+                        Toggle("Add a frame", isOn: $options.extras.frameOn)
+                        if options.extras.frameOn {
+                            Picker("Shape", selection: $options.extras.frameShape) {
+                                ForEach(ExportExtras.Shape.allCases) { Text($0.title).tag($0) }
+                            }
+                            .labelsHidden().fixedSize()
+                            Picker("Colour", selection: $options.extras.frameTone) {
+                                ForEach(ExportExtras.Tone.allCases) { Text($0.title).tag($0) }
+                            }
+                            .labelsHidden().fixedSize()
+                        }
+                    }
+                }
+                if options.extras.frameOn {
+                    GridRow {
+                        label("Width:")
+                        HStack {
+                            Slider(value: $options.extras.frameWidth, in: 1...15, step: 0.5)
+                            Text("\(options.extras.frameWidth.formatted(.number.precision(.fractionLength(0...1))))%")
+                                .monospacedDigit().frame(width: 40, alignment: .trailing)
+                        }
+                    }
+                }
+                GridRow {
+                    label("Watermark:")
+                    HStack {
+                        Toggle("Add text", isOn: $options.extras.watermarkOn)
+                        if options.extras.watermarkOn {
+                            TextField("Text", text: $options.extras.watermarkText)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+                }
+                if options.extras.watermarkOn {
+                    GridRow {
+                        label("Position:")
+                        HStack {
+                            Picker("Position", selection: $options.extras.watermarkPosition) {
+                                ForEach(0..<9) { Text(Self.positions[$0]).tag($0) }
+                            }
+                            .labelsHidden().fixedSize()
+                            if !options.extras.frameOn {
+                                Picker("Colour", selection: $options.extras.watermarkTone) {
+                                    ForEach(ExportExtras.Tone.allCases) { Text($0.title).tag($0) }
+                                }
+                                .labelsHidden().fixedSize()
+                            }
+                        }
+                    }
+                    if options.extras.frameOn {
+                        GridRow {
+                            Text("")
+                            Text("With a frame, the text sits in the bottom border, sized to it, in the frame's other colour.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        GridRow {
+                            label("Size:")
+                            HStack {
+                                Slider(value: $options.extras.watermarkSize, in: 5...60, step: 1)
+                                Text("\(Int(options.extras.watermarkSize))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+                            }
+                        }
+                    }
+                    GridRow {
+                        label("Opacity:")
+                        HStack {
+                            Slider(value: $options.extras.watermarkOpacity, in: 10...100, step: 5)
+                            Text("\(Int(options.extras.watermarkOpacity))%").monospacedDigit().frame(width: 40, alignment: .trailing)
+                        }
+                    }
+                }
             }
             .frame(width: 420)
 
@@ -163,6 +243,11 @@ struct ExportOptionsView: View {
                           systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                } else if s.format == .jpegGainMap && options.extras.any {
+                    Label("Frames and watermarks aren't added to JPEG with HDR gain map yet; choose another format for them.",
+                          systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else if target.isHDR && model.hdrLimitStops > 0 && s.format != .jpegGainMap {
                     Label("The HDR peak limit only applies to JPEG with HDR gain map. For \(s.format.title), lower your tone mapper's target white instead.",
                           systemImage: "info.circle")
@@ -176,6 +261,8 @@ struct ExportOptionsView: View {
         .padding(.vertical, 16)
         .padding(.horizontal, 24)
     }
+
+    static let positions = ["Top left", "Top", "Top right", "Left", "Centre", "Right", "Bottom left", "Bottom", "Bottom right"]
 
     private func label(_ text: String) -> some View {
         Text(text).gridColumnAlignment(.trailing)

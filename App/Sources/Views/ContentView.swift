@@ -6,7 +6,6 @@ struct ContentView: View {
     @State private var showInspector = true
 
     @AppStorage(FilmstripSettings.visibleKey) private var filmstripVisible = true
-    @Environment(\.openWindow) private var openWindow
     /// the sidebar stays as the user leaves it, across launches
     @AppStorage("SidebarVisible") private var sidebarVisible = false
     @State private var columns: NavigationSplitViewVisibility =
@@ -77,7 +76,7 @@ struct ContentView: View {
                 // otherwise focus the search field at launch
                 DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) }
                 // StartMetadata: launch argument (-StartMetadata YES) for testing
-                if UserDefaults.standard.bool(forKey: "StartMetadata") { openWindow(id: "metadata") }
+                if UserDefaults.standard.bool(forKey: "StartMetadata") { InfoPanel.shared.show(model: model) }
             }
             .alert("Something went wrong", isPresented: errorBinding) {
                 Button("OK") { model.errorMessage = nil }

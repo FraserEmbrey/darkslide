@@ -2,8 +2,8 @@ import MapKit
 import SwiftUI
 
 /// Window › Info (⌘I): the photo being looked at (the open one in the
-/// editor, or the one selected in the library), laid out as Photos' Info
-/// window, on a translucent background. Title, caption, keywords and rating
+/// editor, or the one selected in the library; several selected are summed
+/// up), laid out as Photos' Info window, in a floating panel (InfoPanel). Title, caption, keywords and rating
 /// are editable, saved to the sidecar through darktable. All Metadata lists
 /// every tag.
 struct MetadataWindow: View {
@@ -28,9 +28,17 @@ struct MetadataWindow: View {
         model.showingLibrary ? (model.library.selection ?? model.url) : model.url
     }
 
+    /// several selected in the library: Info sums them up (MultiInfo)
+    private var several: [URL]? {
+        guard model.showingLibrary, model.library.selected.count > 1 else { return nil }
+        return model.library.selectedInOrder
+    }
+
     var body: some View {
         Group {
-            if let photo, let metadata, shownURL == photo {
+            if let several {
+                MultiInfo(photos: several)
+            } else if let photo, let metadata, shownURL == photo {
                 content(metadata, photo: photo)
             } else if photo == nil {
                 ContentUnavailableView("No Photo", systemImage: "info.circle",
@@ -41,7 +49,6 @@ struct MetadataWindow: View {
         }
         .font(.system(size: 13))
         .frame(minWidth: 280, idealWidth: 300, minHeight: 360, idealHeight: 600)
-        .containerBackground(.ultraThinMaterial, for: .window)
         .task(id: "\(photo?.path ?? "")#\(model.infoRevision)") { await load() }
         .onAppear {
             // Option shows the true focal length, as Photos does
@@ -49,8 +56,9 @@ struct MetadataWindow: View {
                 optionDown = event.modifierFlags.contains(.option)
                 return event
             }
-            // no field starts with the cursor in it
-            DispatchQueue.main.async { focus = nil; NSApp.keyWindow?.makeFirstResponder(nil) }
+            // no field starts with the cursor in it (the panel isn't key, so
+            // the main window keeps its own focus)
+            DispatchQueue.main.async { focus = nil }
         }
         .onDisappear { if let m = optionMonitor { NSEvent.removeMonitor(m) } }
     }

@@ -160,17 +160,13 @@ struct DevelopApp: App {
             }
             InspectorCommands()
             ToolbarCommands()
+            // Window › Info (⌘I): a floating panel, shown and hidden by ⌘I (InfoPanel)
+            CommandGroup(before: .windowArrangement) {
+                InfoMenuItem(model: model)
+                Divider()
+            }
         }
 
-        // Window › Info (⌘I): the photo being looked at, as Photos' Info window
-        Window("Info", id: "metadata") {
-            MetadataWindow()
-                .environment(model)
-                .preferredColorScheme(.dark)
-        }
-        .defaultSize(width: 300, height: 620)
-        .keyboardShortcut("i", modifiers: [.command])
-        .windowResizability(.contentMinSize)
 
         Settings {
             SettingsView()
@@ -253,5 +249,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // needed when launched as a bare SwiftPM executable during development
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+    }
+}
+
+/// Show Info / Hide Info, as Photos names it
+private struct InfoMenuItem: View {
+    let model: EditorModel
+    @State private var visible = false
+
+    var body: some View {
+        Button(visible ? "Hide Info" : "Show Info") { InfoPanel.shared.toggle(model: model) }
+            .keyboardShortcut("i", modifiers: [.command])
+            .onReceive(NotificationCenter.default.publisher(for: InfoPanel.visibilityChanged)) { _ in
+                visible = InfoPanel.shared.isVisible
+            }
     }
 }

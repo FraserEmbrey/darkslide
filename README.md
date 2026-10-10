@@ -129,6 +129,14 @@ darktable's LUT 3D module applies it. The engine's `look` command sets the modul
 
 Film LUTs only cover 0 to 1. Engine patch 0004 makes LUT 3D scale any pixel brighter than white into range by its largest channel, look it up, and scale it back, so in HDR the highlights keep their brightness and take the film's colour. Pixels in range are unchanged, so SDR results are as before. On the Z50 with sigmoid's target white at 400%, the HDR peak is 2.17× white without a look, 2.14× with Velvia and 2.17× with HP5, where unpatched darktable clips at 1. The module now runs on the CPU, because the step is only in its CPU code.
 
+### Apple Photos
+
+The sidebar's Photos section shows Apple Photos: All Photos (the newest 3,000), Favourites, and the albums, folded away as there can be hundreds. Photos asks for access the first time.
+
+Photos assets aren't files, so library items address them as `photos://asset?id=<local identifier>`, and their thumbnails come from Photos (`PHImageManager`). Opening one writes its original to `~/Library/Caches/Develop/photos` and edits that file: the raw of a raw or raw-and-JPEG photo, otherwise the photo as taken, before any edit. The library stays on Photos, and the filmstrip and arrows follow the asset (`libraryURL`). The original's title is its file name; renaming and the title's file icon are off, as the file is a cache copy.
+
+**File › Save to Photos (⌥⌘S)** saves the edit to Photos as its own edit of the original, so Photos keeps the original and Revert to Original works. It saves a rendering (a JPEG with an HDR gain map for an HDR edit, otherwise the type Photos asks for, through darktable's export) and the darktable edit (the XMP sidecar) as the edit's adjustment data, identified as `me.frsr.develop`. Opening the photo again reads that back as its sidecar, so every setting returns. A photo edited in Photos itself opens from its original here, and saving replaces Photos' edit.
+
 ### Frames and watermarks
 
 The export panel can add a frame and a text watermark to the exported file, leaving the edit as it is.

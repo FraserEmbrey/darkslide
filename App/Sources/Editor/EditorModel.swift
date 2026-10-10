@@ -131,11 +131,20 @@ final class EditorModel {
     var lookStrength = 100.0
     var pendingLookStrength: Double?
     var sendingLook = false
+    /// Photos' albums for the sidebar, once Photos is allowed
+    var photosAlbums: [PhotosLibrary.Album] = []
     /// darktable's presets for the open photo's modules
     var presetList: [Engine.PresetInfo] = []
     /// adjustments copied for pasting onto other photos
     var copiedAdjustments: CopiedAdjustments?
     var choosingAdjustmentsToCopy = false
+    /// the Photos asset open, when the photo came from Photos (its original
+    /// is edited from a cache file)
+    private(set) var photosAsset: String?
+    fileprivate var openingPhotosAsset: String?
+    var isSavingToPhotos = false
+    /// the open photo as the library knows it: its Photos address, or its file
+    var libraryURL: URL? { photosAsset.map(PhotosLibrary.url(for:)) ?? url }
     /// the RGB curve card's tab: 0 RGB, 1 red, 2 green, 3 blue
     var curveChannel = 0
     /// the module curveInfo describes
@@ -564,6 +573,24 @@ final class EditorModel {
     func open(_ url: URL) async {
         if restartPending { await restartEngine() }
         guard let engine else { openWhenReady = url; return }
+        // a Photos photo: its original is fetched to a file, which is what's edited
+        if let id = PhotosLibrary.assetID(url) {
+            if photosAsset == id, self.url != nil { showingLibrary = false; return }
+            statusNote = "Getting the original from Photos…"
+            let file: URL
+            do {
+                file = try await PhotosLibrary.original(id)
+            } catch {
+                statusNote = nil
+                errorMessage = "Couldn't get the photo from Photos: \(error.localizedDescription)"
+                return
+            }
+            statusNote = nil
+            openingPhotosAsset = id
+            defer { openingPhotosAsset = nil }
+            await open(file)
+            return
+        }
         if !reopening, let current = self.url, current.standardizedFileURL == url.standardizedFileURL {
             showingLibrary = false
             return
@@ -572,7 +599,8 @@ final class EditorModel {
         isOpening = true
         defer { isOpening = false }
         // stay in the folder or collection being worked through if it has this photo
-        if !library.contains(url) { library.show(folder: url.deletingLastPathComponent()) }
+        // (a Photos original's cache folder is never shown)
+        if openingPhotosAsset == nil, !library.contains(url) { library.show(folder: url.deletingLastPathComponent()) }
         showingLibrary = false
         do {
             decodedTIFF = nil
@@ -911,6 +939,22 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop multi test: sidecars \(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted())\n".data(using: .utf8)!)
                 }
             }
+            // TestPhotos: launch argument (-TestPhotos YES) for testing: reads Photos (access,
+            // albums, the newest photos) and opens the newest, logging only counts and names
+            if UserDefaults.standard.bool(forKey: "TestPhotos"), openingPhotosAsset == nil {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop photos test: authorised \(PhotosLibrary.authorised)\n".data(using: .utf8)!)
+                    showPhotos(album: nil, title: "All Photos")
+                    try? await Task.sleep(for: .seconds(6))
+                    FileHandle.standardError.write("Develop photos test: albums \(photosAlbums.count), items \(library.items.count), thumbnails \(library.thumbnails.count)\n".data(using: .utf8)!)
+                    if let first = library.items.first {
+                        await open(first.url)
+                        try? await Task.sleep(for: .seconds(4))
+                        FileHandle.standardError.write("Develop photos test: opened \(self.url?.lastPathComponent ?? "-"), asset \(photosAsset != nil), library url matches \(libraryURL == first.url), modules \(modules.count), source \(library.source?.title ?? "-")\n".data(using: .utf8)!)
+                    }
+                }
+            }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
             if UserDefaults.standard.bool(forKey: "TestLevel") {
                 Task { @MainActor in
@@ -964,6 +1008,7 @@ final class EditorModel {
                 Task { @MainActor in ExportPanel.present(model: self) }
             }
             sensor = reply.sensor ?? "bayer"
+            photosAsset = openingPhotosAsset
             modules = reply.modules
             panBackdrop = nil
             selectedLocal = nil
@@ -2067,7 +2112,7 @@ extension EditorModel {
 
     /// the next or previous photo in the folder
     func openNeighbour(_ offset: Int) async {
-        guard let next = library.neighbour(of: url, offset: offset) else { return }
+        guard let next = library.neighbour(of: libraryURL, offset: offset) else { return }
         await open(next)
     }
 
@@ -2514,7 +2559,8 @@ extension EditorModel {
     /// file with darktable's sidecar and any Apple-decode one, and reopens it.
     /// The extension stays if it's left off.
     func renamePhoto(to newName: String) {
-        guard let current = url else { return }
+        // a Photos original is a cache copy; Photos keeps its own name
+        guard let current = url, photosAsset == nil else { return }
         var name = newName.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "/", with: ":")
         guard !name.isEmpty, name != current.lastPathComponent else { return }
         if (name as NSString).pathExtension.lowercased() != current.pathExtension.lowercased() {
@@ -2628,6 +2674,76 @@ extension EditorModel {
                 if reply.pasted == 0 { errorMessage = "Nothing was pasted: \(copied.summary) didn't include anything to paste." }
             } catch {
                 errorMessage = "Couldn't paste: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+// MARK: - Apple Photos
+
+extension EditorModel {
+    func showPhotos(album: String?, title: String) {
+        Task {
+            guard await PhotosLibrary.authorise() else {
+                errorMessage = "Develop needs access to Photos: allow it in System Settings › Privacy & Security › Photos."
+                return
+            }
+            photosAlbums = PhotosLibrary.albums()
+            showSource(.photos(album: album, title: title))
+        }
+    }
+
+    func loadPhotosAlbums() {
+        guard PhotosLibrary.authorised else { return }
+        photosAlbums = PhotosLibrary.albums()
+    }
+
+    /// Saves the edit to Photos as its edit of the original: a rendering in
+    /// the type Photos asks for (a JPEG with an HDR gain map for an HDR edit),
+    /// with the darktable edit inside, so it can be reopened here as it was.
+    func saveToPhotos() {
+        guard let engine, let id = photosAsset, url != nil else { return }
+        Task {
+            isSavingToPhotos = true
+            defer { isSavingToPhotos = false }
+            await settleEdits()
+            await save()
+            guard let file = url, let xmp = try? Data(contentsOf: URL(fileURLWithPath: file.path + ".xmp")) else {
+                errorMessage = "Couldn't read the edit to save it to Photos."
+                return
+            }
+            do {
+                let target = try await PhotosLibrary.renderedType(for: id)
+                let supported = target.output.supportedRenderedContentTypes
+                var settings = ExportSettings()
+                settings.longEdge = 0
+                settings.profile = .fromEdit
+                settings.quality = 92
+                var destination = target.url
+                if exportTarget.isHDR, supported.contains(.jpeg) {
+                    // HDR: a JPEG with a gain map, which Photos shows in HDR
+                    destination = try target.output.renderedContentURL(for: .jpeg)
+                    settings.format = .jpegGainMap
+                    settings.bitDepth = 8
+                    try await exportGainMapJPEG(settings, to: destination, engine: engine)
+                } else {
+                    let heic = target.type.conforms(to: .heic)
+                    settings.format = heic ? .heif : .jpeg
+                    settings.bitDepth = 8
+                    let written = try await engine.export(
+                        path: destination.deletingPathExtension().path, format: settings.format.darktableName ?? "jpeg",
+                        quality: settings.quality, bitDepth: 8, maxEdge: 0, profile: nil)
+                    if written != destination {
+                        try? FileManager.default.removeItem(at: destination)
+                        try FileManager.default.moveItem(at: written, to: destination)
+                    }
+                }
+                try await PhotosLibrary.commit(target.output, for: id, xmp: xmp)
+                statusNote = "Saved to Photos"
+                Task { try? await Task.sleep(for: .seconds(2)); if statusNote == "Saved to Photos" { statusNote = nil } }
+                library.rescan()
+            } catch {
+                errorMessage = "Couldn't save to Photos: \(error.localizedDescription)"
             }
         }
     }

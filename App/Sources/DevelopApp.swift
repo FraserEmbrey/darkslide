@@ -66,6 +66,9 @@ struct DevelopApp: App {
                 Button("Export…") { ExportPanel.present(model: model) }
                     .keyboardShortcut("e")
                     .disabled(model.url == nil)
+                Button("Save to Photos") { model.saveToPhotos() }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+                    .disabled(model.photosAsset == nil || model.isSavingToPhotos)
             }
             CommandMenu("Image") {
                 Button("Auto") { Task { await model.autoAll() } }

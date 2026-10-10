@@ -50,7 +50,7 @@ struct ContentView: View {
             .navigationTitle(Binding(
                 get: { model.showingLibrary ? (model.library.source?.title ?? "Library") : (model.url?.lastPathComponent ?? "Develop") },
                 set: { if !model.showingLibrary { model.renamePhoto(to: $0) } }))
-            .background(DocumentIcon(url: model.showingLibrary ? nil : model.url))
+            .background(DocumentIcon(url: model.showingLibrary || model.photosAsset != nil ? nil : model.url))
             .sheet(isPresented: Binding(get: { model.choosingAdjustmentsToCopy }, set: { model.choosingAdjustmentsToCopy = $0 })) {
                 CopyAdjustmentsSheet()
             }

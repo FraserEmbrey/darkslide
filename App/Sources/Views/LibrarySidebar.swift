@@ -19,7 +19,11 @@ struct LibrarySidebar: View {
     var body: some View {
         let selection = Binding<LibrarySource?>(
             get: { model.library.source },
-            set: { if let s = $0 { model.showSource(s) } })
+            set: { s in
+                // Photos asks for access the first time
+                if case .photos(let album, let title) = s { model.showPhotos(album: album, title: title) }
+                else if let s { model.showSource(s) }
+            })
         List(selection: selection) {
             Section("Library") {
                 Label("Edited", systemImage: "slider.horizontal.3")
@@ -31,6 +35,28 @@ struct LibrarySidebar: View {
                 Label("Map", systemImage: "map")
                     .tag(LibrarySource.map)
                     .help("Every photo in the library's folders, where it was taken")
+            }
+
+            Section("Photos") {
+                Label("All Photos", systemImage: "photo.on.rectangle")
+                    .tag(LibrarySource.photos(album: nil, title: "All Photos"))
+                    .help("The newest \(PhotosLibrary.limit) photos in Apple Photos")
+                // Favourites, then the albums folded away, as there can be hundreds
+                ForEach(model.photosAlbums.prefix(1).filter { $0.title == "Favourites" }) { album in
+                    Label(album.title, systemImage: "heart")
+                        .badge(album.count)
+                        .tag(LibrarySource.photos(album: album.id, title: album.title))
+                }
+                let albums = model.photosAlbums.filter { $0.title != "Favourites" }
+                if !albums.isEmpty {
+                    DisclosureGroup("Albums") {
+                        ForEach(albums) { album in
+                            Label(album.title, systemImage: "rectangle.stack")
+                                .badge(album.count)
+                                .tag(LibrarySource.photos(album: album.id, title: album.title))
+                        }
+                    }
+                }
             }
 
             // the folder being shown, when it hasn't been added
@@ -71,6 +97,7 @@ struct LibrarySidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .onAppear { model.loadPhotosAlbums() }
         .overlay {
             if model.catalog.folders.isEmpty && model.library.lastFolder == nil {
                 ContentUnavailableView("No Folders", systemImage: "folder.badge.plus",

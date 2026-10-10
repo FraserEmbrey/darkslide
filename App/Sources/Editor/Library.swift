@@ -10,8 +10,10 @@ import UniformTypeIdentifiers
 struct LibraryItem: Identifiable, Hashable {
     let url: URL
     var id: URL { url }
-    var name: String { url.lastPathComponent }
-    var folderName: String { url.deletingLastPathComponent().lastPathComponent }
+    /// a name for items that aren't files (Photos assets: their date)
+    var title: String? = nil
+    var name: String { title ?? url.lastPathComponent }
+    var folderName: String { PhotosLibrary.assetID(url) != nil ? "Photos" : url.deletingLastPathComponent().lastPathComponent }
     /// has an XMP sidecar, so it's been edited (here or in darktable)
     var hasEdit: Bool
 }
@@ -24,6 +26,8 @@ enum LibrarySource: Hashable {
     case exported
     /// every photo in the library's folders, on a map
     case map
+    /// Apple Photos: an album, or the newest of the whole library
+    case photos(album: String?, title: String)
 
     var title: String {
         switch self {
@@ -31,6 +35,7 @@ enum LibrarySource: Hashable {
         case .edited: "Edited"
         case .exported: "Exported"
         case .map: "Map"
+        case .photos(_, let title): title
         }
     }
 }
@@ -95,6 +100,7 @@ final class Library {
         case .map: catalog.folders + (lastFolder.map { [$0] } ?? [])
         // a collection's photos are spread across folders: watch those
         case .edited, .exported: Array(Set(items.map { $0.url.deletingLastPathComponent() }))
+        case .photos: []
         case nil: []
         }
         watcher.watch(folders)
@@ -187,8 +193,20 @@ final class Library {
         let generation = scanGeneration
         isScanning = true
         let recursive = includeSubfolders
+        if case .photos(let album, _) = source {
+            Task.detached(priority: .userInitiated) {
+                let found = PhotosLibrary.assets(in: album).map { LibraryItem(url: $0.url, title: $0.title, hasEdit: $0.edited) }
+                await MainActor.run {
+                    guard generation == self.scanGeneration else { return }
+                    self.items = found
+                    self.isScanning = false
+                    if let sel = self.selection, !self.items.contains(where: { $0.url == sel }) { self.selection = nil }
+                }
+            }
+            return
+        }
         let collection: [URL]? = switch source {
-        case .folder, .map: nil
+        case .folder, .map, .photos: nil
         case .edited: catalog.editedPhotos
         case .exported: catalog.exportedPhotos
         }
@@ -365,6 +383,14 @@ final class Library {
     func requestThumbnail(for url: URL) {
         guard thumbnails[url] == nil, !loading.contains(url) else { return }
         loading.insert(url)
+        if let id = PhotosLibrary.assetID(url) {
+            Task {
+                let image = await PhotosLibrary.thumbnail(id, size: CGFloat(Self.thumbnailPixels))
+                self.loading.remove(url)
+                if let image { self.thumbnails[url] = image }
+            }
+            return
+        }
         Task.detached(priority: .utility) {
             let image = Self.cachedRender(for: url) ?? Self.embeddedPreview(for: url)
             let isRaw = Self.rawExtensions.contains(url.pathExtension.lowercased())

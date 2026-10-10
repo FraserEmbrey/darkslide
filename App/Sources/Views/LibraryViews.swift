@@ -139,7 +139,7 @@ struct Filmstrip: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 6) {
                     ForEach(model.library.items) { item in
-                        let current = model.url?.standardizedFileURL == item.url.standardizedFileURL
+                        let current = model.libraryURL?.standardizedFileURL == item.url.standardizedFileURL
                         Thumbnail(item: item)
                             .frame(width: FilmstripSettings.width(height), height: height)
                             .overlay(alignment: .bottomTrailing) { ItemBadges(item: item).padding(3) }
@@ -161,7 +161,7 @@ struct Filmstrip: View {
             .scrollIndicators(.never)
             .frame(height: height + 18)
             .background(.bar)
-            .onChange(of: model.url, initial: true) { _, url in
+            .onChange(of: model.libraryURL, initial: true) { _, url in
                 guard let url = model.library.items.first(where: { $0.url.standardizedFileURL == url?.standardizedFileURL })?.url else { return }
                 withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(url, anchor: .center) }
             }
@@ -197,7 +197,7 @@ struct LibraryGrid: View {
                         .padding(20)
                     }
                     .onAppear {
-                        model.library.selection = model.url ?? model.library.items.first?.url
+                        model.library.selection = model.libraryURL ?? model.library.items.first?.url
                         if let s = model.library.selection { proxy.scrollTo(s, anchor: .center) }
                         focused = true
                     }
@@ -250,6 +250,7 @@ struct LibraryGrid: View {
         case .edited: "Photos you edit and save appear here, from every folder."
         case .exported: "Photos you export appear here, from every folder."
         case .map: "Add folders to the library to see their photos on the map."
+        case .photos: PhotosLibrary.authorised ? "No photos here." : "Allow Develop to use Photos in System Settings › Privacy & Security › Photos."
         case .folder: model.library.includeSubfolders ? "No raw files or images in this folder or its subfolders."
                                                       : "No raw files or images in this folder. Turn on Include Subfolders to look further down."
         }

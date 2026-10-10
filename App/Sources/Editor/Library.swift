@@ -49,6 +49,8 @@ enum LibrarySource: Hashable {
 final class Library {
     private(set) var source: LibrarySource?
     private(set) var items: [LibraryItem] = []
+    /// tells a Photos source when Photos changes
+    private var photosObserver: PhotosLibrary.Observer?
     private(set) var thumbnails: [URL: CGImage] = [:]
     /// photos that hold HDR (a gain map, HLG or PQ), found as thumbnails load
     private(set) var hdrPhotos: Set<URL> = []
@@ -201,6 +203,8 @@ final class Library {
                     self.items = found
                     self.isScanning = false
                     if let sel = self.selection, !self.items.contains(where: { $0.url == sel }) { self.selection = nil }
+                    if self.showsMap { self.loadLocations() }
+                    self.watchPhotos()
                 }
             }
             return
@@ -298,7 +302,17 @@ final class Library {
     /// Reads the GPS position of every photo not yet checked: the sidecar's
     /// first (darktable's map view geotags there), then the file's own EXIF.
     func loadLocations() {
-        let todo = items.map(\.url).filter { !locationsChecked.contains($0) }
+        var todo = items.map(\.url).filter { !locationsChecked.contains($0) }
+        // Photos has its photos' places already: one fetch, no files read
+        let fromPhotos = todo.filter { PhotosLibrary.assetID($0) != nil }
+        if !fromPhotos.isEmpty {
+            let found = PhotosLibrary.locations(of: fromPhotos)
+            for url in fromPhotos {
+                locationsChecked.insert(url)
+                if let c = found[url] { locations[url] = c }
+            }
+            todo.removeAll { PhotosLibrary.assetID($0) != nil }
+        }
         guard !todo.isEmpty, !isLoadingLocations else { return }
         isLoadingLocations = true
         Task.detached(priority: .utility) {
@@ -331,11 +345,29 @@ final class Library {
         }
     }
 
+    /// Keeps a Photos source current: photos added or removed reload the grid,
+    /// and photos edited (here, in Photos or on another device) get new
+    /// thumbnails and places.
+    private func watchPhotos() {
+        guard photosObserver == nil else { return }
+        photosObserver = PhotosLibrary.Observer { [weak self] changed, reload in
+            Task { @MainActor in
+                guard let self, case .photos = self.source else { return }
+                for url in changed {
+                    self.thumbnails[url] = nil
+                    self.locationsChecked.remove(url)
+                }
+                if reload { self.rescan() } else if self.showsMap { self.loadLocations() }
+            }
+        }
+    }
+
     /// after placing a photo on the map
     func setLocation(_ coordinate: CLLocationCoordinate2D?, for url: URL) {
         locations[url] = coordinate
         locationsChecked.insert(url)
-        if let i = index(of: url) { items[i].hasEdit = true }   // it has a sidecar now
+        // a file has a sidecar now; a Photos photo was placed in Photos
+        if PhotosLibrary.assetID(url) == nil, let i = index(of: url) { items[i].hasEdit = true }
     }
 
     nonisolated private static func location(of url: URL) -> CLLocationCoordinate2D? {

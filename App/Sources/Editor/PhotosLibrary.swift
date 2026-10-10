@@ -1,4 +1,5 @@
 import AppKit
+import CoreLocation
 import Foundation
 import Photos
 import UniformTypeIdentifiers
@@ -91,6 +92,7 @@ enum PhotosLibrary {
         } else {
             result = PHAsset.fetchAssets(with: options)
         }
+        lastFetch = result
         let format = DateFormatter()
         format.dateStyle = .medium
         format.timeStyle = .short
@@ -99,6 +101,57 @@ enum PhotosLibrary {
             out.append((url(for: a.localIdentifier), a.creationDate.map(format.string) ?? "Photo", a.hasAdjustments))
         }
         return out
+    }
+
+    // MARK: locations
+
+    /// where each photo was taken, as Photos has it, in one fetch
+    static func locations(of urls: [URL]) -> [URL: CLLocationCoordinate2D] {
+        let ids = urls.compactMap(assetID)
+        guard authorised, !ids.isEmpty else { return [:] }
+        var out: [URL: CLLocationCoordinate2D] = [:]
+        PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil).enumerateObjects { a, _, _ in
+            if let c = a.location?.coordinate, CLLocationCoordinate2DIsValid(c), !(c.latitude == 0 && c.longitude == 0) {
+                out[url(for: a.localIdentifier)] = c
+            }
+        }
+        return out
+    }
+
+    /// places a photo in Photos, or removes its place, as Photos' Info does
+    static func setLocation(_ coordinate: CLLocationCoordinate2D?, for id: String) async throws {
+        guard let asset = asset(id) else { throw PhotosError("This photo is no longer in Photos.") }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest(for: asset).location = coordinate.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+        }
+    }
+
+    // MARK: changes
+
+    /// the fetch behind the grid, to tell what changed in it
+    nonisolated(unsafe) static var lastFetch: PHFetchResult<PHAsset>?
+
+    /// Tells the library when Photos changes: photos added, removed or edited
+    /// (here, in Photos or on another device). `onChange` gets the addresses
+    /// of photos whose picture changed, and whether the grid needs reloading.
+    final class Observer: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
+        let onChange: @Sendable ([URL], Bool) -> Void
+        init(onChange: @escaping @Sendable ([URL], Bool) -> Void) {
+            self.onChange = onChange
+            super.init()
+            PHPhotoLibrary.shared().register(self)
+        }
+        deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
+
+        func photoLibraryDidChange(_ change: PHChange) {
+            guard let fetch = PhotosLibrary.lastFetch, let details = change.changeDetails(for: fetch) else { return }
+            PhotosLibrary.lastFetch = details.fetchResultAfterChanges
+            let changed = details.changedObjects.map { PhotosLibrary.url(for: $0.localIdentifier) }
+            // photos added, removed or moved reload the grid; edits only redraw
+            let reload = !details.hasIncrementalChanges || !details.insertedObjects.isEmpty
+                || !details.removedObjects.isEmpty || details.hasMoves
+            onChange(changed, reload)
+        }
     }
 
     // MARK: thumbnails

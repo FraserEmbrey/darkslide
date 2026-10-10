@@ -947,7 +947,9 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop photos test: authorised \(PhotosLibrary.authorised)\n".data(using: .utf8)!)
                     showPhotos(album: nil, title: "All Photos")
                     try? await Task.sleep(for: .seconds(6))
-                    FileHandle.standardError.write("Develop photos test: albums \(photosAlbums.count), items \(library.items.count), thumbnails \(library.thumbnails.count)\n".data(using: .utf8)!)
+                    let t0 = Date()
+                    library.loadLocations()
+                    FileHandle.standardError.write("Develop photos test: albums \(photosAlbums.count), items \(library.items.count), thumbnails \(library.thumbnails.count), located \(library.items.filter { library.locations[$0.url] != nil }.count) in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s\n".data(using: .utf8)!)
                     if let first = library.items.first {
                         await open(first.url)
                         try? await Task.sleep(for: .seconds(4))
@@ -2082,6 +2084,16 @@ extension EditorModel {
     /// Places a photo on the map, or takes it off with nil. The location goes
     /// in the photo's sidecar, through darktable, so its map view agrees.
     func setLocation(_ coordinate: CLLocationCoordinate2D?, for photo: URL) async {
+        // a Photos photo is placed in Photos
+        if let id = PhotosLibrary.assetID(photo) {
+            do {
+                try await PhotosLibrary.setLocation(coordinate, for: id)
+                library.setLocation(coordinate, for: photo)
+            } catch {
+                errorMessage = "Couldn't place the photo: \(error.localizedDescription)"
+            }
+            return
+        }
         guard let engine else { return }
         do {
             try await engine.setLocation(path: photo.path, latitude: coordinate?.latitude, longitude: coordinate?.longitude)

@@ -135,6 +135,8 @@ The sidebar's Photos section shows Apple Photos: All Photos (the newest 3,000), 
 
 Photos assets aren't files, so library items address them as `photos://asset?id=<local identifier>`, and their thumbnails come from Photos (`PHImageManager`). Opening one writes its original to `~/Library/Caches/Develop/photos` and edits that file: the raw of a raw or raw-and-JPEG photo, otherwise the photo as taken, before any edit. The library stays on Photos, and the filmstrip and arrows follow the asset (`libraryURL`). The original's title is its file name; renaming and the title's file icon are off, as the file is a cache copy.
 
+**Map and changes.** On the map, Photos photos are placed from Photos' own locations, read in one fetch (2,203 of the newest 3,000 in 0.15 s), not from their files. Dragging one onto the map sets its location in Photos, as Photos' Info does. A PhotoKit change observer keeps the grid current: photos added, removed or moved (here, in Photos or on another device) reload it, and photos edited elsewhere get new thumbnails and places.
+
 **File › Save to Photos (⌥⌘S)** saves the edit to Photos as its own edit of the original, so Photos keeps the original and Revert to Original works. It saves a rendering (a JPEG with an HDR gain map for an HDR edit, otherwise the type Photos asks for, through darktable's export) and the darktable edit (the XMP sidecar) as the edit's adjustment data, identified as `me.frsr.develop`. Opening the photo again reads that back as its sidecar, so every setting returns. A photo edited in Photos itself opens from its original here, and saving replaces Photos' edit.
 
 ### Frames and watermarks

@@ -957,6 +957,13 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop multi test: sidecars \(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted())\n".data(using: .utf8)!)
                 }
             }
+            // MatchLocations: launch argument (-MatchLocations "/folder1:/folder2") to place
+            // photos without a location from the iPhone photos in Photos and the camera's own
+            // located photos, as Places' Match Locations does; logs counts only
+            if let folders = UserDefaults.standard.string(forKey: "MatchLocations") {
+                UserDefaults.standard.removeObject(forKey: "MatchLocations")
+                Task { @MainActor in await matchLocations(in: folders.split(separator: ":").map { URL(fileURLWithPath: String($0)) }) }
+            }
             // TestSubject: launch argument (-TestSubject YES) for testing: adds a subject
             // adjustment, brightens it by 2 EV and logs its outlines
             if UserDefaults.standard.bool(forKey: "TestSubject") {
@@ -2316,6 +2323,39 @@ extension EditorModel {
             library.setLocation(coordinate, for: photo)
         } catch {
             errorMessage = "Couldn't save the location of \(photo.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    /// Places every photo in these folders that has no location, from a track
+    /// of the iPhone photos in Photos and the folders' own located photos,
+    /// within 30 minutes (LocationMatcher). For the MatchLocations launch argument.
+    func matchLocations(in folders: [URL]) async {
+        func log(_ s: String) { FileHandle.standardError.write("Develop match locations: \(s)\n".data(using: .utf8)!) }
+        let exts: Set<String> = ["nef", "hif", "heic", "jpg", "jpeg", "dng"]
+        let photos = folders.flatMap { f in
+            ((try? FileManager.default.contentsOfDirectory(at: f, includingPropertiesForKeys: nil)) ?? [])
+                .filter { exts.contains($0.pathExtension.lowercased()) }
+        }
+        let located = await Task.detached { Dictionary(uniqueKeysWithValues: photos.map { ($0, Library.locationOf($0)) }) }.value
+        let unplaced = photos.filter { located[$0] ?? nil == nil }
+        var dates: [URL: Date] = [:]
+        for url in unplaced { if let d = LocationMatcher.captureDate(of: url, zone: .current, clockOffset: 0) { dates[url] = d } }
+        guard let first = dates.values.min(), let last = dates.values.max() else { log("nothing to place among \(photos.count)"); return }
+        do {
+            let phone = try await LocationMatcher.photosLibraryTrack(from: first - 86_400, to: last + 86_400)
+            let own = LocationMatcher.photosTrack(photos.compactMap { u in located[u].flatMap { $0 }.map { (u, $0) } }, zone: .current)
+            let track = (phone + own).sorted { $0.date < $1.date }
+            let matches = LocationMatcher.match(dates, track: track, maxGap: 30 * 60)
+            log("\(photos.count) photos, \(unplaced.count) without a location, track of \(phone.count) iPhone and \(own.count) camera points, \(matches.count) matched")
+            for (url, m) in matches.sorted(by: { $0.key.path < $1.key.path }) { await setLocation(m.coordinate, for: url) }
+            let gaps = matches.values.map(\.gap).sorted()
+            if !gaps.isEmpty { log("gaps: median \(Int(gaps[gaps.count / 2])) s, longest \(Int(gaps.last!)) s") }
+            let byDay = Dictionary(grouping: unplaced) { $0.deletingLastPathComponent().lastPathComponent }
+            for (day, list) in byDay.sorted(by: { $0.key < $1.key }) {
+                log("\(day): \(list.filter { matches[$0] != nil }.count) of \(list.count) placed")
+            }
+        } catch {
+            log("failed: \(error.localizedDescription)")
         }
     }
 

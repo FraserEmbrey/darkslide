@@ -395,6 +395,9 @@ final class Library {
         if PhotosLibrary.assetID(url) == nil, let i = index(of: url) { items[i].hasEdit = true }
     }
 
+    /// a file's location: its sidecar's, else its EXIF GPS
+    nonisolated static func locationOf(_ url: URL) -> CLLocationCoordinate2D? { location(of: url) }
+
     nonisolated private static func location(of url: URL) -> CLLocationCoordinate2D? {
         sidecarLocation(of: url) ?? exifLocation(of: url)
     }

@@ -1,5 +1,7 @@
+import AppKit
 import MapKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The library's photos where they were taken. Click a photo to select it,
 /// double-click to edit it. When some photos have no location, a strip of
@@ -11,6 +13,8 @@ struct LibraryMap: View {
     // matching locations from a track
     @State private var matching = false
     @State private var matchSource: LocationMatcher.Source = .photosLibrary
+    /// the GPX files chosen for the GPX source
+    @State private var gpxFiles: [URL] = []
     @State private var cameraZone = TimeZone.current.secondsFromGMT()
     @State private var clockMinutes = 0.0
     @State private var maxGapMinutes = 30.0
@@ -320,6 +324,20 @@ struct LibraryMap: View {
                 }
                 .labelsHidden()
             }
+            if matchSource == .gpx {
+                HStack {
+                    Text(gpxFiles.isEmpty ? "No file chosen"
+                         : gpxFiles.count == 1 ? gpxFiles[0].lastPathComponent : "\(gpxFiles.count) files")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(gpxFiles.map(\.lastPathComponent).joined(separator: "\n"))
+                    Spacer()
+                    Button("Choose…") { chooseGPX() }
+                        .controlSize(.small)
+                }
+            }
             LabeledContent("Camera time zone") {
                 Picker("Camera time zone", selection: $cameraZone) {
                     ForEach(Array(stride(from: -12 * 3600, through: 14 * 3600, by: 1800)), id: \.self) { s in
@@ -353,7 +371,9 @@ struct LibraryMap: View {
         .frame(width: 320)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
-        .onChange(of: matchSource) { _, _ in loadTrack() }
+        .onChange(of: matchSource) { _, new in
+            if new == .gpx, gpxFiles.isEmpty { chooseGPX() } else { loadTrack() }
+        }
         .onChange(of: cameraZone) { _, _ in readCaptureDates() }
         .onChange(of: clockMinutes) { _, _ in rematch() }
         .onChange(of: maxGapMinutes) { _, _ in rematch() }
@@ -365,6 +385,17 @@ struct LibraryMap: View {
         guard let first = captureDates.values.min(), let last = captureDates.values.max() else { return track }
         let margin = maxGapMinutes * 60 + abs(offset)
         return track.filter { $0.date >= first + offset - margin && $0.date <= last + offset + margin }
+    }
+
+    /// GPX files from a logger, watch or app; several (a file a day, say) make one track
+    private func chooseGPX() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "gpx") ?? .xml]
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose GPX tracks covering when the photos were taken"
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        gpxFiles = panel.urls
+        loadTrack()
     }
 
     private func startMatching() {
@@ -419,6 +450,9 @@ struct LibraryMap: View {
                 switch source {
                 case .photosLibrary: points = try await LocationMatcher.photosLibraryTrack(from: start, to: end)
                 case .thisView: points = await Task.detached { LocationMatcher.photosTrack(located, zone: zone) }.value
+                case .gpx:
+                    let files = gpxFiles
+                    points = try await Task.detached { try LocationMatcher.gpxTrack(files) }.value
                 }
                 track = points
                 rematch()
@@ -436,9 +470,14 @@ struct LibraryMap: View {
         let dates = captureDates.mapValues { $0 + offset }
         proposals = LocationMatcher.match(dates, track: track, maxGap: maxGapMinutes * 60)
         matchBusy = false
-        let source = matchSource == .photosLibrary ? "your Photos library" : "the located photos here"
-        matchStatus = track.isEmpty
-            ? "No located photos in \(source) from around then."
+        let source = switch matchSource {
+        case .photosLibrary: "your Photos library"
+        case .thisView: "the located photos here"
+        case .gpx: gpxFiles.count == 1 ? gpxFiles[0].lastPathComponent : "the GPX files"
+        }
+        matchStatus = matchSource == .gpx && gpxFiles.isEmpty ? "Choose a GPX file from a GPS logger, watch or tracking app."
+            : track.isEmpty && matchSource == .gpx ? "The GPX track has no timed points."
+            : track.isEmpty ? "No located photos in \(source) from around then."
             : "\(proposals.count) of \(captureDates.count) photos match a track of \(visibleTrack.count) points from \(source)."
         if !proposals.isEmpty {
             let pins = Array(proposals.values.map(\.coordinate))

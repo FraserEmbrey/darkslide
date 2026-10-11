@@ -3,8 +3,9 @@ import Foundation
 import ImageIO
 import Photos
 
-/// Gives photos without GPS a location from a track: the positions and times
-/// of photos that have GPS, such as an iPhone's in the Photos library. A photo
+/// Gives photos without GPS a location from a track: a GPX file from a GPS
+/// logger, watch or phone app, or the positions and times of photos that have
+/// GPS, such as an iPhone's in the Photos library. A photo
 /// taken between two track points goes partway along between them, in
 /// proportion to the time; one near a single point takes its position.
 enum LocationMatcher {
@@ -14,10 +15,11 @@ enum LocationMatcher {
     }
 
     enum Source: String, CaseIterable, Identifiable {
-        case photosLibrary, thisView
+        case gpx, photosLibrary, thisView
         var id: String { rawValue }
         var title: String {
             switch self {
+            case .gpx: "GPX track files"
             case .photosLibrary: "Photos library (iPhone)"
             case .thisView: "Located photos here"
             }
@@ -83,6 +85,70 @@ enum LocationMatcher {
             }
         }
         return points
+    }
+
+    /// The timed points of GPX files (track, route and waypoints), as GPS
+    /// loggers, watches and apps such as Arc, Strava or Garmin export them.
+    /// GPX times are UTC; points without a time are left out.
+    static func gpxTrack(_ files: [URL]) throws -> [TrackPoint] {
+        var points: [TrackPoint] = []
+        for file in files {
+            guard let parser = XMLParser(contentsOf: file) else {
+                throw EngineError(message: "Couldn't read \(file.lastPathComponent).")
+            }
+            let reader = GPXReader()
+            parser.delegate = reader
+            guard parser.parse() else {
+                throw EngineError(message: "\(file.lastPathComponent) isn't a GPX file Develop can read.")
+            }
+            points += reader.points
+        }
+        return points.sorted { $0.date < $1.date }
+    }
+
+    private final class GPXReader: NSObject, XMLParserDelegate {
+        var points: [TrackPoint] = []
+        private var coordinate: CLLocationCoordinate2D?
+        private var inTime = false
+        private var time = ""
+        private let iso = ISO8601DateFormatter()
+        private let isoFraction: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f
+        }()
+
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?,
+                    attributes: [String: String] = [:]) {
+            switch name {
+            case "trkpt", "rtept", "wpt":
+                if let lat = attributes["lat"].flatMap(Double.init), let lon = attributes["lon"].flatMap(Double.init) {
+                    coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                }
+                time = ""
+            case "time" where coordinate != nil:
+                inTime = true
+            default: break
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if inTime { time += string }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            switch name {
+            case "time":
+                inTime = false
+            case "trkpt", "rtept", "wpt":
+                let t = time.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let c = coordinate, let date = isoFraction.date(from: t) ?? iso.date(from: t) {
+                    points.append(TrackPoint(date: date, coordinate: c))
+                }
+                coordinate = nil
+            default: break
+            }
+        }
     }
 
     /// photos with a location among the ones given (times from their EXIF)

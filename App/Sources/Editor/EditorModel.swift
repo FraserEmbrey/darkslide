@@ -1213,13 +1213,31 @@ final class EditorModel {
 
     /// Settings Develop applies to a photo without an edit: lens correction,
     /// optionally automatic exposure, and the camera style per the settings.
+    /// a DNG's BaselineExposure (EV), if it has one
+    nonisolated static func dngBaselineExposure(_ url: URL) -> Double? {
+        guard url.pathExtension.lowercased() == "dng",
+              let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let dng = props[kCGImagePropertyDNGDictionary] as? [CFString: Any] else { return nil }
+        return (dng[kCGImagePropertyDNGBaselineExposure] as? NSNumber)?.doubleValue
+    }
+
     private func applyNewPhotoDefaults() async {
         if lensCorrectionForNewPhotos, let lens = modules.first(where: { $0.op == "lens" }), !lens.enabled {
             // darktable picks the camera's embedded correction data if the raw
             // has it (Sony, Fujifilm, Olympus...), otherwise the Lensfun database
             setEnabled(true, module: lens.key)
         }
-        if autoExposureForNewPhotos, let exposure = modules.first(where: { $0.op == "exposure" }) {
+        if let url, decoderInUse == "darktable", sensor == "linear", let baseline = Self.dngBaselineExposure(url), abs(baseline) > 0.05,
+           let exposure = modules.first(where: { $0.op == "exposure" }),
+           let ev = exposure.fields.first(where: { $0.name == "exposure" })?.value.number {
+            // darktable ignores a DNG's BaselineExposure, which says how much
+            // brighter its data is meant to be shown. For a linear DNG (an HDR
+            // merge from Capture One or Lightroom) it's large: Capture One's
+            // carry +4 EV or so, and opened four stops too dark. Other raws
+            // keep automatic exposure.
+            setValue(.number(((ev + baseline) * 100).rounded() / 100), module: exposure.key, field: "exposure")
+        } else if autoExposureForNewPhotos, let exposure = modules.first(where: { $0.op == "exposure" }) {
             setAuto(true, module: exposure)
         }
         if let style = suggestedStyle {

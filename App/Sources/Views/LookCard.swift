@@ -49,6 +49,7 @@ struct LookCard: View {
                     }
                 }
                 FilmLookSection()
+                GrainSection()
                 Divider()
                 Menu("Add a style") {
                     ForEach(groups, id: \.title) { group in
@@ -81,5 +82,31 @@ struct LookCard: View {
             byGroup[key, default: []].append(s)
         }
         return order.sorted().map { Group(title: $0.isEmpty ? "Other" : $0, styles: byGroup[$0]!) }
+    }
+}
+
+/// The grain module's switch, strength and coarseness, beside the film looks.
+/// Its channel and mid-tones bias stay in the module itself.
+struct GrainSection: View {
+    @Environment(EditorModel.self) private var model
+
+    var body: some View {
+        if let grain = model.modules.filter({ $0.op == "grain" }).min(by: { $0.key < $1.key }) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Grain")
+                    Spacer()
+                    Toggle("Grain", isOn: Binding(get: { grain.enabled }, set: { model.setEnabled($0, module: grain.key) }))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                if grain.enabled {
+                    ForEach(grain.fields.filter { ["strength", "scale"].contains($0.name) }, id: \.name) { f in
+                        FieldControl(op: "grain", field: f) { model.setValue($0, module: grain.key, field: f.name) }
+                    }
+                }
+            }
+        }
     }
 }

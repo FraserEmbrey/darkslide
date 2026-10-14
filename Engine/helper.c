@@ -216,20 +216,25 @@ static void _field_header(JsonBuilder *b, const dt_introspection_field_t *f, con
   json_builder_add_string_value(b, kind);
 }
 
-// walk the params struct; emits controls the app can generate, counts the rest
-static void _walk(JsonBuilder *b, dt_introspection_field_t *f, const char *params, int *skipped)
+// walk the params struct; emits controls the app can generate, counts the rest.
+// Defaults are the module's own for this photo (its reload_defaults can set
+// them from the camera, as denoise does from the noise profile), as darkroom
+// resets a slider to them, rather than the generic ones the struct declares.
+static void _walk(JsonBuilder *b, dt_introspection_field_t *f, const char *params, const char *defaults,
+                  int *skipped)
 {
   const char *p = params + f->header.offset;
+  const char *d = defaults + f->header.offset;
   switch(f->header.type)
   {
     case DT_INTROSPECTION_TYPE_STRUCT:
-      for(size_t i = 0; i < f->Struct.entries; i++) _walk(b, f->Struct.fields[i], params, skipped);
+      for(size_t i = 0; i < f->Struct.entries; i++) _walk(b, f->Struct.fields[i], params, defaults, skipped);
       break;
     case DT_INTROSPECTION_TYPE_FLOAT:
       _field_header(b, f, "float");
       _number(b, "min", f->Float.Min);
       _number(b, "max", f->Float.Max);
-      _number(b, "default", f->Float.Default);
+      _number(b, "default", *(const float *)d);
       _number(b, "value", *(const float *)p);
       json_builder_end_object(b);
       break;
@@ -237,14 +242,14 @@ static void _walk(JsonBuilder *b, dt_introspection_field_t *f, const char *param
       _field_header(b, f, "int");
       _number(b, "min", f->Int.Min == G_MININT ? -G_MAXFLOAT : f->Int.Min);
       _number(b, "max", f->Int.Max == G_MAXINT ? G_MAXFLOAT : f->Int.Max);
-      _number(b, "default", f->Int.Default);
+      _number(b, "default", *(const int *)d);
       _number(b, "value", *(const int *)p);
       json_builder_end_object(b);
       break;
     case DT_INTROSPECTION_TYPE_BOOL:
       _field_header(b, f, "bool");
       json_builder_set_member_name(b, "default");
-      json_builder_add_boolean_value(b, f->Bool.Default);
+      json_builder_add_boolean_value(b, *(const gboolean *)d);
       json_builder_set_member_name(b, "value");
       json_builder_add_boolean_value(b, *(const gboolean *)p);
       json_builder_end_object(b);
@@ -252,7 +257,7 @@ static void _walk(JsonBuilder *b, dt_introspection_field_t *f, const char *param
     case DT_INTROSPECTION_TYPE_ENUM:
       _field_header(b, f, "enum");
       json_builder_set_member_name(b, "default");
-      json_builder_add_int_value(b, f->Enum.Default);
+      json_builder_add_int_value(b, *(const int *)d);
       json_builder_set_member_name(b, "value");
       json_builder_add_int_value(b, *(const int *)p);
       json_builder_set_member_name(b, "options");
@@ -318,7 +323,7 @@ static void _add_modules(JsonBuilder *b)
     int skipped = 0;
     json_builder_set_member_name(b, "fields");
     json_builder_begin_array(b);
-    _walk(b, m->so->get_introspection()->field, (const char *)m->params, &skipped);
+    _walk(b, m->so->get_introspection()->field, (const char *)m->params, (const char *)m->default_params, &skipped);
     json_builder_end_array(b);
     json_builder_set_member_name(b, "unsupportedFields");
     json_builder_add_int_value(b, skipped);

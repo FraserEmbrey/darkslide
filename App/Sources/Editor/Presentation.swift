@@ -97,6 +97,20 @@ enum Presentation {
         "demosaic.cs_iter": { value($0, "cs_enabled") == 1 },
         "demosaic.cs_thrs": { value($0, "cs_enabled") == 1 },
         "demosaic.cs_center": { value($0, "cs_enabled") == 1 },
+        // profiled denoise, as its gui_changed shows them. Modes: 0 non-local
+        // means, 1 wavelets, 3 and 4 their automatic versions, which set patch
+        // size, scattering, shadows and bias from the noise profile themselves
+        "denoiseprofile.radius": { value($0, "mode") == 0 },
+        "denoiseprofile.nbhood": { value($0, "mode") == 0 },
+        "denoiseprofile.scattering": { value($0, "mode") == 0 },
+        "denoiseprofile.central_pixel_weight": { [0, 3].contains(value($0, "mode")) },
+        "denoiseprofile.overshooting": { [3, 4].contains(value($0, "mode")) },
+        "denoiseprofile.shadows": { ![3, 4].contains(value($0, "mode")) && value($0, "use_new_vst") == 1 },
+        "denoiseprofile.bias": { ![3, 4].contains(value($0, "mode")) && value($0, "use_new_vst") == 1 },
+        "denoiseprofile.wavelet_color_mode": { [1, 4].contains(value($0, "mode")) && value($0, "use_new_vst") == 1 },
+        // upgrades for old edits: offered only while not yet taken
+        "denoiseprofile.fix_anscombe_and_nlmeans_norm": { value($0, "fix_anscombe_and_nlmeans_norm") == 0 },
+        "denoiseprofile.use_new_vst": { value($0, "use_new_vst") == 0 },
     ]
 
     static let visibleWhen: [String: (field: String, values: Set<Int>)] = [
@@ -209,6 +223,23 @@ enum Presentation {
             Option(value: 1, name: "Small segments", detail: "For small clipped areas such as reflections and specular highlights."),
             Option(value: 3, name: "Flat small segments", detail: "For small clipped areas that should be smooth."),
         ],
+        // darktable's "compute variance" (2) is for measuring new profiles; not offered
+        "denoiseprofile.mode": [
+            Option(value: 4, name: "Wavelets, automatic",
+                   detail: "Sets itself from the camera's measured noise at this ISO. A good first try. Raise Auto strength if shadows stay noisy or colour blotches remain."),
+            Option(value: 1, name: "Wavelets",
+                   detail: "darktable's default. Good at colour blotches and fine grain. Too much looks smooth and waxy, so lower Strength before anything else."),
+            Option(value: 3, name: "Non-local means, automatic",
+                   detail: "Sets itself from the camera's measured noise. Keeps edges and texture well, so it suits grainy brightness noise on skin and fabric."),
+            Option(value: 0, name: "Non-local means",
+                   detail: "Matches similar patches across the photo, keeping edges and texture. Patch size and search radius are yours to set. Slower."),
+        ],
+        "denoiseprofile.wavelet_color_mode": [
+            Option(value: 1, name: "Brightness and colour",
+                   detail: "Denoises brightness and colour separately, so colour noise can go without softening detail. darktable's default."),
+            Option(value: 0, name: "Red, green and blue",
+                   detail: "Denoises each channel on its own. The older way."),
+        ],
     ]
 
     /// Clearer labels than darktable's field descriptions, keyed "op.field".
@@ -277,6 +308,31 @@ enum Presentation {
         "filmicrgb.compensate_icc_black": "Compensate profile black point",
         "filmicrgb.spline_version": "Spline handling",
         "toneequal.contrast_boost": "Mask contrast",
+        "denoiseprofile.mode": "Method",
+        "denoiseprofile.overshooting": "Auto strength",
+        "denoiseprofile.bias": "Shadow colour cast",
+        "denoiseprofile.scattering": "Coarse grain",
+        "denoiseprofile.central_pixel_weight": "Keep fine detail",
+        "denoiseprofile.wavelet_color_mode": "Colour handling",
+        "denoiseprofile.wb_adaptive_anscombe": "Adapt to white balance",
+        "denoiseprofile.compensate_hilite_pres": "Allow for highlight-priority modes",
+        "denoiseprofile.fix_anscombe_and_nlmeans_norm": "Upgrade to fixed algorithm",
+        "denoiseprofile.use_new_vst": "Upgrade noise model",
+    ]
+
+    /// Tooltips for fields whose name alone doesn't say which way to move
+    /// them, keyed "op.field". Restates darktable's own tooltips.
+    static let fieldHelp: [String: String] = [
+        "denoiseprofile.strength": "How much noise to remove. Lower it first if the photo looks smeared or waxy.",
+        "denoiseprofile.overshooting": "Scales the noise the automatic method expects. Raise it if shadows stay noisy or colour noise remains, as happens in underexposed photos.",
+        "denoiseprofile.shadows": "Lower to denoise dark areas harder; raise to leave them more alone.",
+        "denoiseprofile.bias": "Corrects a tint denoising can leave in the shadows. Lower it if shadows look purple, raise it if they look green.",
+        "denoiseprofile.radius": "Size of the patches compared. Larger smooths flat areas and keeps strong edges sharp, but can flatten fine detail.",
+        "denoiseprofile.nbhood": "How far to look for matching patches. Rarely needed, and large values are slow.",
+        "denoiseprofile.scattering": "Spreads the search further for coarse, blotchy noise, at no extra cost in time.",
+        "denoiseprofile.central_pixel_weight": "Raise to get fine detail back when patches are large.",
+        "denoiseprofile.wb_adaptive_anscombe": "Takes white balance into account. Leave on for the first instance of this module.",
+        "denoiseprofile.compensate_hilite_pres": "For cameras that underexpose in highlight-priority or HDR modes: denoises for the ISO the sensor actually used.",
     ]
 
     /// Card layouts: named groups of fields, the first shown openly, the rest
@@ -306,6 +362,10 @@ enum Presentation {
             Section(title: "Colour grading", fields: [
                 "shadows_Y", "shadows_C", "shadows_H", "midtones_Y", "midtones_C", "midtones_H",
                 "highlights_Y", "highlights_C", "highlights_H", "global_Y", "global_C", "global_H"]),
+        ],
+        "denoiseprofile": [
+            Section(title: nil, fields: ["mode", "strength", "overshooting", "shadows", "bias"]),
+            Section(title: "Patches", fields: ["radius", "nbhood", "scattering", "central_pixel_weight"]),
         ],
         "toneequal": [
             Section(title: "Zones", fields: ["noise", "ultra_deep_blacks", "deep_blacks", "blacks", "shadows",

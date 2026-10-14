@@ -719,7 +719,10 @@ struct LayoutControls: View {
             }
             ForEach(Array(sections.enumerated()), id: \.offset) { i, section in
                 if let title = section.title {
-                    DisclosureGroup(title, isExpanded: binding(title)) { fields(section.fields).padding(.top, 8) }
+                    // a section whose fields all belong to another mode isn't shown
+                    if section.fields.compactMap(field).contains(where: { Presentation.isVisible($0, in: module) }) {
+                        DisclosureGroup(title, isExpanded: binding(title)) { fields(section.fields).padding(.top, 8) }
+                    }
                 } else {
                     fields(section.fields)
                 }

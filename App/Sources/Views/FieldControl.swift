@@ -9,6 +9,10 @@ struct FieldControl: View {
     @Environment(\.fieldLabelOverride) private var labelOverride
 
     var body: some View {
+        if let help = Presentation.fieldHelp["\(op).\(field.name)"] { control.help(help) } else { control }
+    }
+
+    @ViewBuilder private var control: some View {
         switch field.kind {
         case .float, .int:
             if let range = Presentation.range(op: op, field: field) {
@@ -328,7 +332,7 @@ private struct ValueField: View {
     let onCommit: (Double) -> Void
 
     var body: some View {
-        TextField("Value", value: Binding(get: { value }, set: { onCommit(isInteger ? $0.rounded() : $0) }),
+        TextField("Value", value: Binding(get: { shown }, set: { onCommit(isInteger ? $0.rounded() : $0) }),
                   format: .number.precision(.fractionLength(0...max(decimals, 0))))
             .textFieldStyle(.plain)
             .labelsHidden()
@@ -336,6 +340,12 @@ private struct ValueField: View {
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .frame(width: 64)
+    }
+
+    /// a tiny negative value that rounds to nothing reads 0, not "-0"
+    private var shown: Double {
+        let scale = pow(10, Double(max(decimals, 0)))
+        return (value * scale).rounded() == 0 ? 0 : value
     }
 }
 

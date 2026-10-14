@@ -262,7 +262,7 @@ final class Library {
                 if let sel = self.selection, !self.items.contains(where: { $0.url == sel }) { self.selection = nil }
                 if self.showsMap { self.loadLocations() }
                 // sidecars from darktable, or from before the catalog, join Edited
-                for (item, date) in found { if let date { self.catalog.noteSidecar(item.url, date: date) } }
+                self.catalog.noteSidecars(found.compactMap { item, date in date.map { (item.url, $0) } })
             }
         }
     }

@@ -75,6 +75,20 @@ final class Catalog {
         scheduleSave()
     }
 
+    /// many at once, as one change: a folder scan can find thousands, and each
+    /// change to the records redraws what shows them (the sidebar's counts)
+    func noteSidecars(_ found: [(photo: URL, date: Date)]) {
+        var updated = records
+        var changed = false
+        for (photo, date) in found where updated[photo.path]?.edited == nil {
+            updated[photo.path, default: Record()].edited = date
+            changed = true
+        }
+        guard changed else { return }
+        records = updated
+        scheduleSave()
+    }
+
     func recordExport(_ photo: URL, file: URL, format: String) {
         records[photo.path, default: Record()].exports.append(Export(file: file.path, format: format, date: .now))
         scheduleSave()

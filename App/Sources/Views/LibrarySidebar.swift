@@ -1,14 +1,43 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// One folder in the sidebar, with its subfolders loaded when expanded.
+/// One folder in the sidebar. Its subfolders come from `FolderCache`, read in
+/// the background: listing a folder on a network drive can take seconds, and
+/// the sidebar asks for every visible folder's subfolders each time it draws.
 struct FolderNode: Identifiable, Hashable {
     let url: URL
     var id: URL { url }
-    var children: [FolderNode]? {
-        let subs = Library.subfolders(of: url)
+    @MainActor var children: [FolderNode]? {
+        // not read yet: shown as expandable (empty) until the listing arrives
+        guard let subs = FolderCache.shared.subfolders(of: url) else { return [] }
         return subs.isEmpty ? nil : subs.map(FolderNode.init)
     }
+}
+
+/// Subfolder listings for the sidebar, read off the main thread and kept.
+@MainActor @Observable
+final class FolderCache {
+    static let shared = FolderCache()
+    private var listings: [URL: [URL]] = [:]
+    @ObservationIgnored private var reading: Set<URL> = []
+
+    /// the subfolders if they've been read; otherwise starts reading them and returns nil
+    func subfolders(of folder: URL) -> [URL]? {
+        if let known = listings[folder] { return known }
+        if reading.insert(folder).inserted {
+            Task.detached(priority: .utility) {
+                let subs = Library.subfolders(of: folder)
+                await MainActor.run {
+                    self.listings[folder] = subs
+                    self.reading.remove(folder)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// forgets what's been read, so folders are listed again (after a change on disk)
+    func forget() { listings.removeAll() }
 }
 
 /// The library's source list, for one of two libraries: the folders on this

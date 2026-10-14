@@ -255,7 +255,12 @@ struct LookTile: View {
     private func loadPreview() async {
         guard let base = model.lookPreviewBase, let folder = model.lutFolder, previewFor != model.lookPreviewBaseID else { return }
         let url = folder.appendingPathComponent(film.main.path)
+        let started = Date()
         let image = await Task.detached(priority: .utility) { LUTPreview.render(url, on: base) }.value
+        if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+            FileHandle.standardError.write(String(format: "Develop look tile %@: %.2fs, base %dx%d %@\n", film.name, Date().timeIntervalSince(started),
+                                                  base.width, base.height, base.colorSpace?.name as String? ?? "-").data(using: .utf8)!)
+        }
         preview = image
         previewFor = model.lookPreviewBaseID
     }

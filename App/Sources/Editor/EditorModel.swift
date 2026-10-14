@@ -3224,7 +3224,9 @@ extension EditorModel {
     /// the photo as it is without its look, small, for the browser's previews
     func loadLookPreviewBase() async {
         guard let engine, url != nil else { return }
+        let started = Date()
         await settleEdits()
+        let settled = Date()
         var overrides: [Engine.Override] = []
         if let lut = modules.first(where: { $0.op == "lut3d" && $0.key.hasSuffix(":0") }), lut.enabled {
             overrides.append(.init(module: lut.key, field: "", value: 0, disable: true))
@@ -3237,6 +3239,10 @@ extension EditorModel {
                 lookPreviewBase = frame.image
                 lookPreviewBaseID += 1
                 lookPreviewError = nil
+                if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+                    FileHandle.standardError.write(String(format: "Develop look previews: settled %.2fs, rendered %.2fs\n",
+                                                          settled.timeIntervalSince(started), Date().timeIntervalSince(settled)).data(using: .utf8)!)
+                }
                 return
             } catch {
                 FileHandle.standardError.write("Develop look previews: attempt \(attempt) failed: \(error.localizedDescription)\n".data(using: .utf8)!)

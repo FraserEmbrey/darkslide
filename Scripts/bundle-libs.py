@@ -4,9 +4,10 @@
 Walks every binary in the engine copy (the helper, libdarktable, its modules,
 and each library copied) for dependencies in /opt/homebrew, copies each under
 the name it's referred to by into lib/darktable, gives it an @rpath install
-name and points every reference at that, then removes the helper's
-/opt/homebrew search path. Lensfun's lens database goes into share/lensfun,
-where darktable looks for it beside its own data.
+name and points every reference at that, then removes any /opt/homebrew
+search paths and the debug map (which names build paths). Lensfun's lens
+database goes into share/lensfun, where darktable looks for it beside its own
+data. Fails if anything still points into Homebrew or names the home folder.
 
 Usage: bundle-libs.py <engine dir>   (the bundle's Resources/engine)
 """
@@ -60,14 +61,20 @@ for b in binaries:
         elif d.startswith("@loader_path/") and b.startswith(libdir) and not os.path.exists(os.path.join(libdir, os.path.basename(d))):
             sys.exit(f"{os.path.basename(b)} refers to {d}, which isn't bundled")
 
-# the helper searched /opt/homebrew/lib too; only the bundle now
-helper = binaries[0]
-out = subprocess.run(["otool", "-l", helper], capture_output=True, text=True).stdout.split("\n")
-for i, line in enumerate(out):
-    if "cmd LC_RPATH" in line:
-        path = out[i + 2].strip().split(" ")[1]
-        if path.startswith(HOMEBREW):
-            run("install_name_tool", "-delete_rpath", path, helper)
+# the helper searched /opt/homebrew/lib too, and some Homebrew libraries keep
+# their Cellar paths as search paths; only the bundle now
+for b in binaries:
+    out = subprocess.run(["otool", "-l", b], capture_output=True, text=True).stdout.split("\n")
+    for i, line in enumerate(out):
+        if "cmd LC_RPATH" in line:
+            path = out[i + 2].strip().split(" ")[1]
+            if path.startswith(HOMEBREW):
+                run("install_name_tool", "-delete_rpath", path, b)
+
+# the linker leaves a debug map naming each object file by its full build
+# path; drop it (debug symbols only, the exported ones stay)
+for b in binaries:
+    run("strip", "-S", b)
 
 # changing a library breaks its signature (install_name_tool only re-signs
 # what the linker signed), and macOS kills a process that loads a library with
@@ -84,4 +91,9 @@ if os.path.isdir(lensfun):
 left = [f"{os.path.basename(b)} -> {d}" for b in binaries for d in deps(b) if d.startswith(HOMEBREW)]
 if left:
     sys.exit("still linked to Homebrew: " + "; ".join(left[:5]))
+# nor name the build machine's home folder
+home = os.path.expanduser("~").encode()
+leaks = [os.path.basename(b) for b in binaries if home in open(b, "rb").read()]
+if leaks:
+    sys.exit(f"{len(leaks)} binaries contain {home.decode()}: " + ", ".join(leaks[:5]))
 print(f"bundled {len(set(copied.values()))} libraries")

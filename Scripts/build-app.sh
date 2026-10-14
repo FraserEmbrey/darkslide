@@ -44,5 +44,11 @@ python3 "$ROOT/Scripts/stub-gui-libs.py" "$APP/Contents/Resources/engine"
 # and the libraries it does use go into the app, so it runs without Homebrew
 python3 "$ROOT/Scripts/bundle-libs.py" "$APP/Contents/Resources/engine"
 
+# the app and MetalCL keep a debug map naming their build paths; drop it
+strip -S "$APP/Contents/MacOS/Develop" "$APP/Contents/Resources/engine/lib/libMetalCL.dylib"
+if grep -rlqa "$HOME" "$APP"; then
+  echo "these files contain $HOME:" >&2; grep -rla "$HOME" "$APP" >&2; exit 1
+fi
+
 codesign --force --deep --sign "$IDENTITY" "$APP"
 echo "built $APP"

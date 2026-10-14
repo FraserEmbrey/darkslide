@@ -155,7 +155,10 @@ actor Engine {
         }
         defer { watchdog.cancel() }
         do {
-            return try await request(["cmd": "open", "path": url.path, "hdrSource": hdrSource], as: OpenReply.self)
+            // the HDR limit caps the helper's HDR curve (see its _sync_hdr_white)
+            return try await request(["cmd": "open", "path": url.path, "hdrSource": hdrSource,
+                                      "hdrLimitStops": UserDefaults.standard.double(forKey: SettingsKey.hdrLimitStops)],
+                                     as: OpenReply.self)
         } catch where hungOnOpen {
             throw EngineError(message: "The engine stopped responding while opening it, so it has been restarted. Try opening it again.")
         }
@@ -202,6 +205,11 @@ actor Engine {
 
     func applyStyle(_ name: String) async throws -> StyleReply {
         try await request(["cmd": "apply_style", "name": name], as: StyleReply.self)
+    }
+
+    /// the HDR limit changed: the helper's HDR curve rises to the new peak
+    func setHDRLimit(stops: Double) async throws -> [EngineModule] {
+        try await request(["cmd": "hdr_limit", "stops": stops], as: ModulesReply.self).modules
     }
 
     /// steps the edit's history to `end` items (darktable's history stack)

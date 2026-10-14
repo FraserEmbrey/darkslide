@@ -91,6 +91,8 @@ typedef struct helper_t
   gboolean hdr;             // current output mode of the pipes
   // the photo is an HDR source (see _sync_hdr_white), as the app said on open
   gboolean hdr_source;
+  // the app's cap on HDR highlights, in stops above SDR white (0 = the format's peak)
+  float hdr_limit_stops;
   // the module whose input histogram the app shows (a curve's); its commit
   // turns collection off outside darktable's preview pipe, so it's turned
   // back on before each render
@@ -478,6 +480,7 @@ static void _cmd_open(JsonObject *o)
   if(!err) err = _load_view(&H.before, imgid);
   if(err) return _error(err);
   H.hdr_source = json_object_get_boolean_member_with_default(o, "hdrSource", FALSE);
+  H.hdr_limit_stops = json_object_get_double_member_with_default(o, "hdrLimitStops", 0.0);
   // an HDR output profile keeps SDR white at reference white (see _sync_hdr_white)
   _sync_hdr_white();
 
@@ -1665,7 +1668,34 @@ static dt_iop_module_t *_first_module(const char *op)
 // format's 1.0, as for a raw), so it works on an HDR source as it does on a
 // raw. They go into the history with the profile or tone mapper change,
 // so undo takes all of it back together; the app hides them.
+//
+// A rendered photo (a raw, through a tone mapper at 100% target white) also
+// gets an RGB curve instance before the exposure: the same as SDR up to the
+// light tones, then rising smoothly to the HDR peak, so faces and midtones
+// look as they do in SDR and only the brightest tones (lights, sky, sun on
+// water) use the headroom. Raising the tone mapper's own target white instead
+// stretches its whole curve above middle grey, doubling the brightness of
+// light midtones. The curve's output is divided by the peak, as its nodes
+// stop at 1, and the exposure multiplies it back.
 #define HDR_WHITE_NAME "HDR white"
+
+// where the HDR curve leaves SDR, in display-linear terms (about 76% in sRGB),
+// and how sharply it rises from there
+#define HDR_KNEE 0.55f
+#define HDR_RISE 3.0f
+// the highest peak, × SDR white (darktable's tone mappers allow 1600% too)
+#define HDR_MAX_PEAK 16.0f
+
+// dt_iop_rgbcurve_params_t in iop/rgbcurve.c (not in a header)
+typedef struct dt_iop_rgbcurve_params_copy_t
+{
+  struct { float x, y; } curve_nodes[3][20];
+  int curve_num_nodes[3];
+  int curve_type[3];
+  int curve_autoscale;            // DT_S_SCALE_AUTOMATIC_RGB = 0, linked channels
+  gboolean compensate_middle_grey;
+  int preserve_colors;            // DT_RGB_NORM_MAX = 2
+} dt_iop_rgbcurve_params_copy_t;
 
 // the start of dt_iop_rgblevels_params_t in iop/rgblevels.c (not in a header)
 typedef struct dt_iop_rgblevels_params_head_t
@@ -1675,8 +1705,8 @@ typedef struct dt_iop_rgblevels_params_head_t
   float levels[3][3];
 } dt_iop_rgblevels_params_head_t;
 
-// the HDR white instance of a module, made (off, before the output profile) if asked
-static dt_iop_module_t *_hdr_white_instance(const char *op, dt_iop_module_t *colorout, const gboolean make)
+// the HDR white instance of a module, made (off, before `before`) if asked
+static dt_iop_module_t *_hdr_white_instance(const char *op, dt_iop_module_t *before, const gboolean make)
 {
   for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
   {
@@ -1692,8 +1722,36 @@ static dt_iop_module_t *_hdr_white_instance(const char *op, dt_iop_module_t *col
   g_strlcpy(m->multi_name, HDR_WHITE_NAME, sizeof(m->multi_name));
   m->multi_name_hand_edited = TRUE;
   m->enabled = FALSE;
-  dt_ioppr_move_iop_before(&H.edit.dev, m, colorout);
+  dt_ioppr_move_iop_before(&H.edit.dev, m, before);
   return m;
+}
+
+// The HDR curve's parameters for a peak (× SDR white): y = x up to the knee,
+// then x + (peak - 1) * t^rise, t running from 0 at the knee to 1 at SDR white,
+// which leaves SDR with the same slope; all divided by the peak.
+static void _hdr_curve(dt_iop_rgbcurve_params_copy_t *c, const float peak)
+{
+  int n = 0;
+  const float xs[] = { 0.0f, 0.25f, HDR_KNEE };
+  for(int i = 0; i < 3; i++, n++)
+  {
+    c->curve_nodes[0][n].x = xs[i];
+    c->curve_nodes[0][n].y = xs[i] / peak;
+  }
+  for(int i = 1; i <= 12; i++, n++)
+  {
+    const float x = HDR_KNEE + (1.0f - HDR_KNEE) * i / 12.0f;
+    const float t = (x - HDR_KNEE) / (1.0f - HDR_KNEE);
+    c->curve_nodes[0][n].x = x;
+    c->curve_nodes[0][n].y = fminf(1.0f, (x + (peak - 1.0f) * powf(t, HDR_RISE)) / peak);
+  }
+  c->curve_num_nodes[0] = n;
+  c->curve_type[0] = 2; // MONOTONE_HERMITE
+  c->curve_autoscale = 0;
+  c->compensate_middle_grey = FALSE;
+  // scales each pixel by its brightest channel's gain, so colours keep their
+  // hue and saturated lights reach the peak too
+  c->preserve_colors = 2;
 }
 
 static void _sync_hdr_white(void)
@@ -1707,7 +1765,15 @@ static void _sync_hdr_white(void)
   // as its target white goes (the app sets that from the HDR peak)
   const gboolean hlg = type == DT_COLORSPACE_HLG_REC2020 || type == DT_COLORSPACE_HLG_P3;
   const gboolean pq = type == DT_COLORSPACE_PQ_REC2020 || type == DT_COLORSPACE_PQ_P3;
-  const float ev = hlg ? log2f(203.0f / 1000.0f) : pq ? log2f(203.0f / 10000.0f) : 0.0f;
+  const float format_peak = hlg ? 1000.0f / 203.0f : pq ? 10000.0f / 203.0f : 1.0f;
+  // a rendered photo's highlights rise to the peak through the HDR curve;
+  // an HDR source already has its own
+  const float peak = (hlg || pq) && !H.hdr_source
+    ? fminf(fminf(format_peak, HDR_MAX_PEAK), H.hdr_limit_stops > 0.0f ? exp2f(H.hdr_limit_stops) : HDR_MAX_PEAK)
+    : 1.0f;
+  const gboolean curve_on = peak > 1.001f && _first_module("rgbcurve");
+  const float ev = (hlg ? log2f(203.0f / 1000.0f) : pq ? log2f(203.0f / 10000.0f) : 0.0f)
+                   + (curve_on ? log2f(peak) : 0.0f);
   // levels' grey point for an exponent of 1/1.2: inv_gamma = 10^((grey - 0.5) / 0.5)
   const float grey = 0.5f + 0.5f * log10f(1.0f / 1.2f);
   gboolean changed = FALSE;
@@ -1729,6 +1795,22 @@ static void _sync_hdr_white(void)
     exposure->enabled = ev != 0.0f;
     dt_dev_add_history_item_ext(&H.edit.dev, exposure, exposure->enabled, TRUE);
     changed = TRUE;
+  }
+
+  // the curve goes just before the exposure
+  dt_iop_module_t *curve = exposure ? _hdr_white_instance("rgbcurve", exposure, curve_on) : NULL;
+  if(curve && curve->params_size == sizeof(dt_iop_rgbcurve_params_copy_t))
+  {
+    dt_iop_rgbcurve_params_copy_t want;
+    memcpy(&want, curve->default_params, sizeof(want));
+    if(curve_on) _hdr_curve(&want, peak);
+    if(curve->enabled != curve_on || (curve_on && memcmp(curve->params, &want, sizeof(want))))
+    {
+      memcpy(curve->params, &want, sizeof(want));
+      curve->enabled = curve_on;
+      dt_dev_add_history_item_ext(&H.edit.dev, curve, curve->enabled, TRUE);
+      changed = TRUE;
+    }
   }
 
   dt_iop_module_t *levels = _hdr_white_instance("rgblevels", colorout, hlg);
@@ -2236,6 +2318,17 @@ static void _cmd_export(JsonObject *o)
 
 // Steps the edit's history back (or forward) to n items, as darktable's
 // history stack does; the next edit discards anything beyond n.
+// The app's HDR limit changed: the HDR curve's peak follows it.
+static void _cmd_hdr_limit(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  H.hdr_limit_stops = json_object_get_double_member_with_default(o, "stops", 0.0);
+  _sync_hdr_white();
+  JsonBuilder *b = _ok();
+  _add_modules(b);
+  _ok_done(b);
+}
+
 static void _cmd_history_end(JsonObject *o)
 {
   if(!H.edit.loaded) return _error("no image open");
@@ -2639,6 +2732,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "enable")) _cmd_enable(o);
     else if(!strcmp(cmd, "set_many")) _cmd_set_many(o);
     else if(!strcmp(cmd, "history_end")) _cmd_history_end(o);
+    else if(!strcmp(cmd, "hdr_limit")) _cmd_hdr_limit(o);
     else if(!strcmp(cmd, "set_location")) _cmd_set_location(o);
     else if(!strcmp(cmd, "set_info")) _cmd_set_info(o);
     else if(!strcmp(cmd, "set_curve")) _cmd_set_curve(o);

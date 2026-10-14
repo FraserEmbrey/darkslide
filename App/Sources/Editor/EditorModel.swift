@@ -344,14 +344,17 @@ final class EditorModel {
         didSet {
             guard hdrLimitStops != oldValue else { return }
             UserDefaults.standard.set(hdrLimitStops, forKey: SettingsKey.hdrLimitStops)
-            // with a tone mapper, the peak is its target white
-            if url != nil, exportTarget.isHDR, toneMapperSetsPeak { syncToneWhite(onlyFromDefault: false) }
+            // with a tone mapper, the peak is where the engine's HDR curve rises to
+            if url != nil, let engine {
+                let stops = hdrLimitStops
+                Task { if let list = try? await engine.setHDRLimit(stops: stops) { modules = list; requestRender() } }
+            }
             refreshHDRDisplay()
         }
     }
     /// The app's own roll-off to the peak, for photos without a tone mapper
-    /// that sets it (HDR sources); with sigmoid or filmic the peak is their
-    /// target white instead (syncToneWhite).
+    /// (HDR sources); with one, the engine's HDR curve rises to the peak
+    /// instead (the helper's _sync_hdr_white).
     var hdrLimit: Double? { hdrLimitStops > 0 && !toneMapperSetsPeak ? pow(2, hdrLimitStops) : nil }
 
     /// Shows the HDR view as a gain map viewer would on a display with this
@@ -1363,8 +1366,8 @@ final class EditorModel {
             openedWithEdit = reply.hadSidecar
             lensInfo = await Task.detached { Self.readLens(url) }.value
             await measureAutoExposure()
-            // an HDR profile with the tone mapper still at 100% white: highlights up to the peak
-            if exportTarget.isHDR { syncToneWhite(onlyFromDefault: true, quietly: true) }
+            // an HDR edit from before the engine's HDR curve: tone mapper back to 100% white
+            if exportTarget.isHDR { syncToneWhite(quietly: true) }
             await loadPresets()
             await loadLook()
             if !reply.hadSidecar { await applyNewPhotoDefaults() }
@@ -2209,54 +2212,55 @@ final class EditorModel {
         setOutputProfile(25)   // HLG P3
     }
 
-    /// The export profile, with the tone mappers' target white to match: from
-    /// the HDR peak for an HDR profile, back to 100% for SDR. One undo step.
+    /// The export profile, with an old HDR edit's tone mapper white back to
+    /// 100%. One undo step.
     func setOutputProfile(_ type: Int) {
         recordUndoStep(label: "Export Format")
         undoGroupDepth += 1
         defer { undoGroupDepth -= 1 }
         setValue(.number(Double(type)), module: "colorout:0", field: "type")
-        syncToneWhite(onlyFromDefault: true)
+        syncToneWhite()
     }
 
     // MARK: HDR white
 
     // With an HDR profile, SDR white sits at reference white (203 nits): the
-    // engine adds a hidden "HDR white" exposure before the output profile (see
-    // the helper's _sync_hdr_white), so midtones look as they do in SDR. Only
-    // highlights use the headroom, as far as the tone mapper's target white
-    // reaches: 100% × 2^peak.
+    // engine adds hidden "HDR white" instances before the output profile (see
+    // the helper's _sync_hdr_white). The tone mapper stays at 100% target
+    // white, as in SDR, and a curve takes only the light tones above SDR
+    // white, up to the peak (the HDR limit, or the format's), so midtones and
+    // skin look as they do in SDR.
 
     private static let toneWhiteFields = ["sigmoid": "display_white_target", "filmicrgb": "white_point_target"]
 
     /// whether an enabled tone mapper has a target white (sigmoid, filmic)
     var toneMapperSetsPeak: Bool { modules.contains { $0.enabled && Self.toneWhiteFields[$0.op] != nil } }
 
-    /// the tone mappers' target white for HDR, in %: the peak (or with no
-    /// limit, the format's peak), within darktable's 1600%
-    var hdrToneWhite: Double {
-        let stops = hdrLimitStops > 0 ? hdrLimitStops : log2(exportTarget.peak ?? 4)
-        return min(1600, (100 * pow(2, stops)).rounded())
+    /// The target whites earlier versions set for HDR: 100% × 2^peak, the
+    /// peak being the HDR limit or the format's, within darktable's 1600%.
+    /// Raising it stretched the tone mapper's whole curve above middle grey.
+    private var legacyHDRToneWhites: [Double] {
+        var stops = [2.0, log2(HDRTarget.hlgPeakNits / HDRTarget.referenceWhiteNits),
+                     log2(HDRTarget.pqPeakNits / HDRTarget.referenceWhiteNits)]
+        if hdrLimitStops > 0 { stops.append(hdrLimitStops) }
+        return stops.map { min(1600, (100 * pow(2, $0)).rounded()) }
     }
 
-    /// Sets the enabled tone mappers' target white: the HDR value for an HDR
-    /// profile, 100% for SDR. `onlyFromDefault` changes only a white at 100%
-    /// (for HDR) or at the HDR value (for SDR), leaving one the user set.
+    /// Sets an enabled tone mapper's target white back to 100% where an
+    /// earlier version raised it for HDR, leaving any other value the user set.
     /// `quietly` is for opening: not an edit of the user's.
-    fileprivate func syncToneWhite(onlyFromDefault: Bool, quietly: Bool = false) {
-        let hdr = exportTarget.isHDR
-        let target = hdr ? hdrToneWhite : 100
+    fileprivate func syncToneWhite(quietly: Bool = false) {
+        let legacy = legacyHDRToneWhites
         for (i, m) in modules.enumerated() where m.enabled {
             guard let field = Self.toneWhiteFields[m.op],
                   let f = m.fields.firstIndex(where: { $0.name == field }) else { continue }
             let current = m.fields[f].value.number
-            if onlyFromDefault, abs(current - (hdr ? 100 : hdrToneWhite)) > 0.5 { continue }
-            guard abs(current - target) > 0.5 else { continue }
+            guard legacy.contains(where: { abs(current - $0) < 0.5 }) else { continue }
             if quietly {
-                modules[i].fields[f].value = .number(target)
-                pendingSets.append((m.key, field, .number(target)))
+                modules[i].fields[f].value = .number(100)
+                pendingSets.append((m.key, field, .number(100)))
             } else {
-                setValue(.number(target), module: m.key, field: field)
+                setValue(.number(100), module: m.key, field: field)
             }
         }
     }

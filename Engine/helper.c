@@ -430,6 +430,7 @@ static const char *_load(const dt_imgid_t imgid)
 }
 
 static void _sync_hdr_white(void);
+static JsonArray *_sdr_render_overrides(JsonArray *ov);
 
 static void _cmd_open(JsonObject *o)
 {
@@ -472,7 +473,8 @@ static void _cmd_open(JsonObject *o)
   if(!err) err = _load_view(&H.before, imgid);
   if(err) return _error(err);
   H.hdr_source = json_object_get_boolean_member_with_default(o, "hdrSource", FALSE);
-  if(H.hdr_source) _sync_hdr_white();
+  // an HDR output profile keeps SDR white at reference white (see _sync_hdr_white)
+  _sync_hdr_white();
 
   const dt_image_t *img = &H.edit.dev.image_storage;
   JsonBuilder *b = _ok();
@@ -603,6 +605,10 @@ static void _cmd_render(JsonObject *o)
   // pipe cache (keyed by params) still serves everything before them.
   JsonArray *ov = json_object_has_member(o, "overrides") ? json_object_get_array_member(o, "overrides") : NULL;
   if(ov && before) return _error("overrides apply to the edit only");
+  // an SDR render of an edit with an HDR profile is its SDR rendition: without
+  // the HDR white scaling (the app sets the tone mapper back to 100% white)
+  JsonArray *sdr_ov = (!hdr && !before) ? _sdr_render_overrides(ov) : NULL;
+  if(sdr_ov) ov = sdr_ov;
 
   if(hdr != H.hdr)
   {
@@ -635,6 +641,7 @@ static void _cmd_render(JsonObject *o)
     v->overridden = FALSE;
   }
   if(ov) _apply_overrides(v, ov);
+  if(sdr_ov) json_array_unref(sdr_ov);
   if(v == &H.edit && H.histogram_module)
   {
     dt_dev_pixelpipe_iop_t *piece = _edit_piece(H.histogram_module);
@@ -739,10 +746,8 @@ static void _commit(dt_iop_module_t *m, const gboolean enable)
   // no_image=TRUE: we drive our own pipe, so skip darktable's GUI redraw path
   dt_dev_add_history_item_ext(&H.edit.dev, m, enable, TRUE);
   H.edit.dirty = TRUE;
-  // a new output profile, or a tone mapper on or off, changes where an HDR source's white belongs
-  if(H.hdr_source && (!strcmp(m->op, "colorout") || !strcmp(m->op, "sigmoid") || !strcmp(m->op, "filmicrgb")
-                      || !strcmp(m->op, "agx") || !strcmp(m->op, "basecurve")))
-    _sync_hdr_white();
+  // a new output profile changes where SDR white belongs
+  if(!strcmp(m->op, "colorout")) _sync_hdr_white();
 }
 
 static void _cmd_set(JsonObject *o)
@@ -1692,15 +1697,11 @@ static void _sync_hdr_white(void)
   if(!colorout) return;
   dt_introspection_field_t *tf = _find_field(colorout, "type");
   const int type = tf ? *(int *)((char *)colorout->params + tf->header.offset) : DT_COLORSPACE_SRGB;
-  gboolean mapped = FALSE;
-  static const char *mappers[] = { "sigmoid", "filmicrgb", "agx", "basecurve" };
-  for(GList *l = H.edit.dev.iop; l && !mapped; l = g_list_next(l))
-  {
-    const dt_iop_module_t *x = l->data;
-    for(int i = 0; i < 4; i++) if(x->enabled && !strcmp(x->op, mappers[i])) mapped = TRUE;
-  }
-  const gboolean hlg = !mapped && (type == DT_COLORSPACE_HLG_REC2020 || type == DT_COLORSPACE_HLG_P3);
-  const gboolean pq = !mapped && (type == DT_COLORSPACE_PQ_REC2020 || type == DT_COLORSPACE_PQ_P3);
+  // with or without a tone mapper: its 100% white is SDR white, kept at
+  // reference white like everything else; highlights reach above it as far
+  // as its target white goes (the app sets that from the HDR peak)
+  const gboolean hlg = type == DT_COLORSPACE_HLG_REC2020 || type == DT_COLORSPACE_HLG_P3;
+  const gboolean pq = type == DT_COLORSPACE_PQ_REC2020 || type == DT_COLORSPACE_PQ_P3;
   const float ev = hlg ? log2f(203.0f / 1000.0f) : pq ? log2f(203.0f / 10000.0f) : 0.0f;
   // levels' grey point for an exponent of 1/1.2: inv_gamma = 10^((grey - 0.5) / 0.5)
   const float grey = 0.5f + 0.5f * log10f(1.0f / 1.2f);
@@ -1746,6 +1747,32 @@ static void _sync_hdr_white(void)
   dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
   dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
   dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+}
+
+// the render's overrides plus switching off the enabled "HDR white" instances,
+// or NULL if there are none to switch off
+static JsonArray *_sdr_render_overrides(JsonArray *ov)
+{
+  JsonArray *out = NULL;
+  for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+  {
+    dt_iop_module_t *x = l->data;
+    if(!x->enabled || strcmp(x->multi_name, HDR_WHITE_NAME)) continue;
+    if(!out)
+    {
+      out = json_array_new();
+      if(ov)
+        for(guint i = 0; i < json_array_get_length(ov); i++)
+          json_array_add_element(out, json_node_copy(json_array_get_element(ov, i)));
+    }
+    JsonObject *e = json_object_new();
+    gchar *key = _module_key(x);
+    json_object_set_string_member(e, "module", key);
+    g_free(key);
+    json_object_set_boolean_member(e, "disable", TRUE);
+    json_array_add_object_element(out, e);
+  }
+  return out;
 }
 
 static void _cmd_look(JsonObject *o)
@@ -2088,6 +2115,43 @@ static void _cmd_export(JsonObject *o)
   #undef SET_INT
   dt_conf_set_int("plugins/imageio/storage/disk/overwrite", 1);   // the app's save panel asked already
 
+  // "sdrFromHDR": an SDR file from an edit with an HDR profile is its SDR
+  // rendition: for this export, the output profile is the file's (so the HDR
+  // white scaling goes off) and the tone mappers' target white is 100%. Done as
+  // history items that are taken back afterwards, as darktable's export reads
+  // the history.
+  const int keep_end = H.edit.dev.history_end;
+  const gboolean sdr_rendition = icc >= 0 && json_object_get_boolean_member_with_default(o, "sdrFromHDR", FALSE);
+  // darktable folds a change into the last history item when it's the same
+  // module's, so that item is kept as it was, to put back afterwards
+  dt_dev_history_item_t *top = sdr_rendition && keep_end > 0 ? g_list_nth_data(H.edit.dev.history, keep_end - 1) : NULL;
+  void *top_params = top ? g_memdup2(top->params, top->module->params_size) : NULL;
+  const gboolean top_enabled = top ? top->enabled : FALSE;
+  if(sdr_rendition)
+  {
+    dt_iop_module_t *colorout = _first_module("colorout");
+    dt_introspection_field_t *tf = colorout ? _find_field(colorout, "type") : NULL;
+    if(tf)
+    {
+      *(int *)((char *)colorout->params + tf->header.offset) = icc;
+      dt_dev_add_history_item_ext(&H.edit.dev, colorout, TRUE, TRUE);
+    }
+    static const char *whites[][2] = { { "sigmoid", "display_white_target" }, { "filmicrgb", "white_point_target" } };
+    for(size_t i = 0; i < G_N_ELEMENTS(whites); i++)
+    {
+      for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+      {
+        dt_iop_module_t *m = l->data;
+        if(!m->enabled || strcmp(m->op, whites[i][0])) continue;
+        dt_introspection_field_t *f = _find_field(m, whites[i][1]);
+        if(!f) continue;
+        *(float *)((char *)m->params + f->header.offset) = 100.0f;
+        dt_dev_add_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
+      }
+    }
+    _sync_hdr_white();
+  }
+
   // export reads the history from the library, so put the edit there
   dt_dev_write_history(&H.edit.dev);
 
@@ -2124,6 +2188,32 @@ static void _cmd_export(JsonObject *o)
   storage->free_params(storage, sdata);
   format->free_params(format, fdata);
   g_list_free(ids);
+
+  if(sdr_rendition)
+  {
+    // take the export's history items back, so the edit is as it was
+    dt_dev_pop_history_items_ext(&H.edit.dev, keep_end);
+    while((int)g_list_length(H.edit.dev.history) > keep_end)
+    {
+      GList *last = g_list_last(H.edit.dev.history);
+      dt_dev_free_history_item(last->data);
+      H.edit.dev.history = g_list_delete_link(H.edit.dev.history, last);
+    }
+    if(top)
+    {
+      memcpy(top->params, top_params, top->module->params_size);
+      top->enabled = top_enabled;
+      g_free(top_params);
+    }
+    H.edit.dev.history_end = keep_end;
+    dt_dev_pop_history_items_ext(&H.edit.dev, keep_end);
+    dt_dev_write_history(&H.edit.dev);
+    H.edit.dirty = TRUE;
+    dt_dev_pixelpipe_cleanup_nodes(&H.edit.pipe);
+    dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
+    dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
+    dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+  }
 
   if(failed || !g_file_test(file, G_FILE_TEST_IS_REGULAR))
   {

@@ -44,6 +44,8 @@ final class EditorModel {
 
     private static var testLibraryRan = false
     private static var appleRawTested = false
+    private static var autoExportTested = false
+    private static var hdrMatchTested = false
     private static var decoderSwitchTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
@@ -329,10 +331,15 @@ final class EditorModel {
         didSet {
             guard hdrLimitStops != oldValue else { return }
             UserDefaults.standard.set(hdrLimitStops, forKey: SettingsKey.hdrLimitStops)
+            // with a tone mapper, the peak is its target white
+            if url != nil, exportTarget.isHDR, toneMapperSetsPeak { syncToneWhite(onlyFromDefault: false) }
             refreshHDRDisplay()
         }
     }
-    var hdrLimit: Double? { hdrLimitStops > 0 ? pow(2, hdrLimitStops) : nil }
+    /// The app's own roll-off to the peak, for photos without a tone mapper
+    /// that sets it (HDR sources); with sigmoid or filmic the peak is their
+    /// target white instead (syncToneWhite).
+    var hdrLimit: Double? { hdrLimitStops > 0 && !toneMapperSetsPeak ? pow(2, hdrLimitStops) : nil }
 
     /// Shows the HDR view as a gain map viewer would on a display with this
     /// many stops of headroom; nil shows this display's full range.
@@ -808,6 +815,71 @@ final class EditorModel {
                     FileHandle.standardError.write("Develop drag test \(op).\(f.name): 90 values, main thread late by median \(String(format: "%.1f", sorted[45])) ms, p95 \(String(format: "%.1f", sorted[85])) ms, max \(String(format: "%.1f", sorted.last!)) ms; frames shown \(frameID - frames0) in 2.9 s\n".data(using: .utf8)!)
                 }
             }
+            // TestAutoExport: launch argument (-TestAutoExport /path/file.jpg) for testing:
+            // exports as opened, runs Auto, logs the tone modules it leaves on and
+            // exports again beside the first (file-auto.jpg)
+            if let path = UserDefaults.standard.string(forKey: "TestAutoExport"), !Self.autoExportTested {
+                Self.autoExportTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let on = modules.filter { $0.enabled && ["basecurve", "filmicrgb", "sigmoid", "agx", "exposure", "toneequal", "colorbalancergb", "rgbcurve", "tonecurve", "denoiseprofile", "highlights"].contains($0.op) }
+                            .map { m in "\(m.op)\(m.op == "exposure" ? "=" + String(format: "%.2f", m.fields.first { $0.name == "exposure" }?.value.number ?? 0) : "")" }
+                        FileHandle.standardError.write("Develop auto test: \(s): on \(on), styles \(appliedStyles)\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    log("opened")
+                    var t = ExportSettings(); t.format = .jpeg; t.longEdge = 2000
+                    await export(t, to: URL(fileURLWithPath: path), remember: false)
+                    await autoAll()
+                    try? await Task.sleep(for: .seconds(3))
+                    log("after Auto")
+                    await export(t, to: URL(fileURLWithPath: path.replacingOccurrences(of: ".jpg", with: "-auto.jpg")), remember: false)
+                    log("exported")
+                }
+            }
+            // TestHDRMatch: launch argument (-TestHDRMatch YES) for testing: renders the
+            // photo in SDR and in HDR and logs the median and 99.9th percentile
+            // brightness of each on the EDR scale (1 = SDR white): midtones should match
+            if UserDefaults.standard.bool(forKey: "TestHDRMatch"), !Self.hdrMatchTested {
+                Self.hdrMatchTested = true
+                Task { @MainActor in
+                    func stats(_ img: CGImage?) -> String {
+                        guard let img, let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB) else { return "-" }
+                        let n = img.width * img.height
+                        var buf = [Float](repeating: 0, count: n * 4)
+                        CIContext().render(CIImage(cgImage: img), toBitmap: &buf, rowBytes: img.width * 16,
+                                           bounds: CGRect(x: 0, y: 0, width: img.width, height: img.height),
+                                           format: .RGBAf, colorSpace: space)
+                        let px = buf
+                        var lum = [Float](); lum.reserveCapacity(n / 7)
+                        for i in stride(from: 0, to: n, by: 7) {
+                            lum.append(0.2126 * px[4 * i] + 0.7152 * px[4 * i + 1] + 0.0722 * px[4 * i + 2])
+                        }
+                        lum.sort()
+                        return String(format: "median %.3f, p99.9 %.3f, max %.3f", lum[lum.count / 2], lum[lum.count * 999 / 1000], lum.last!)
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop HDR match: SDR \(stats(image)), tone mapper white \(modules.first { $0.op == "filmicrgb" || $0.op == "sigmoid" }.flatMap { m in m.fields.first { $0.name == "white_point_target" || $0.name == "display_white_target" }?.value.number } ?? -1)\n".data(using: .utf8)!)
+                    viewHDR = true
+                    try? await Task.sleep(for: .seconds(4))
+                    FileHandle.standardError.write("Develop HDR match: HDR \(stats(image)), profile \(exportTarget.name), tone mapper white \(modules.first { $0.op == "filmicrgb" || $0.op == "sigmoid" }.flatMap { m in m.fields.first { $0.name == "white_point_target" || $0.name == "display_white_target" }?.value.number } ?? -1)\n".data(using: .utf8)!)
+                    viewHDR = false
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Develop HDR match: SDR again \(stats(image))\n".data(using: .utf8)!)
+                    // an sRGB JPEG of the HDR edit is its SDR rendition, and leaves the edit as it was
+                    if let path = UserDefaults.standard.string(forKey: "TestHDRMatchExport") {
+                        let before = await engine.historyEnd
+                        var t = ExportSettings(); t.format = .jpeg; t.longEdge = 1600; t.profile = .sRGB
+                        await export(t, to: URL(fileURLWithPath: path), remember: false)
+                        let after = await engine.historyEnd
+                        let file = lastExport.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+                        FileHandle.standardError.write("Develop HDR match: sRGB export \(stats(file)), history \(before) -> \(after), profile now \(exportTarget.name)\n".data(using: .utf8)!)
+                        requestRender()
+                        try? await Task.sleep(for: .seconds(3))
+                        FileHandle.standardError.write("Develop HDR match: SDR after export \(stats(image))\n".data(using: .utf8)!)
+                    }
+                }
+            }
             // TestClipping: launch argument (-TestClipping YES) for testing: holds the
             // clipping view on, as an Option-drag of a slider does, and lifts exposure
             if UserDefaults.standard.bool(forKey: "TestClipping") {
@@ -1277,6 +1349,8 @@ final class EditorModel {
             openedWithEdit = reply.hadSidecar
             lensInfo = await Task.detached { Self.readLens(url) }.value
             await measureAutoExposure()
+            // an HDR profile with the tone mapper still at 100% white: highlights up to the peak
+            if exportTarget.isHDR { syncToneWhite(onlyFromDefault: true, quietly: true) }
             await loadPresets()
             await loadLook()
             if !reply.hadSidecar { await applyNewPhotoDefaults() }
@@ -1824,6 +1898,13 @@ final class EditorModel {
         defer { isExporting = false }
         if remember { settings.save() }
         do {
+            // an HDR file from an SDR edit: the edit takes the HDR profile (and
+            // its reference white and tone mapper white), as for a gain map
+            if settings.profile != .fromEdit, HDRTarget(darktableProfile: settings.profile.rawValue).isHDR,
+               !exportTarget.isHDR, settings.format != .jpegGainMap {
+                setOutputProfile(settings.profile.rawValue)
+                await settleEdits()
+            }
             if settings.format == .jpegGainMap {
                 try await exportGainMapJPEG(settings, to: url, engine: engine)
                 lastExport = url
@@ -1837,7 +1918,8 @@ final class EditorModel {
                 lastExport = try await engine.export(
                     path: url.deletingPathExtension().path, format: settings.format.darktableName ?? "jpeg",
                     quality: settings.quality, bitDepth: settings.bitDepth, maxEdge: settings.longEdge,
-                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue)
+                    profile: settings.profile == .fromEdit ? nil : settings.profile.rawValue,
+                    sdrFromHDR: exportsSDRRendition(settings))
             }
             if let photo = self.url, let file = lastExport {
                 catalog.recordExport(photo, file: file, format: settings.format.title)
@@ -1857,6 +1939,13 @@ final class EditorModel {
     /// Used for HEIF always, and for the others when there's a frame or watermark.
     /// whether an export is an HDR source (see Engine.sdrFromHDR) made SDR:
     /// darktable's own export would clip its highlights, so it's tone mapped
+    /// an SDR file from an edit with an HDR profile (not an HDR source, whose
+    /// SDR export is tone mapped instead): darktable exports its SDR rendition
+    private func exportsSDRRendition(_ settings: ExportSettings) -> Bool {
+        guard !openedAsHDR, exportTarget.isHDR, settings.profile != .fromEdit else { return false }
+        return !HDRTarget(darktableProfile: settings.profile.rawValue).isHDR
+    }
+
     private func toneMapsExport(_ settings: ExportSettings) -> Bool {
         guard openedAsHDR, settings.format != .jpegGainMap else { return false }
         let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
@@ -1873,7 +1962,8 @@ final class EditorModel {
         // an HDR source to be tone mapped comes out linear and unclipped
         let tiff = try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: float ? 32 : 16,
                                            maxEdge: extras.any ? extras.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge,
-                                           profile: toneMap ? 4 : profile)
+                                           profile: toneMap ? 4 : profile,
+                                           sdrFromHDR: !toneMap && exportsSDRRendition(settings))
         defer { try? FileManager.default.removeItem(at: tiff) }
         let quality = Double(settings.quality) / 100
         try await Task.detached(priority: .userInitiated) {
@@ -2069,8 +2159,56 @@ final class EditorModel {
         setOutputProfile(25)   // HLG P3
     }
 
+    /// The export profile, with the tone mappers' target white to match: from
+    /// the HDR peak for an HDR profile, back to 100% for SDR. One undo step.
     func setOutputProfile(_ type: Int) {
+        recordUndoStep(label: "Export Format")
+        undoGroupDepth += 1
+        defer { undoGroupDepth -= 1 }
         setValue(.number(Double(type)), module: "colorout:0", field: "type")
+        syncToneWhite(onlyFromDefault: true)
+    }
+
+    // MARK: HDR white
+
+    // With an HDR profile, SDR white sits at reference white (203 nits): the
+    // engine adds a hidden "HDR white" exposure before the output profile (see
+    // the helper's _sync_hdr_white), so midtones look as they do in SDR. Only
+    // highlights use the headroom, as far as the tone mapper's target white
+    // reaches: 100% × 2^peak.
+
+    private static let toneWhiteFields = ["sigmoid": "display_white_target", "filmicrgb": "white_point_target"]
+
+    /// whether an enabled tone mapper has a target white (sigmoid, filmic)
+    var toneMapperSetsPeak: Bool { modules.contains { $0.enabled && Self.toneWhiteFields[$0.op] != nil } }
+
+    /// the tone mappers' target white for HDR, in %: the peak (or with no
+    /// limit, the format's peak), within darktable's 1600%
+    var hdrToneWhite: Double {
+        let stops = hdrLimitStops > 0 ? hdrLimitStops : log2(exportTarget.peak ?? 4)
+        return min(1600, (100 * pow(2, stops)).rounded())
+    }
+
+    /// Sets the enabled tone mappers' target white: the HDR value for an HDR
+    /// profile, 100% for SDR. `onlyFromDefault` changes only a white at 100%
+    /// (for HDR) or at the HDR value (for SDR), leaving one the user set.
+    /// `quietly` is for opening: not an edit of the user's.
+    fileprivate func syncToneWhite(onlyFromDefault: Bool, quietly: Bool = false) {
+        let hdr = exportTarget.isHDR
+        let target = hdr ? hdrToneWhite : 100
+        for (i, m) in modules.enumerated() where m.enabled {
+            guard let field = Self.toneWhiteFields[m.op],
+                  let f = m.fields.firstIndex(where: { $0.name == field }) else { continue }
+            let current = m.fields[f].value.number
+            if onlyFromDefault, abs(current - (hdr ? 100 : hdrToneWhite)) > 0.5 { continue }
+            guard abs(current - target) > 0.5 else { continue }
+            if quietly {
+                modules[i].fields[f].value = .number(target)
+                pendingSets.append((m.key, field, .number(target)))
+            } else {
+                setValue(.number(target), module: m.key, field: field)
+            }
+        }
     }
 
     // MARK: Match Camera

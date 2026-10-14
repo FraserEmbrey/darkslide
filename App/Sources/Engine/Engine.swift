@@ -220,10 +220,12 @@ actor Engine {
     /// Exports through darktable's own export path. `path` has no extension;
     /// darktable adds the format's. `maxEdge` 0 keeps the full size.
     /// `profile` is darktable's colour profile type, or nil for the edit's own.
+    /// `sdrFromHDR`: an SDR file from an edit with an HDR profile, exported as
+    /// its SDR rendition (no HDR white scaling, tone mappers at 100% white)
     func export(path: String, format: String, quality: Int, bitDepth: Int, maxEdge: Int,
-                profile: Int?) async throws -> URL {
+                profile: Int?, sdrFromHDR: Bool = false) async throws -> URL {
         let body: [String: Any] = ["cmd": "export", "path": path, "format": format, "quality": quality,
-                                   "bpp": bitDepth, "max": maxEdge, "icc": profile ?? -1]
+                                   "bpp": bitDepth, "max": maxEdge, "icc": profile ?? -1, "sdrFromHDR": sdrFromHDR]
         let reply = try await request(body, as: ExportReply.self)
         return URL(fileURLWithPath: reply.file)
     }

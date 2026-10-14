@@ -51,6 +51,16 @@ enum Presentation {
         "colorbalancergb.saturation_global": -1...1,
         "colorbalancergb.vibrance": -1...1,
         "colorbalancergb.contrast": -1...1,
+        // denoise modules, as their GTK sliders narrow them
+        "rawdenoise.threshold": 0...0.1,
+        "denoiseprofile.radius": 0...8,
+        "denoiseprofile.scattering": 0...1,
+        "denoiseprofile.central_pixel_weight": 0...1,
+        "denoiseprofile.overshooting": 0...4,
+        "denoiseprofile.strength": 0...4,
+        "denoiseprofile.bias": -10...10,
+        "nlmeans.radius": 0...4,
+        "nlmeans.strength": 0...100,
     ]
 
     /// Fields that only apply in some modes, keyed "op.field": shown only while

@@ -15,23 +15,31 @@ struct InspectorView: View {
     private var adjustments: some View {
         @Bindable var model = model
         return VStack(spacing: 0) {
-            InspectorTabBar(selection: $model.filter, searching: !model.search.isEmpty)
-            Divider()
-
             HStack(spacing: 8) {
-                SearchField(text: $model.search, prompt: "Search modules")
+                Picker("Modules", selection: $model.filter) {
+                    ForEach(EditorModel.Filter.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
                 Menu {
                     WorkspaceMenuContent(model: model)
                 } label: {
                     Image(systemName: "rectangle.3.group")
                 }
-                .menuStyle(.button)
+                .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Workspace: \(model.currentWorkspace?.name ?? "")")
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
+
+            HStack(spacing: 8) {
+                SearchField(text: $model.search, prompt: "Search modules")
+                AutoButton()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
 
             ForEach(InspectorPanel.shown(.pinned, in: model)) { $0.content() }
             Divider()
@@ -43,7 +51,7 @@ struct InspectorView: View {
                     .frame(maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 0) {
                         if model.search.isEmpty, model.decodedTIFF != nil, let d = model.decoderInUse {
                             // raw-only modules are hidden: say why, and how to have them
                             Label("Decoded by \(d), so darktable's raw tools (demosaic, raw denoise, hot pixels, raw chromatic aberration) don't apply. Choose darktable in Image › Raw Decoder to use them, if it can read this file, or convert it to DNG.",
@@ -51,7 +59,8 @@ struct InspectorView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 4)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
                         }
                         // the Look and Local adjustments cards come up in searches too
                         if !model.search.isEmpty, model.url != nil {
@@ -71,15 +80,17 @@ struct InspectorView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 4)
+                                .padding(.horizontal, 14)
+                                .padding(.top, 10)
+                                .padding(.bottom, 2)
                         }
                         ForEach(model.visibleModules) { module in
                             ModuleCard(module: module)
                         }
-                        if model.filter == .essentials, model.search.isEmpty { EssentialsFooter() }
+                        if model.filter == .essentials, model.search.isEmpty {
+                            EssentialsFooter().padding(.horizontal, 14).padding(.top, 8)
+                        }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 10)
                     .padding(.bottom, 16)
                 }
                 .scrollIndicators(.automatic)
@@ -95,15 +106,18 @@ struct InspectorView: View {
 // MARK: Cards
 
 extension View {
-    /// The rounded panel every inspector section sits on.
+    /// An inspector section: no panel of its own, a hairline under it, as in
+    /// the inspectors of Photos and Pixelmator Pro.
     func cardStyle() -> some View {
-        padding(14)
+        padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(alignment: .bottom) { Divider().padding(.leading, 14) }
     }
 }
 
-/// Card title that opens and closes the card when clicked anywhere on it.
+/// Section title with a leading disclosure chevron, as in Finder's sidebar
+/// and Photos' adjustments; a click anywhere on it opens or closes the section.
 struct CardTitle: View {
     let title: String
     @Binding var isExpanded: Bool
@@ -113,13 +127,14 @@ struct CardTitle: View {
             withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
         } label: {
             HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 12)
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
@@ -155,33 +170,37 @@ struct ModuleCard: View {
     @Environment(EditorModel.self) private var model
     let module: EngineModule
     @State private var isDropTarget = false
+    @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // only the switch is always there; presets and reset show on hover
+            // (and in the context menu), and the title drags to reorder Essentials
             HStack(spacing: 6) {
-                if model.filter == .essentials, model.search.isEmpty, model.isEssential(module.op) {
-                    Image(systemName: "line.3.horizontal")
-                        .foregroundStyle(.tertiary)
-                        .help("Drag to reorder")
-                        .draggable(module.op)
-                }
                 CardTitle(title: title, isExpanded: expandedBinding)
+                    .draggable(module.op)
+                Group {
+                    ModuleMenu(module: module, title: title)
+                    CardIconButton(systemImage: "arrow.counterclockwise", help: "Reset \(title)") {
+                        model.reset(module: module.key)
+                    }
+                }
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
                 if let rule = Presentation.autoModes[module.op] {
                     AutoPill(isOn: model.isAuto(module), help: rule.help(module)) {
                         model.setAuto(!model.isAuto(module), module: module)
                     }
                 }
-                ModuleMenu(module: module, title: title)
-                CardIconButton(systemImage: "arrow.counterclockwise", help: "Reset \(title)") {
-                    model.reset(module: module.key)
-                }
                 if module.canDisable {
                     Toggle("Enabled", isOn: enabledBinding)
                         .toggleStyle(.switch)
-                        .controlSize(.small)
+                        .controlSize(.mini)
                         .labelsHidden()
                 }
             }
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
 
             if expandedBinding.wrappedValue, module.op == "channelmixerrgb" {
                 SceneWhiteControls(module: module)
@@ -228,9 +247,9 @@ struct ModuleCard: View {
             }
         }
         .cardStyle()
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.accentColor, lineWidth: 2)
+        .overlay(alignment: .top) {
+            // where a dragged module will land
+            Rectangle().fill(Color.accentColor).frame(height: 2)
                 .opacity(isDropTarget ? 1 : 0)
         }
         .dropDestination(for: String.self) { items, _ in
@@ -244,6 +263,9 @@ struct ModuleCard: View {
             }
             Divider()
             Button("Reset \(title)") { model.reset(module: module.key) }
+            if module.canDisable {
+                Button(module.enabled ? "Turn Off" : "Turn On") { model.setEnabled(!module.enabled, module: module.key) }
+            }
         }
     }
 
@@ -290,7 +312,7 @@ struct EssentialsFooter: View {
                 ModulePicker()
             }
 
-            Text("Drag the handles to reorder. Right-click a module to remove it.")
+            Text("Drag a module's name to reorder. Right-click it to remove it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -382,99 +404,39 @@ struct SearchField: View {
     }
 }
 
-/// Inspector tabs in the style of Keynote's and Pages' inspectors: full-width,
-/// equal tabs along the top edge, the selected one marked by a fill.
-struct InspectorTabBar: View {
-    @Binding var selection: EditorModel.Filter
-    /// while searching, results come from every module, so no tab is highlighted
-    var searching = false
-    @State private var hovered: EditorModel.Filter?
-    @Namespace private var pill
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(EditorModel.Filter.allCases) { tab in
-                let isSelected = tab == selection && !searching
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = tab }
-                } label: {
-                    Text(tab.rawValue)
-                        .fontWeight(isSelected ? .semibold : .regular)
-                        .foregroundStyle(isSelected ? .primary : .secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
-                        .background {
-                            // one shared fill that slides to the selected tab
-                            if isSelected {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.primary.opacity(0.12))
-                                    .matchedGeometryEffect(id: "selection", in: pill)
-                            } else if hovered == tab {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.primary.opacity(0.05))
-                            }
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .onHover { hovered = $0 ? tab : nil }
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-    }
-}
-
-/// Full-width Auto at the top of the inspector, like Photomator's Auto
-/// Enhance. Its tooltip lists what it does: darktable's automatic tools,
-/// nothing that analyses the content.
+/// Auto beside the module search, like the Auto button in Photos' Adjust.
+/// Its tooltip lists what it does: darktable's automatic tools, nothing that
+/// analyses the content.
 struct AutoButton: View {
     @Environment(EditorModel.self) private var model
 
     var body: some View {
         Button { Task { await model.autoAll() } } label: {
             Label("Auto", systemImage: "wand.and.rays")
-                .font(.body.weight(.medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(Color.primary.opacity(0.12), in: Capsule())
-                .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
         .disabled(!model.canAuto)
         .help("Applies darktable's automatic tools: the camera style for this camera, automatic exposure, filmic's auto-tune (if filmic is on) and the tone equalizer fit (if it's on).")
     }
 }
 
-/// Compare and Reset along the bottom of the inspector, as in Photomator.
+/// Reset All along the bottom of the inspector, quietly, as Photos' Reset
+/// Adjustments. Compare is in the toolbar (⇧⌘B).
 struct InspectorBottomBar: View {
     @Environment(EditorModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         VStack(spacing: 0) {
             Divider()
-            HStack(spacing: 10) {
-                Toggle(isOn: $model.comparing) {
-                    Image(systemName: "square.split.2x1")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .toggleStyle(.button)
-                .help("Compare with the photo as it was when opened (⇧⌘B)")
-                Button { model.confirmingReset = true } label: {
-                    Text("Reset")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                // only when there's something to reset
-                .disabled(!model.canReset)
-                .help(model.canReset ? "Reset all edits" : "No edits to reset")
+            HStack {
+                Spacer()
+                Button("Reset All") { model.confirmingReset = true }
+                    // only when there's something to reset
+                    .disabled(!model.canReset)
+                    .help(model.canReset ? "Reset all edits (also in Image › Reset All Edits)" : "No edits to reset")
             }
-            .controlSize(.large)
-            .padding(12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
         .disabled(model.url == nil)
     }

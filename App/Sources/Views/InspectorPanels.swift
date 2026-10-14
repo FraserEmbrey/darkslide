@@ -19,8 +19,6 @@ struct InspectorPanel: Identifiable {
     static let all: [InspectorPanel] = [
         InspectorPanel(id: "histogram", title: "Histogram", icon: "chart.bar.xaxis", placement: .pinned,
                        applies: { $0.url != nil }, content: { AnyView(PinnedHistogram()) }),
-        InspectorPanel(id: "auto", title: "Auto", icon: "sparkles", placement: .cards,
-                       applies: { _ in true }, content: { AnyView(AutoButton()) }),
         // the SDR card before the HDR one, so switching views with its Show button
         // doesn't move it when the HDR card comes and goes
         InspectorPanel(id: "sdrVersion", title: "SDR Version", icon: "sun.min", placement: .cards,

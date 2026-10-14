@@ -117,35 +117,30 @@ struct ContentView: View {
     /// the editor's tools
     @ToolbarContentBuilder
     private var editorToolbar: some CustomizableToolbarContent {
-                ToolbarItem(id: "crop") {
-                    Toggle("Crop", systemImage: "crop.rotate", isOn: Binding(
-                        get: { model.isCropping },
-                        set: { $0 ? model.beginCrop() : model.commitCrop() }))
-                    .disabled(model.url == nil)
-                    .help("Crop and straighten (⌘K)")
-                }
-                .hidden(model.showingLibrary)
-                ToolbarSpacer(.fixed)
-                ToolbarItem(id: "zoom") {
-                    Menu {
-                        Button("Fit") { model.zoom = .fit }
-                        Divider()
-                        ForEach(EditorModel.zoomSteps, id: \.self) { s in
-                            Button("\(Int(s * 100))%") { model.zoom = .scale(s) }
+                // crop, zoom and compare as one group, sharing one glass capsule
+                ToolbarItem(id: "tools") {
+                    @Bindable var model = model
+                    ControlGroup {
+                        Toggle("Crop", systemImage: "crop.rotate", isOn: Binding(
+                            get: { model.isCropping },
+                            set: { $0 ? model.beginCrop() : model.commitCrop() }))
+                            .help("Crop and straighten (⌘K)")
+                        Menu {
+                            Button("Fit") { model.zoom = .fit }
+                            Divider()
+                            ForEach(EditorModel.zoomSteps, id: \.self) { s in
+                                Button("\(Int(s * 100))%") { model.zoom = .scale(s) }
+                            }
+                        } label: {
+                            Label("Zoom", systemImage: "plus.magnifyingglass")
                         }
+                        .help("Zoom (⌘0 fit, ⌘1 100%)")
+                        Toggle("Compare", systemImage: "square.split.2x1", isOn: $model.comparing)
+                            .help("Compare with the photo as it was when opened (⇧⌘B)")
                     } label: {
-                        Label("Zoom", systemImage: "plus.magnifyingglass")
+                        Label("Tools", systemImage: "crop.rotate")
                     }
                     .disabled(model.url == nil)
-                    .help("Zoom (⌘0 fit, ⌘1 100%)")
-                }
-                .hidden(model.showingLibrary)
-                ToolbarSpacer(.fixed)
-                ToolbarItem(id: "compare") {
-                    @Bindable var model = model
-                    Toggle("Compare", systemImage: "square.split.2x1", isOn: $model.comparing)
-                        .disabled(model.url == nil)
-                        .help("Compare with the photo as it was when opened (⇧⌘B)")
                 }
                 .hidden(model.showingLibrary)
                 ToolbarSpacer(.fixed)

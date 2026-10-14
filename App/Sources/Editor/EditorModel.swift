@@ -1311,6 +1311,21 @@ final class EditorModel {
 
     func resetEssentials() { essentials = Presentation.defaultEssentials }
 
+    /// Puts Essentials back in the recommended order, keeping the modules the
+    /// user added (after the standard ones, in their current order).
+    func restoreEssentialsOrder() {
+        let rank = Dictionary(uniqueKeysWithValues: Presentation.defaultEssentials.enumerated().map { ($1, $0) })
+        essentials = essentials.enumerated().sorted { a, b in
+            (rank[a.element] ?? 1000 + a.offset, a.offset) < (rank[b.element] ?? 1000 + b.offset, b.offset)
+        }.map(\.element)
+    }
+
+    var essentialsInDefaultOrder: Bool {
+        let rank = Dictionary(uniqueKeysWithValues: Presentation.defaultEssentials.enumerated().map { ($1, $0) })
+        let ranked = essentials.compactMap { rank[$0] }
+        return ranked == ranked.sorted() && essentials.drop { rank[$0] != nil }.allSatisfy { rank[$0] == nil }
+    }
+
     // MARK: Tone equalizer
 
     var toneEqualizerIsFitted: Bool {

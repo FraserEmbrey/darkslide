@@ -93,6 +93,15 @@ struct InspectorView: View {
                         }
                     }
                     .padding(.bottom, 16)
+                    // the module being dragged, floating under the pointer
+                    .overlay(alignment: .topLeading) {
+                        if let op = drag.op, let held = model.visibleModules.first(where: { $0.op == op }) {
+                            HeldModuleRow(title: Presentation.title(of: held), enabled: held.enabled)
+                                .offset(y: drag.heldTop)
+                                .allowsHitTesting(false)
+                                .transition(.opacity)
+                        }
+                    }
                     .coordinateSpace(.named(EssentialsDrag.space))
                     .environment(drag)
                     // quieter disclosures inside sections (Advanced and the like)
@@ -143,11 +152,8 @@ final class EssentialsDrag {
         withAnimation(Self.spring) { self.op = op }
     }
 
-    /// how far the held row is drawn from its place, to stay under the pointer
-    var offset: CGFloat {
-        guard let op, let f = frames[op] else { return 0 }
-        return pointerY - grab - f.minY
-    }
+    /// where the floating copy's top goes: under the pointer as it was picked up
+    var heldTop: CGFloat { pointerY - grab }
 
     func move(to y: CGFloat, visible: [String]) {
         guard let op else { return }
@@ -173,6 +179,38 @@ final class EssentialsDrag {
         guard op != nil else { return nil }
         withAnimation(Self.spring) { op = nil }
         return order
+    }
+}
+
+/// The floating copy of a module row while it's dragged in Essentials: the
+/// row's header lifted off the list on a material, with a shadow.
+struct HeldModuleRow: View {
+    let title: String
+    let enabled: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Toggle(title, isOn: .constant(enabled))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+        }
+        .scaleEffect(1.03)
     }
 }
 
@@ -371,20 +409,16 @@ struct ModuleCard: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(EssentialsDrag.space)) } action: { frame in
             if canReorder { drag.frames[module.op] = frame }
         }
-        // the held module lifts off the list and follows the pointer
-        .background {
-            if isHeld {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(.regularMaterial)
-                    .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
-            }
-        }
-        .scaleEffect(isHeld ? 1.03 : 1)
-        .offset(y: isHeld ? drag.offset : 0)
-        .zIndex(isHeld ? 1 : 0)
+        // while held it's an empty slot; a floating copy follows the pointer
+        // (InspectorView), as the card's own place moves as the list reorders
+        .opacity(isHeld ? 0 : 1)
         .contextMenu {
             Button(model.isEssential(module.op) ? "Remove from Essentials" : "Add to Essentials") {
                 withAnimation { model.toggleEssential(module.op) }
+            }
+            if canReorder {
+                Button("Restore Default Order") { withAnimation { model.restoreEssentialsOrder() } }
+                    .disabled(model.essentialsInDefaultOrder)
             }
             Divider()
             Button("Reset \(title)") { model.reset(module: module.key) }
@@ -441,8 +475,12 @@ struct EssentialsFooter: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Restore Default Essentials") { withAnimation { model.resetEssentials() } }
-                .controlSize(.small)
+            HStack {
+                Button("Restore Default Order") { withAnimation { model.restoreEssentialsOrder() } }
+                    .disabled(model.essentialsInDefaultOrder)
+                Button("Restore Default Essentials") { withAnimation { model.resetEssentials() } }
+            }
+            .controlSize(.small)
         }
         .padding(.top, 6)
     }

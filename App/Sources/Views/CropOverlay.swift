@@ -10,6 +10,9 @@ struct CropOverlay: View {
     private enum Grab { case move, left, right, top, bottom, topLeft, topRight, bottomLeft, bottomRight }
     @State private var grab: Grab?
     @State private var startRect: CGRect = .zero
+    @AppStorage(CropGuideSettings.guideKey) private var guide = CropGuide.thirds
+    @AppStorage(CropGuideSettings.orientationKey) private var guideOrientation = 0
+    @AppStorage(CropGuideSettings.alwaysKey) private var guideAlways = true
 
     private static let minSize = 0.04
 
@@ -49,17 +52,12 @@ struct CropOverlay: View {
                 }
                 .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
 
-                // thirds while adjusting, as a composition guide
-                if grab != nil {
-                    Path { p in
-                        for i in 1...2 {
-                            let x = box.minX + box.width * CGFloat(i) / 3
-                            let y = box.minY + box.height * CGFloat(i) / 3
-                            p.move(to: CGPoint(x: x, y: box.minY)); p.addLine(to: CGPoint(x: x, y: box.maxY))
-                            p.move(to: CGPoint(x: box.minX, y: y)); p.addLine(to: CGPoint(x: box.maxX, y: y))
-                        }
-                    }
-                    .stroke(Color.white.opacity(0.5), lineWidth: 0.5)
+                // the composition guide, always or while adjusting
+                if guideAlways || grab != nil {
+                    guide.path(in: box, orientation: guideOrientation)
+                        .stroke(Color.white.opacity(0.6), lineWidth: 0.75)
+                        .shadow(color: .black.opacity(0.5), radius: 0.5)
+                        .allowsHitTesting(false)
                 }
 
                 Rectangle()
@@ -249,6 +247,12 @@ struct CropPanel: View {
                     model.setGeometry(g)
                 }
                 .help("Corrects a wall shot at an angle, turning it to face the camera")
+            }
+
+            section("Guide") {
+                EmptyView()
+            } content: {
+                CropGuidePicker()
             }
 
             HStack {

@@ -151,6 +151,10 @@ struct LookBrowser: View {
                 Divider()
                 HStack {
                     Text("\(model.films.count) films").font(.caption).foregroundStyle(.secondary)
+                    if let error = model.lookPreviewError {
+                        Text("No previews: \(error)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Button("Try Again") { Task { await model.loadLookPreviewBase() } }.buttonStyle(.link).font(.caption)
+                    }
                     Spacer()
                     Button("Choose LUT Folder…", action: chooseFolder).buttonStyle(.link).font(.caption)
                 }
@@ -198,6 +202,10 @@ struct LookTile: View {
                 .overlay {
                     if let preview {
                         Image(decorative: preview, scale: 2).resizable().scaledToFill()
+                    } else if model.lookPreviewError != nil || previewFor == model.lookPreviewBaseID {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .foregroundStyle(.secondary)
+                            .help(model.lookPreviewError.map { "No preview: \($0)" } ?? "This look's file couldn't be read.")
                     } else {
                         ProgressView().controlSize(.small)
                     }

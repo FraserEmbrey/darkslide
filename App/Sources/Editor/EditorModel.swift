@@ -137,6 +137,8 @@ final class EditorModel {
     /// a small render of the photo without its film look, for the look previews
     var lookPreviewBase: CGImage?
     var lookPreviewBaseID = 0
+    /// why the film browser's previews couldn't be made, if they couldn't
+    var lookPreviewError: String?
     /// the open photo's film look (a path in the folder) and its strength, 0 to 100
     var currentLook: String?
     var lookStrength = 100.0
@@ -3227,10 +3229,20 @@ extension EditorModel {
         if let lut = modules.first(where: { $0.op == "lut3d" && $0.key.hasSuffix(":0") }), lut.enabled {
             overrides.append(.init(module: lut.key, field: "", value: 0, disable: true))
         }
-        if let frame = try? await engine.render(maxPixels: 280, hdr: false, displayHeadroom: 1, wantOverlay: false,
-                                                overrides: overrides) {
-            lookPreviewBase = frame.image
-            lookPreviewBaseID += 1
+        // a few tries: the engine can be busy opening or rendering the photo
+        for attempt in 1...3 {
+            do {
+                let frame = try await engine.render(maxPixels: 280, hdr: false, displayHeadroom: 1, wantOverlay: false,
+                                                    overrides: overrides)
+                lookPreviewBase = frame.image
+                lookPreviewBaseID += 1
+                lookPreviewError = nil
+                return
+            } catch {
+                FileHandle.standardError.write("Develop look previews: attempt \(attempt) failed: \(error.localizedDescription)\n".data(using: .utf8)!)
+                lookPreviewError = error.localizedDescription
+                try? await Task.sleep(for: .milliseconds(500))
+            }
         }
     }
 

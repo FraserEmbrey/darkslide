@@ -177,8 +177,12 @@ actor Engine {
     /// several settings in one round trip
     func setMany(_ items: [(module: String, field: String, value: FieldValue)]) async throws {
         guard !items.isEmpty else { return }
-        _ = try await request(["cmd": "set_many",
-                               "items": items.map { ["module": $0.module, "field": $0.field, "value": $0.value.json] }])
+        let reply = try await request(["cmd": "set_many",
+                                       "items": items.map { ["module": $0.module, "field": $0.field, "value": $0.value.json] }])
+        if UserDefaults.standard.bool(forKey: "LogRenderTimes"),
+           let ms = (try? JSONSerialization.jsonObject(with: reply) as? [String: Any])?["ms"] as? Int {
+            FileHandle.standardError.write("Develop set_many \(items.count) in helper \(ms) ms\n".data(using: .utf8)!)
+        }
     }
 
     func enable(module: String, on: Bool) async throws {

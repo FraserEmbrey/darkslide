@@ -784,6 +784,30 @@ final class EditorModel {
                     if let c = workspaces.last { switchWorkspace(to: c.id) }; log("again")
                 }
             }
+            // TestDrag: launch argument (-TestDrag exposure) for testing: drags that module's
+            // main slider at 30 values a second for 3 s, as a slider sends them, and logs how
+            // late the main thread handled the events and how many frames were shown
+            if let op = UserDefaults.standard.string(forKey: "TestDrag") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    guard let m = modules.first(where: { $0.op == op }),
+                          let f = m.fields.first(where: { $0.kind == .float }) else { return }
+                    let frames0 = frameID
+                    var late: [Double] = []
+                    sliderDrag(active: true, clipping: false)
+                    let start = ContinuousClock.now
+                    for i in 0..<90 {
+                        let due = start + .milliseconds(i * 33)
+                        try? await Task.sleep(until: due, clock: .continuous)
+                        let lag = ContinuousClock.now - due
+                        late.append(Double(lag.components.attoseconds) / 1e15 + Double(lag.components.seconds) * 1000)
+                        setValue(.number(f.value.number + sin(Double(i) / 10) * 0.5), module: m.key, field: f.name)
+                    }
+                    sliderDrag(active: false, clipping: false)
+                    let sorted = late.sorted()
+                    FileHandle.standardError.write("Develop drag test \(op).\(f.name): 90 values, main thread late by median \(String(format: "%.1f", sorted[45])) ms, p95 \(String(format: "%.1f", sorted[85])) ms, max \(String(format: "%.1f", sorted.last!)) ms; frames shown \(frameID - frames0) in 2.9 s\n".data(using: .utf8)!)
+                }
+            }
             // TestClipping: launch argument (-TestClipping YES) for testing: holds the
             // clipping view on, as an Option-drag of a slider does, and lifts exposure
             if UserDefaults.standard.bool(forKey: "TestClipping") {
@@ -1500,13 +1524,15 @@ final class EditorModel {
     func setValue(_ value: FieldValue, module: String, field: String) {
         guard let m = modules.firstIndex(where: { $0.key == module }),
               let f = modules[m].fields.firstIndex(where: { $0.name == field }) else { return }
+        // observed state is only written when it changes: a slider sends many
+        // values a second, and each write redraws whatever reads it
         modules[m].fields[f].value = value
-        modules[m].enabled = true
-        hasUnsavedChanges = true
+        if !modules[m].enabled { modules[m].enabled = true }
+        if !hasUnsavedChanges { hasUnsavedChanges = true }
         // by module, so controls that set several fields (tone equalizer zones,
-        // scene white) make one step
+        // white balance) make one step
         recordUndoStep(label: Presentation.title(of: modules[m]), gesture: module)
-        editsSinceStyle += 1
+        if editsSinceStyle == 0 { editsSinceStyle = 1 }
         // only the latest value per field is sent, but never merged across an undo checkpoint
         let floor = pendingCheckpoints.last?.position ?? 0
         if let i = pendingSets.indices.last(where: { $0 >= floor && pendingSets[$0].module == module && pendingSets[$0].field == field }) {
@@ -1625,6 +1651,7 @@ final class EditorModel {
                         resolveUndoStep(c.id, end: await engine.historyEnd)
                     }
                     try await engine.setMany(Array(sets[sent...]))
+                    let setDone = ContinuousClock.now
                     if let c = curve {
                         try await engine.setCurve(module: c.module, channel: c.channel, nodes: c.nodes, linked: c.linked)
                     }
@@ -1635,6 +1662,7 @@ final class EditorModel {
                                                         overrides: (showsSDRVersion ? sdrOverrides : []) + cropOverrides + curveOverrides,
                                                         hdrLimit: viewHDR ? hdrLimit : nil,
                                                         keepForRefresh: crop == nil)
+                    let renderDone = ContinuousClock.now
                     if frame.processedSize.width > 0 { imageSize = frame.processedSize }
                     // the curve's histogram is of the module's input, which a curve edit
                     // doesn't change; and the points on screen are newer than the engine's
@@ -1706,7 +1734,9 @@ final class EditorModel {
                             let b = raw.bindMemory(to: UInt8.self)
                             return stride(from: 0, to: b.count, by: 4 * 97).reduce(0) { $0 + Double(b[$1]) } / Double(b.count / (4 * 97))
                         }
-                        FileHandle.standardError.write("Develop frame \(lastRenderMs ?? 0) ms (engine \(frame.ms) ms), mean \(String(format: "%.3f", mean))\n".data(using: .utf8)!)
+                        func ms(_ d: Duration) -> Int { Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000) }
+                        FileHandle.standardError.write("Develop frame split: set \(ms(setDone - start)) ms, render call \(ms(renderDone - setDone)) ms, after \(ms(ContinuousClock.now - renderDone)) ms\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Develop frame \(lastRenderMs ?? 0) ms (engine \(frame.ms) ms) at \(pixels) px\(draft ? " draft" : ""), mean \(String(format: "%.3f", mean))\n".data(using: .utf8)!)
                     }
                     framesSinceOpen += 1
                     // the first frame after opening fills the cache and is always slow

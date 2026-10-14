@@ -885,6 +885,7 @@ static void _cmd_set_many(JsonObject *o)
   if(!H.edit.loaded) return _error("no image open");
   JsonArray *items = json_object_has_member(o, "items") ? json_object_get_array_member(o, "items") : NULL;
   if(!items) return _error("missing items");
+  const double start = dt_get_wtime();
   for(guint i = 0; i < json_array_get_length(items); i++)
   {
     JsonObject *e = json_array_get_object_element(items, i);
@@ -903,7 +904,10 @@ static void _cmd_set_many(JsonObject *o)
     }
     _commit(m, TRUE);
   }
-  _ok_done(_ok());
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "ms");
+  json_builder_add_int_value(b, (gint64)((dt_get_wtime() - start) * 1000));
+  _ok_done(b);
 }
 
 static void _cmd_enable(JsonObject *o)

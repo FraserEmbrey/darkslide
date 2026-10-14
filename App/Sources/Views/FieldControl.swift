@@ -113,6 +113,16 @@ struct ParamSlider: View {
     /// mid-drag changes the speed from there instead of making the thumb jump
     @State private var dragValue: Double = 0
     @State private var lastX: CGFloat = 0
+    /// While dragging, the thumb and number show this, not the model's value:
+    /// they follow the pointer at once, whatever the editor is busy with, and
+    /// the value goes to the editor at most every 33 ms (the engine can't
+    /// render faster, and each change redraws the inspector)
+    @State private var liveValue: Double?
+    @State private var lastSent = ContinuousClock.now
+    @State private var trailingSend: Task<Void, Never>?
+
+    /// what the slider shows: the drag's value while dragging
+    private var shown: Double { liveValue ?? value }
     @State private var hovering = false
     @Environment(\.sliderDrag) private var sliderDrag
 
@@ -127,7 +137,7 @@ struct ParamSlider: View {
                 Text(label)
                     .onTapGesture(count: 2) { onChange(defaultValue) }
                 Spacer()
-                ValueField(value: value, isInteger: isInteger, decimals: decimals, onCommit: onChange)
+                ValueField(value: shown, isInteger: isInteger, decimals: decimals, onCommit: onChange)
                 if let unit { Text(unit).foregroundStyle(.secondary) }
             }
             track
@@ -155,8 +165,8 @@ struct ParamSlider: View {
                     Capsule().fill(Color.primary.opacity(0.14)).frame(height: 4)
                     Capsule()
                         .fill(Color.accentColor)
-                        .frame(width: max(abs(x(value) - x(origin)), 0), height: 4)
-                        .offset(x: min(x(value), x(origin)))
+                        .frame(width: max(abs(x(shown) - x(origin)), 0), height: 4)
+                        .offset(x: min(x(shown), x(origin)))
                 }
                 ForEach(ticks.filter { range.contains($0) }, id: \.self) { t in
                     Rectangle().fill(Color.primary.opacity(0.4)).frame(width: 1, height: 5)
@@ -172,7 +182,7 @@ struct ParamSlider: View {
                     .frame(width: 10, height: 20)
                     .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
                     .scaleEffect(dragStart != nil ? 1.1 : hovering ? 1.05 : 1)
-                    .offset(x: x(value) - 5)
+                    .offset(x: x(shown) - 5)
                     .animation(.easeOut(duration: 0.12), value: dragStart != nil)
             }
             .frame(width: w, height: 22)
@@ -194,9 +204,12 @@ struct ParamSlider: View {
                         lastX = g.location.x
                         var v = dragValue
                         if let step, !fine { v = clamp((v / step).rounded() * step) }
-                        onChange(isInteger ? v.rounded() : v)
+                        send(isInteger ? v.rounded() : v)
                     }
                     .onEnded { _ in
+                        trailingSend?.cancel()
+                        if let v = liveValue { onChange(v) }
+                        liveValue = nil
                         dragStart = nil
                         if editsPhoto { sliderDrag?(false, false) }
                     }
@@ -206,6 +219,28 @@ struct ParamSlider: View {
         .frame(height: 22)
         .help(clipping ? "Drag to adjust: hold Shift for fine control, Option to see what clips. Double-click to reset."
                        : "Drag to adjust, hold Shift for fine control, double-click to reset")
+    }
+
+    /// shows the value at once; passes it on now if 33 ms have gone by, else
+    /// once they have (the latest value then)
+    private func send(_ v: Double) {
+        liveValue = v
+        let now = ContinuousClock.now
+        if now - lastSent >= .milliseconds(33) {
+            trailingSend?.cancel()
+            trailingSend = nil
+            lastSent = now
+            onChange(v)
+        } else if trailingSend == nil {
+            let wait = .milliseconds(33) - (now - lastSent)
+            trailingSend = Task { @MainActor in
+                try? await Task.sleep(for: wait)
+                guard !Task.isCancelled, let v = liveValue else { return }
+                trailingSend = nil
+                lastSent = ContinuousClock.now
+                onChange(v)
+            }
+        }
     }
 
     private var decimals: Int {

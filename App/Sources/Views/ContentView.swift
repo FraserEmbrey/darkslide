@@ -53,7 +53,9 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { model.choosingAdjustmentsToCopy }, set: { model.choosingAdjustmentsToCopy = $0 })) {
                 CopyAdjustmentsSheet()
             }
-            .navigationSubtitle(subtitle)
+            // in a view of its own: the render time changes with every frame,
+            // and read here it rebuilt the whole window (sidebar and all) each time
+            .background(WindowSubtitle())
             // One customisable toolbar (right-click it, or View › Customize Toolbar).
             // The library and the editor show different items by hiding the
             // others: swapping two toolbars in a window makes AppKit throw. It goes
@@ -201,20 +203,6 @@ struct ContentView: View {
                 .hidden(model.showingLibrary)
     }
 
-    private var subtitle: String {
-        if let note = model.statusNote { return note }
-        if model.isOpening { return "Opening…" }
-        if model.showingLibrary {
-            let n = model.library.items.count
-            return "\(n) \(n == 1 ? "photo" : "photos")"
-        }
-        var parts: [String] = []
-        if !model.camera.isEmpty { parts.append(model.camera) }
-        if let d = model.decoderInUse, d != "darktable" { parts.append(model.openedAsHDR ? "HDR, \(d)" : d) } else if model.openedAsHDR { parts.append("HDR, decoded by macOS") }
-        if let ms = model.lastRenderMs { parts.append("\(model.lastRenderWasDraft ? "draft" : "rendered") in \(ms) ms") }
-        if model.hasUnsavedChanges { parts.append("edited") }
-        return parts.joined(separator: " · ")
-    }
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
@@ -642,5 +630,29 @@ struct DocumentIcon: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         let url = url
         DispatchQueue.main.async { view.window?.representedURL = url }
+    }
+}
+
+/// The window's subtitle: status, camera, decoder, render time and edited state.
+private struct WindowSubtitle: View {
+    @Environment(EditorModel.self) private var model
+
+    var body: some View {
+        Color.clear.navigationSubtitle(subtitle)
+    }
+
+    private var subtitle: String {
+        if let note = model.statusNote { return note }
+        if model.isOpening { return "Opening…" }
+        if model.showingLibrary {
+            let n = model.library.items.count
+            return "\(n) \(n == 1 ? "photo" : "photos")"
+        }
+        var parts: [String] = []
+        if !model.camera.isEmpty { parts.append(model.camera) }
+        if let d = model.decoderInUse, d != "darktable" { parts.append(model.openedAsHDR ? "HDR, \(d)" : d) } else if model.openedAsHDR { parts.append("HDR, decoded by macOS") }
+        if let ms = model.lastRenderMs { parts.append("\(model.lastRenderWasDraft ? "draft" : "rendered") in \(ms) ms") }
+        if model.hasUnsavedChanges { parts.append("edited") }
+        return parts.joined(separator: " · ")
     }
 }

@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct InspectorView: View {
     @Environment(EditorModel.self) private var model
+    @State private var drag = EssentialsDrag()
 
     var body: some View {
         if model.isCropping {
@@ -84,7 +85,7 @@ struct InspectorView: View {
                                 .padding(.top, 10)
                                 .padding(.bottom, 2)
                         }
-                        ForEach(model.visibleModules) { module in
+                        ForEach(listedModules) { module in
                             ModuleCard(module: module)
                         }
                         if model.filter == .essentials, model.search.isEmpty {
@@ -92,6 +93,10 @@ struct InspectorView: View {
                         }
                     }
                     .padding(.bottom, 16)
+                    .coordinateSpace(.named(EssentialsDrag.space))
+                    .environment(drag)
+                    // quieter disclosures inside sections (Advanced and the like)
+                    .disclosureGroupStyle(SubsectionDisclosureStyle())
                 }
                 .scrollIndicators(.automatic)
 
@@ -100,6 +105,103 @@ struct InspectorView: View {
         }
         // keep everything at the top, including before a photo is open
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// the modules in the list; while one is dragged, in the order it would leave
+    private var listedModules: [EngineModule] {
+        let modules = model.visibleModules
+        guard drag.isActive else { return modules }
+        let rank = Dictionary(uniqueKeysWithValues: drag.order.enumerated().map { ($1, $0) })
+        return modules.sorted { (rank[$0.op] ?? .max) < (rank[$1.op] ?? .max) }
+    }
+}
+
+/// Reordering Essentials by dragging a module's name, as icons move on the
+/// iPhone's Home Screen: every module folds shut, the one held lifts and
+/// follows the pointer, and the others slide out of its way. The new order
+/// reaches the model (and the workspace) on release.
+@MainActor @Observable
+final class EssentialsDrag {
+    static let space = "essentialsList"
+    private static let spring = Animation.spring(response: 0.3, dampingFraction: 0.85)
+
+    private(set) var op: String?
+    /// the Essentials order while dragging, the held module where it would land
+    private(set) var order: [String] = []
+    /// each module row's place in the list, laid out (without the held row's offset)
+    var frames: [String: CGRect] = [:]
+    private var pointerY: CGFloat = 0
+    /// how far below its row's top the module was picked up
+    private var grab: CGFloat = 0
+
+    var isActive: Bool { op != nil }
+
+    func begin(_ op: String, at y: CGFloat, essentials: [String]) {
+        order = essentials
+        grab = y - (frames[op]?.minY ?? y)
+        pointerY = y
+        withAnimation(Self.spring) { self.op = op }
+    }
+
+    /// how far the held row is drawn from its place, to stay under the pointer
+    var offset: CGFloat {
+        guard let op, let f = frames[op] else { return 0 }
+        return pointerY - grab - f.minY
+    }
+
+    func move(to y: CGFloat, visible: [String]) {
+        guard let op else { return }
+        pointerY = y
+        guard let f = frames[op] else { return }
+        let mid = y - grab + f.height / 2
+        let others = visible.filter { $0 != op }
+        let index = others.filter { (frames[$0]?.midY ?? .infinity) < mid }.count
+        // before the shown module now at that place, or after the last one
+        var next = order.filter { $0 != op }
+        if index < others.count, let at = next.firstIndex(of: others[index]) {
+            next.insert(op, at: at)
+        } else if let last = others.last, let at = next.firstIndex(of: last) {
+            next.insert(op, at: at + 1)
+        } else {
+            next.append(op)
+        }
+        if next != order { withAnimation(Self.spring) { order = next } }
+    }
+
+    /// the order to keep, or nil if nothing was being dragged
+    func end() -> [String]? {
+        guard op != nil else { return nil }
+        withAnimation(Self.spring) { op = nil }
+        return order
+    }
+}
+
+/// Disclosures inside a section (Advanced and the like): a small grey chevron
+/// and secondary text, so they sit below the section titles.
+struct SubsectionDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { configuration.isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .frame(width: 10)
+                    configuration.label
+                        .font(.callout)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if configuration.isExpanded {
+                configuration.content
+                    .transition(.opacity)
+            }
+        }
     }
 }
 
@@ -168,9 +270,26 @@ struct CardIconButton: View {
 
 struct ModuleCard: View {
     @Environment(EditorModel.self) private var model
+    @Environment(EssentialsDrag.self) private var drag
     let module: EngineModule
-    @State private var isDropTarget = false
     @State private var hovering = false
+
+    /// Essentials reorder by dragging a module's name
+    private var canReorder: Bool { model.filter == .essentials && model.search.isEmpty && model.isEssential(module.op) }
+    private var isHeld: Bool { drag.op == module.op }
+    /// every module folds shut while one is dragged
+    private var showsContent: Bool { expandedBinding.wrappedValue && !drag.isActive }
+
+    private var reorder: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(EssentialsDrag.space))
+            .onChanged { g in
+                if !drag.isActive { drag.begin(module.op, at: g.startLocation.y, essentials: model.essentials) }
+                drag.move(to: g.location.y, visible: model.visibleModules.map(\.op))
+            }
+            .onEnded { _ in
+                if let order = drag.end() { model.essentials = order }
+            }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -178,15 +297,15 @@ struct ModuleCard: View {
             // (and in the context menu), and the title drags to reorder Essentials
             HStack(spacing: 6) {
                 CardTitle(title: title, isExpanded: expandedBinding)
-                    .draggable(module.op)
+                    .gesture(reorder, including: canReorder ? .all : .subviews)
                 Group {
                     ModuleMenu(module: module, title: title)
                     CardIconButton(systemImage: "arrow.counterclockwise", help: "Reset \(title)") {
                         model.reset(module: module.key)
                     }
                 }
-                .opacity(hovering ? 1 : 0)
-                .allowsHitTesting(hovering)
+                .opacity(hovering && !drag.isActive ? 1 : 0)
+                .allowsHitTesting(hovering && !drag.isActive)
                 if let rule = Presentation.autoModes[module.op] {
                     AutoPill(isOn: model.isAuto(module), help: rule.help(module)) {
                         model.setAuto(!model.isAuto(module), module: module)
@@ -202,34 +321,34 @@ struct ModuleCard: View {
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
 
-            if expandedBinding.wrappedValue, module.op == "channelmixerrgb" {
+            if showsContent, module.op == "channelmixerrgb" {
                 SceneWhiteControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "lens" {
+            } else if showsContent, module.op == "lens" {
                 LensControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "rgbcurve" {
+            } else if showsContent, module.op == "rgbcurve" {
                 RGBCurveControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "exposure", !EditorModel.isLocal(module) {
+            } else if showsContent, module.op == "exposure", !EditorModel.isLocal(module) {
                 ExposureControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "bilat" {
+            } else if showsContent, module.op == "bilat" {
                 LocalContrastControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "ashift" {
+            } else if showsContent, module.op == "ashift" {
                 RotatePerspectiveSummary(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "colorequal" {
+            } else if showsContent, module.op == "colorequal" {
                 HueCurveControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, module.op == "demosaic" {
+            } else if showsContent, module.op == "demosaic" {
                 DemosaicControls(module: module)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue, let layout = Presentation.layouts[module.op] {
+            } else if showsContent, let layout = Presentation.layouts[module.op] {
                 LayoutControls(module: module, sections: layout)
                     .transition(.opacity)
-            } else if expandedBinding.wrappedValue {
+            } else if showsContent {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(visibleFields) { field in
                         FieldControl(op: module.op, field: field) { value in
@@ -247,16 +366,20 @@ struct ModuleCard: View {
             }
         }
         .cardStyle()
-        .overlay(alignment: .top) {
-            // where a dragged module will land
-            Rectangle().fill(Color.accentColor).frame(height: 2)
-                .opacity(isDropTarget ? 1 : 0)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(EssentialsDrag.space)) } action: { frame in
+            if canReorder { drag.frames[module.op] = frame }
         }
-        .dropDestination(for: String.self) { items, _ in
-            guard model.filter == .essentials, let op = items.first else { return false }
-            withAnimation { model.moveEssential(op, before: module.op) }
-            return true
-        } isTargeted: { isDropTarget = $0 && model.filter == .essentials }
+        // the held module lifts off the list and follows the pointer
+        .background {
+            if isHeld {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.regularMaterial)
+                    .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+            }
+        }
+        .scaleEffect(isHeld ? 1.03 : 1)
+        .offset(y: isHeld ? drag.offset : 0)
+        .zIndex(isHeld ? 1 : 0)
         .contextMenu {
             Button(model.isEssential(module.op) ? "Remove from Essentials" : "Add to Essentials") {
                 withAnimation { model.toggleEssential(module.op) }

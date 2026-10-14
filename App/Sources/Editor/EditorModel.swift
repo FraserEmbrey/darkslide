@@ -1252,14 +1252,6 @@ final class EditorModel {
         if let i = essentials.firstIndex(of: op) { essentials.remove(at: i) } else { essentials.append(op) }
     }
 
-    /// Moves `op` to just before `target` (drag and drop in the Essentials tab).
-    func moveEssential(_ op: String, before target: String) {
-        guard op != target, let from = essentials.firstIndex(of: op) else { return }
-        essentials.remove(at: from)
-        let to = essentials.firstIndex(of: target) ?? essentials.endIndex
-        essentials.insert(op, at: to)
-    }
-
     func resetEssentials() { essentials = Presentation.defaultEssentials }
 
     // MARK: Tone equalizer

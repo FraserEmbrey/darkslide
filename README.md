@@ -117,7 +117,7 @@ Drag anywhere on the track. Shift gives fine control (a tenth of the speed). Opt
 
 ### Inspector
 
-One surface, as in Photos and Pixelmator Pro: sections divided by hairlines, each with a leading disclosure chevron. A module's row shows only its name, its Auto pill if it has one, and its switch; presets (⋯) and reset appear on hover and in the right-click menu. Along the top, Essentials, Active and All are a standard segmented control with the workspace menu beside it, then the module search and Auto. Reset All sits quietly at the bottom (and in the Image menu); Compare is in the toolbar, grouped with crop and zoom.
+One surface, as in Photos and Pixelmator Pro: sections divided by hairlines, each with a leading disclosure chevron. A module's row shows only its name, its Auto pill if it has one, and its switch; presets (⋯) and reset appear on hover and in the right-click menu. Disclosures inside a section (Advanced and the like) are quieter, with a small grey chevron. In Essentials, drag a module by its name to reorder, as on the iPhone's Home Screen: every module folds shut, the held one lifts and follows the pointer, and the others slide out of its way (`EssentialsDrag`). Along the top, Essentials, Active and All are a standard segmented control with the workspace menu beside it, then the module search and Auto. Reset All sits quietly at the bottom (and in the Image menu); Compare is in the toolbar, grouped with crop and zoom.
 
 ### Workspaces
 

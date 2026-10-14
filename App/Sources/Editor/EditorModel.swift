@@ -201,15 +201,26 @@ final class EditorModel {
             Task { await restartEngineForSettings() }
         }
     }
-    /// The Essentials tab: the user's own modules, in their order.
-    var essentials = EditorModel.loadEssentials() {
-        didSet { UserDefaults.standard.set(essentials, forKey: SettingsKey.essentials) }
+    // Workspaces (Workspaces.swift): named inspector sets
+    private static let initialWorkspaces = Workspaces.load()
+    private static var initialWorkspace: Workspace {
+        let id = Workspaces.currentID(in: initialWorkspaces)
+        return initialWorkspaces.first { $0.id == id }!
     }
+    var workspaces: [Workspace] = EditorModel.initialWorkspaces { didSet { Workspaces.store(workspaces) } }
+    var workspaceID: UUID = Workspaces.currentID(in: EditorModel.initialWorkspaces) { didSet { Workspaces.storeCurrent(workspaceID) } }
+    /// set while a workspace is brought in, so its parts aren't written back half-changed
+    @ObservationIgnored var applyingWorkspace = false
+
+    /// The Essentials tab: the user's own modules, in their order.
+    var essentials = EditorModel.initialWorkspace.essentials { didSet { recordWorkspace() } }
+    /// fixed inspector panels (`InspectorPanel` ids) the current workspace hides
+    var hiddenPanels = Set(EditorModel.initialWorkspace.hiddenPanels) { didSet { recordWorkspace() } }
 
     /// Lists saved before Scene white existed get White balance swapped for it,
     /// and lists saved before the recommended order get put in that order
     /// (anything the user added stays, after the standard modules). Once each.
-    private static func loadEssentials() -> [String] {
+    static func loadEssentials() -> [String] {
         let d = UserDefaults.standard
         guard var list = d.stringArray(forKey: SettingsKey.essentials) else { return Presentation.defaultEssentials }
         if !d.bool(forKey: "EssentialsRecommendedOrder") {
@@ -407,7 +418,7 @@ final class EditorModel {
     var search = UserDefaults.standard.string(forKey: "StartSearch") ?? ""
     // StartExpanded: launch argument (-StartExpanded lens:0,rgbcurve:0) for testing
     var expanded: Set<String> = UserDefaults.standard.string(forKey: "StartExpanded").map { Set($0.split(separator: ",").map(String.init)) }
-        ?? ["exposure:0", "channelmixerrgb:0", "toneequal:0", "colorbalancergb:0", "filmicrgb:0", "sigmoid:0"]
+        ?? Set(EditorModel.initialWorkspace.expanded) { didSet { recordWorkspace() } }
 
     private var engine: Engine?
     /// for read-only lookups from pickers (Lensfun's lists), which change nothing
@@ -746,6 +757,22 @@ final class EditorModel {
                     viewHDR = false
                     try? await Task.sleep(for: .seconds(2))
                     viewHDR = true
+                }
+            }
+            // TestWorkspaces: launch argument (-TestWorkspaces YES) for testing: saves a
+            // second workspace, changes it, switches back and forth, logging each
+            if UserDefaults.standard.bool(forKey: "TestWorkspaces") {
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Develop workspace test: \(s): \(currentWorkspace?.name ?? "-"), essentials \(essentials.count), open \(expanded.count), hidden \(hiddenPanels.sorted()), all \(workspaces.map(\.name))\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(2)); log("start")
+                    let first = workspaceID
+                    saveWorkspace(as: "Colour"); log("saved")
+                    setPanel("look", shown: false); setPanel("histogram", shown: false)
+                    essentials.removeLast(2); expanded.removeAll(); log("changed")
+                    switchWorkspace(to: first); log("back")
+                    if let c = workspaces.last { switchWorkspace(to: c.id) }; log("again")
                 }
             }
             // TestClipping: launch argument (-TestClipping YES) for testing: holds the

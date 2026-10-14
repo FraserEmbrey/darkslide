@@ -115,6 +115,10 @@ Edit › Undo and Redo (⌘Z, ⇧⌘Z) step darktable's history position back an
 
 Drag anywhere on the track. Shift gives fine control (a tenth of the speed). Option shows what clips while you drag, as Lightroom's Option-drag does, for both ends at once: on a grey ground, highlights clipped in a channel show in its colour (white where all three clip) and shadows in its complement (black where all three clip). `Clipping.swift` makes it from the frame on screen, once per frame. In HDR it shows the headroom overlay instead. Double-click the track or label to reset; click the value to type one.
 
+### Workspaces
+
+A workspace is a named inspector set: the modules in Essentials and their order, the cards that are open, and which fixed panels show (histogram, Auto, SDR version, HDR details, Look, local adjustments). The current one keeps changes as you make them. Window › Workspace, or the button beside the module search, switches between them (⌃⌘1 to ⌃⌘9), shows or hides panels, and saves a copy under a new name, renames or deletes. The fixed panels are descriptors in `InspectorPanel.all` (`InspectorPanels.swift`): an id, title, icon, placement (pinned above the cards, or among them), when it applies, and its view. A workspace stores only ids, so a new panel is one entry there. Runs with `-Test…` or `-Start…` launch arguments never save workspaces.
+
 ### Crop and straighten
 
 Image › Crop and Straighten (⌘K, or C on its own), or the toolbar's crop button. The canvas shows the whole straightened photo with a crop box; drag its corners, edges or inside, with a ratio held if one is chosen. Return finishes, Escape cancels.

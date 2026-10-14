@@ -18,13 +18,22 @@ struct InspectorView: View {
             InspectorTabBar(selection: $model.filter, searching: !model.search.isEmpty)
             Divider()
 
-            SearchField(text: $model.search, prompt: "Search modules")
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-
-            if model.url != nil {
-                PinnedHistogram()
+            HStack(spacing: 8) {
+                SearchField(text: $model.search, prompt: "Search modules")
+                Menu {
+                    WorkspaceMenuContent(model: model)
+                } label: {
+                    Image(systemName: "rectangle.3.group")
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Workspace: \(model.currentWorkspace?.name ?? "")")
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+
+            ForEach(InspectorPanel.shown(.pinned, in: model)) { $0.content() }
             Divider()
             .padding(.top, model.url == nil ? 10 : 0)
 
@@ -54,13 +63,7 @@ struct InspectorView: View {
                             }
                         }
                         if model.search.isEmpty {
-                            AutoButton()
-                            // the SDR card first, so switching views with its Show button
-                            // doesn't move it when the HDR card comes and goes
-                            if model.exportTarget.isHDR { SDRVersionCard() }
-                            if model.viewHDR { HDRDetailsCard() }
-                            LookCard()
-                            if model.url != nil { LocalAdjustmentsCard() }
+                            ForEach(InspectorPanel.shown(.cards, in: model)) { $0.content() }
                         }
                         if model.filter != .essentials, model.search.isEmpty {
                             Label("In processing order: the top module runs last, as in darktable.",

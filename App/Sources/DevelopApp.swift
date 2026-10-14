@@ -164,6 +164,7 @@ struct DevelopApp: App {
             // Window › Info (⌘I): a floating panel, shown and hidden by ⌘I (InfoPanel)
             CommandGroup(before: .windowArrangement) {
                 InfoMenuItem(model: model)
+                Menu("Workspace") { WorkspaceMenuContent(model: model) }
                 Divider()
             }
         }

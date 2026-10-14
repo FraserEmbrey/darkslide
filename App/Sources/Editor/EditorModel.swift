@@ -280,6 +280,29 @@ final class EditorModel {
         }
     }
     var showHeadroomOverlay = false { didSet { if showHeadroomOverlay != oldValue, viewHDR, url != nil { requestRender() } } }
+    /// a slider is being dragged: the whole drag is one undo step
+    private var sliderDragging = false
+    /// Option held while dragging a slider: the canvas shows what clips (in
+    /// HDR, what's beyond the display, the headroom overlay)
+    private(set) var showsClipping = false {
+        didSet { if showsClipping != oldValue, viewHDR, !showHeadroomOverlay, url != nil { requestRender() } }
+    }
+    @ObservationIgnored private var clippingCache: (frame: Int, image: CGImage)?
+
+    func sliderDrag(active: Bool, clipping: Bool) {
+        if !active, sliderDragging { lastGesture = nil }   // the next change is a new step
+        sliderDragging = active
+        showsClipping = active && clipping
+    }
+
+    /// the clipping view of the frame on screen, made once per frame
+    var clippingImage: CGImage? {
+        guard showsClipping, !imageIsHDR, let image else { return nil }
+        if let c = clippingCache, c.frame == frameID { return c.image }
+        guard let made = Clipping.image(of: image) else { return nil }
+        clippingCache = (frameID, made)
+        return made
+    }
 
     /// Caps how far above reference white the HDR rendition goes, in stops
     /// (0 = no limit). Applied to the HDR view and the gain map export alike;
@@ -342,7 +365,7 @@ final class EditorModel {
                     }
                 }
                 let frame = try? await engine.reprocessLastHDR(
-                    displayHeadroom: displayHeadroom, wantOverlay: showHeadroomOverlay && stops == nil,
+                    displayHeadroom: displayHeadroom, wantOverlay: (showHeadroomOverlay || showsClipping) && stops == nil,
                     limit: hdrLimit, previewStops: stops, darktableBase: ExportSettings.load().sdrBase == .darktable)
                 guard let frame, viewHDR, !pumping else { requestRender(); return }
                 image = frame.image
@@ -725,8 +748,18 @@ final class EditorModel {
                     viewHDR = true
                 }
             }
-            // TestUndo: launch argument (-TestUndo YES) for testing: a drag, a toggle and
-            // another module's edit, then undo three times and redo once, logging each
+            // TestClipping: launch argument (-TestClipping YES) for testing: holds the
+            // clipping view on, as an Option-drag of a slider does, and lifts exposure
+            if UserDefaults.standard.bool(forKey: "TestClipping") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    sliderDrag(active: true, clipping: true)
+                    if let m = modules.first(where: { $0.op == "exposure" }) { setValue(.number(2), module: m.key, field: "exposure") }
+                }
+            }
+            // TestUndo: launch argument (-TestUndo YES) for testing: a drag with a pause
+            // in it, a second drag straight after (two steps), a toggle and another
+            // module's edit, then undo three times and redo once, logging each
             if UserDefaults.standard.bool(forKey: "TestUndo") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
@@ -736,11 +769,16 @@ final class EditorModel {
                     log("start")
                     guard let exposure = modules.first(where: { $0.op == "exposure" }) else { return }
                     let ev = exposure.fields.first { $0.name == "exposure" }?.value.number ?? 0
-                    for i in 1...10 {   // a drag
+                    sliderDrag(active: true, clipping: false)
+                    for i in 1...10 {   // a drag, paused halfway for longer than the undo window
                         setValue(.number(ev + Double(i) / 10), module: exposure.key, field: "exposure")
-                        try? await Task.sleep(for: .milliseconds(50))
+                        try? await Task.sleep(for: .milliseconds(i == 5 ? 1500 : 50))
                     }
-                    try? await Task.sleep(for: .seconds(2)); log("after drag")
+                    sliderDrag(active: false, clipping: false)
+                    sliderDrag(active: true, clipping: false)
+                    setValue(.number(ev + 1.5), module: exposure.key, field: "exposure")
+                    sliderDrag(active: false, clipping: false)
+                    try? await Task.sleep(for: .seconds(2)); log("after drags")
                     if let lens = modules.first(where: { $0.op == "lens" }) { setEnabled(!lens.enabled, module: lens.key) }
                     try? await Task.sleep(for: .seconds(2)); log("after toggle")
                     if let cb = modules.first(where: { $0.op == "colorbalancergb" }) {
@@ -1541,7 +1579,7 @@ final class EditorModel {
                     let simulate = viewHDR ? previewHeadroomStops : nil
                     let frame = try await engine.render(maxPixels: pixels, hdr: viewHDR,
                                                         displayHeadroom: displayHeadroom,
-                                                        wantOverlay: showHeadroomOverlay && simulate == nil, crop: crop,
+                                                        wantOverlay: (showHeadroomOverlay || showsClipping) && simulate == nil, crop: crop,
                                                         overrides: (showsSDRVersion ? sdrOverrides : []) + cropOverrides + curveOverrides,
                                                         hdrLimit: viewHDR ? hdrLimit : nil,
                                                         keepForRefresh: crop == nil)
@@ -1992,7 +2030,7 @@ extension EditorModel {
         // anything recordable is the user's own edit (opening a photo's defaults aren't)
         editedSinceOpen = true
         let now = ContinuousClock.now
-        if let gesture, let last = lastGesture, last.key == gesture, now - last.time < .seconds(1) {
+        if let gesture, let last = lastGesture, last.key == gesture, sliderDragging || now - last.time < .seconds(1) {
             lastGesture = (gesture, now)
             return
         }

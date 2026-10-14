@@ -11,6 +11,7 @@ struct DevelopApp: App {
         Window("Develop", id: "main") {
             ContentView()
                 .environment(model)
+                .environment(\.sliderDrag) { [model] active, clipping in model.sliderDrag(active: active, clipping: clipping) }
                 .task {
                     delegate.openFile = { url in Task { await model.openDropped([url]) } }
                     delegate.installKeys(model: model)

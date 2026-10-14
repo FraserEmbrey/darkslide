@@ -85,8 +85,9 @@ struct FieldControl: View {
 
 /// Photomator-style slider: label and value above a thin track, a white
 /// thumb, and a fill from the default value to the current one.
-/// Drag anywhere on the track to adjust (hold Option for fine control),
-/// double-click the track or label to reset, click the value to type one.
+/// Drag anywhere on the track to adjust (hold Shift for fine control, Option
+/// to see what clips), double-click the track or label to reset, click the
+/// value to type one. A whole drag is one undo step.
 struct ParamSlider: View {
     let label: String
     let value: Double
@@ -95,14 +96,17 @@ struct ParamSlider: View {
     let isInteger: Bool
     let unit: String?
     let trackColors: [Color]?
-    /// snaps to multiples of this while dragging (Option drags freely)
+    /// snaps to multiples of this while dragging (Shift drags freely)
     var step: Double? = nil
     /// values marked under the track
     var ticks: [Double] = []
+    /// false for sliders that don't edit the photo: no clipping view, no undo grouping
+    var editsPhoto = true
     let onChange: (Double) -> Void
 
     @State private var dragStart: Double?
     @State private var hovering = false
+    @Environment(\.sliderDrag) private var sliderDrag
 
     private var span: Double { range.upperBound - range.lowerBound }
 
@@ -170,17 +174,24 @@ struct ParamSlider: View {
                 DragGesture(minimumDistance: 1)
                     .onChanged { g in
                         if dragStart == nil { dragStart = value }
-                        let fine = NSEvent.modifierFlags.contains(.option)
+                        let flags = NSEvent.modifierFlags
+                        let fine = flags.contains(.shift)
+                        // tell the editor before the value changes, so the change joins the drag's undo step
+                        if editsPhoto { sliderDrag?(true, flags.contains(.option)) }
                         var v = clamp(dragStart! + Double(g.translation.width / max(w, 1)) * span * (fine ? 0.1 : 1))
                         if let step, !fine { v = clamp((v / step).rounded() * step) }
                         onChange(isInteger ? v.rounded() : v)
                     }
-                    .onEnded { _ in dragStart = nil }
+                    .onEnded { _ in
+                        dragStart = nil
+                        if editsPhoto { sliderDrag?(false, false) }
+                    }
             )
             .simultaneousGesture(TapGesture(count: 2).onEnded { onChange(defaultValue) })
         }
         .frame(height: 22)
-        .help("Drag to adjust, hold Option for fine control, double-click to reset")
+        .help(editsPhoto ? "Drag to adjust: hold Shift for fine control, Option to see what clips. Double-click to reset."
+                         : "Drag to adjust, hold Shift for fine control, double-click to reset")
     }
 
     private var decimals: Int {
@@ -189,6 +200,15 @@ struct ParamSlider: View {
     }
 
     private func clamp(_ v: Double) -> Double { min(max(v, range.lowerBound), range.upperBound) }
+}
+
+private struct SliderDragKey: EnvironmentKey { static let defaultValue: (@MainActor @Sendable (Bool, Bool) -> Void)? = nil }
+extension EnvironmentValues {
+    /// told when a photo slider's drag starts, changes and ends: (dragging, Option held)
+    var sliderDrag: (@MainActor @Sendable (Bool, Bool) -> Void)? {
+        get { self[SliderDragKey.self] }
+        set { self[SliderDragKey.self] = newValue }
+    }
 }
 
 /// The number above a slider: looks like a label, click to type a value.

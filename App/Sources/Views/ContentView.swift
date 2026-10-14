@@ -358,8 +358,8 @@ struct ZoomableImage: View {
     var body: some View {
         GeometryReader { geo in
             let size = CGSize(width: image.width, height: image.height)
-            EDRImageView(image: image,
-                         overlay: model.imageIsHDR && model.showHeadroomOverlay ? model.headroomOverlay : nil,
+            EDRImageView(image: model.clippingImage ?? image,
+                         overlay: model.imageIsHDR && (model.showHeadroomOverlay || model.showsClipping) ? model.headroomOverlay : nil,
                          isHDR: model.imageIsHDR,
                          before: model.comparing ? model.beforeImage : nil,
                          split: model.compareSplit,

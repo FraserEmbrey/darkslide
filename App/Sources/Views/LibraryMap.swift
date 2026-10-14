@@ -348,10 +348,10 @@ struct LibraryMap: View {
             }
             .help("The zone the camera's clock was set to. Photos that record their own zone use that instead.")
             ParamSlider(label: "Clock correction", value: clockMinutes, defaultValue: 0, range: -60...60,
-                        isInteger: true, unit: "min", trackColors: nil, step: 1, ticks: [-30, 0, 30]) { clockMinutes = $0 }
+                        isInteger: true, unit: "min", trackColors: nil, step: 1, ticks: [-30, 0, 30], editsPhoto: false) { clockMinutes = $0 }
                 .help("If the camera's clock was fast or slow: compare a photo of a clock, or line a photo up with your phone's")
             ParamSlider(label: "Furthest from the track", value: maxGapMinutes, defaultValue: 30, range: 5...240,
-                        isInteger: true, unit: "min", trackColors: nil, step: 5, ticks: [30, 60, 120, 180]) { maxGapMinutes = $0 }
+                        isInteger: true, unit: "min", trackColors: nil, step: 5, ticks: [30, 60, 120, 180], editsPhoto: false) { maxGapMinutes = $0 }
                 .help("Photos taken further than this from a located photo are left alone")
             HStack(spacing: 6) {
                 if matchBusy { ProgressView().controlSize(.small) }

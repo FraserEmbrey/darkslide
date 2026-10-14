@@ -244,6 +244,8 @@ enum Presentation {
 
     /// Clearer labels than darktable's field descriptions, keyed "op.field".
     static let fieldLabels: [String: String] = [
+        "grain.scale": "Coarseness",
+        "grain.midtones_bias": "Mid-tones bias",
         "colorbalancergb.vibrance": "Vibrance",
         "colorbalancergb.contrast": "Contrast",
         "colorbalancergb.chroma_global": "Chroma",
@@ -323,6 +325,9 @@ enum Presentation {
     /// Tooltips for fields whose name alone doesn't say which way to move
     /// them, keyed "op.field". Restates darktable's own tooltips.
     static let fieldHelp: [String: String] = [
+        "grain.scale": "The grain's size, as a film speed: higher is coarser.",
+        "grain.strength": "How much grain.",
+        "grain.midtones_bias": "Keeps the grain to the mid-tones, as film does. Lower spreads it into the shadows and highlights.",
         "denoiseprofile.strength": "How much noise to remove. Lower it first if the photo looks smeared or waxy.",
         "denoiseprofile.overshooting": "Scales the noise the automatic method expects. Raise it if shadows stay noisy or colour noise remains, as happens in underexposed photos.",
         "denoiseprofile.shadows": "Lower to denoise dark areas harder; raise to leave them more alone.",
@@ -412,6 +417,13 @@ enum Presentation {
     }
 
     /// Units shown after slider values, keyed "op.field".
+    /// Fields shown in other units than darktable stores: the value shown is the
+    /// stored one times this. Grain's coarseness is stored divided by 213.2
+    /// (GRAIN_SCALE_FACTOR); darktable shows it as a film speed, 20 to 6400.
+    static let displayFactors: [String: Double] = [
+        "grain.scale": 213.2,
+    ]
+
     static let units: [String: String] = [
         "colorbalancergb.shadows_H": "°", "colorbalancergb.midtones_H": "°",
         "colorbalancergb.highlights_H": "°", "colorbalancergb.global_H": "°",
@@ -420,6 +432,7 @@ enum Presentation {
         "toneequal.blacks": "EV", "toneequal.shadows": "EV", "toneequal.midtones": "EV",
         "toneequal.highlights": "EV", "toneequal.whites": "EV", "toneequal.speculars": "EV",
         "exposure.exposure": "EV",
+        "grain.strength": "%", "grain.midtones_bias": "%",
         "exposure.deflicker_target_level": "EV",
         "exposure.deflicker_percentile": "%",
         "sigmoid.display_white_target": "%",

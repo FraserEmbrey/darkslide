@@ -16,11 +16,13 @@ struct FieldControl: View {
         switch field.kind {
         case .float, .int:
             if let range = Presentation.range(op: op, field: field) {
-                ParamSlider(label: label, value: field.value.number, defaultValue: field.defaultValue.number,
-                            range: range, isInteger: field.kind == .int,
+                // shown in its own units where darktable's GUI scales it
+                let k = Presentation.displayFactors["\(op).\(field.name)"] ?? 1
+                ParamSlider(label: label, value: field.value.number * k, defaultValue: field.defaultValue.number * k,
+                            range: range.lowerBound * k...range.upperBound * k, isInteger: field.kind == .int || k != 1,
                             unit: Presentation.units["\(op).\(field.name)"],
                             trackColors: Presentation.trackColors["\(op).\(field.name)"],
-                            clipping: Presentation.clippingOps.contains(op)) { onChange(.number($0)) }
+                            clipping: Presentation.clippingOps.contains(op)) { onChange(.number($0 / k)) }
             } else {
                 // no usable range (darktable left it unbounded): type the value
                 HStack {

@@ -224,25 +224,27 @@ struct CardTitle: View {
     let title: String
     @Binding var isExpanded: Bool
 
+    // a tap gesture rather than a Button: a button takes the mouse as soon as
+    // it's pressed, so a drag gesture on the title (reordering Essentials)
+    // would never see it move
     var body: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 12)
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 12)
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
         .accessibilityHint(isExpanded ? "Collapse" : "Expand")
+        .accessibilityAction { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }
     }
 }
 
@@ -630,7 +632,7 @@ struct SceneWhiteControls: View {
             ParamSlider(label: "Tint", value: c.tint, defaultValue: 0,
                         range: Illuminant.tintRange, isInteger: false, unit: nil,
                         trackColors: [.green, Color(red: 0.85, green: 0.3, blue: 0.85)]) { set(kelvin: c.kelvin, tint: $0) }
-            Text("The colour of the light in the scene. darktable corrects it here, in color calibration, rather than in white balance.")
+            Text("The colour of the light in the scene. darktable corrects it in color calibration, which adapts colours more accurately than scaling the raw channels (its raw white balance, left at camera reference).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -719,9 +721,9 @@ struct ToneEqualizerMacros: View {
         let shadows = value(Presentation.toneAnchors.shadows), highlights = value(Presentation.toneAnchors.highlights)
         VStack(alignment: .leading, spacing: 14) {
             ParamSlider(label: "Shadows", value: shadows, defaultValue: 0, range: -2...2, isInteger: false,
-                        unit: "EV", trackColors: nil) { apply(shadows: $0, highlights: highlights) }
+                        unit: "EV", trackColors: nil, clipping: true) { apply(shadows: $0, highlights: highlights) }
             ParamSlider(label: "Highlights", value: highlights, defaultValue: 0, range: -2...2, isInteger: false,
-                        unit: "EV", trackColors: nil) { apply(shadows: shadows, highlights: $0) }
+                        unit: "EV", trackColors: nil, clipping: true) { apply(shadows: shadows, highlights: $0) }
             HStack(alignment: .firstTextBaseline) {
                 Text(model.toneEqualizerIsFitted
                      ? "Brightens or darkens by exposure zone, with darktable's edge-aware mask so local contrast is kept."
@@ -1303,7 +1305,7 @@ struct LocalContrastControls: View {
     private func slider(_ label: String, _ field: String, scale: Double, offset: Double, range: ClosedRange<Double>,
                         defaultValue: Double, help: String) -> some View {
         ParamSlider(label: label, value: value(field) * scale + offset, defaultValue: defaultValue, range: range,
-                    isInteger: true, unit: scale == 1 ? "" : "%", trackColors: nil) {
+                    isInteger: true, unit: scale == 1 ? "" : "%", trackColors: nil, clipping: true) {
             model.setValue(.number(($0 - offset) / scale), module: module.key, field: field)
         }
         .help(help)
@@ -1358,7 +1360,7 @@ struct ExposureControls: View {
                     }
                     if let black = field("black") {
                         ParamSlider(label: "Black level correction", value: black.value.number * 100, defaultValue: 0,
-                                    range: -10...10, isInteger: false, unit: "%", trackColors: nil, step: 0.01) {
+                                    range: -10...10, isInteger: false, unit: "%", trackColors: nil, step: 0.01, clipping: true) {
                             model.setValue(.number(($0 / 100 * 10000).rounded() / 10000), module: module.key, field: "black")
                         }
                         Text("Lifts the deepest values so none are negative, which can happen with noisy shadows. It isn't a Blacks slider: pushed further it makes near-black colours go wrong. To darken or lift the blacks, use the tone equaliser's Shadows or the tone mapper's black target.")

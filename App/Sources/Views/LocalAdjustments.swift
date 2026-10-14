@@ -73,7 +73,7 @@ struct LocalAdjustmentsCard: View {
             }
             if selected, let ev = m.fields.first(where: { $0.name == "exposure" }) {
                 ParamSlider(label: "Exposure", value: ev.value.number, defaultValue: 0, range: -3...3,
-                            isInteger: false, unit: "EV", trackColors: nil) {
+                            isInteger: false, unit: "EV", trackColors: nil, clipping: true) {
                     model.setValue(.number(($0 * 100).rounded() / 100), module: m.key, field: "exposure")
                 }
                 HStack {

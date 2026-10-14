@@ -33,9 +33,9 @@ struct SDRVersionCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ParamSlider(label: "Brightness", value: model.sdrVersion.brightness, defaultValue: 0, range: -2...2,
-                            isInteger: false, unit: "EV", trackColors: nil) { model.sdrVersion.brightness = $0 }
+                            isInteger: false, unit: "EV", trackColors: nil, clipping: true) { model.sdrVersion.brightness = $0 }
                 ParamSlider(label: "Contrast", value: model.sdrVersion.contrast, defaultValue: 0, range: -1...1,
-                            isInteger: false, unit: nil, trackColors: nil) { model.sdrVersion.contrast = $0 }
+                            isInteger: false, unit: nil, trackColors: nil, clipping: true) { model.sdrVersion.contrast = $0 }
                 ParamSlider(label: "Saturation", value: model.sdrVersion.saturation, defaultValue: 0, range: -1...1,
                             isInteger: false, unit: nil, trackColors: nil) { model.sdrVersion.saturation = $0 }
                 if ExportSettings.load().sdrBase == .automatic {

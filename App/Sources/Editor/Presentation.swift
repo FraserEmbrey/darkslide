@@ -15,7 +15,7 @@ enum Presentation {
     static let defaultEssentials: [String] = [
         "lens",
         "exposure",
-        "channelmixerrgb",  // scene white: darktable sets it in color calibration, not white balance
+        "channelmixerrgb",  // white balance: darktable sets it in color calibration, not its white balance module
         "filmicrgb",
         "sigmoid",
         "agx",
@@ -95,10 +95,20 @@ enum Presentation {
         "channelmixerrgb.illum_led": ("illuminant", [5]),
     ]
 
+    /// Modules whose sliders show what clips on Option-drag: the ones that move
+    /// tones, where clipping is the thing to watch.
+    static let clippingOps: Set<String> = [
+        "exposure", "filmicrgb", "sigmoid", "agx", "basecurve", "toneequal", "shadhi",
+        "rgblevels", "levels", "bilat", "colorbalancergb", "highlights",
+    ]
+
     /// Names shown instead of darktable's, where its module does a familiar job
     /// under another name. Search still matches darktable's name.
     static let displayNames: [String: String] = [
-        "channelmixerrgb": "Scene white",
+        // the light's colour, set in color calibration as darktable intends; its
+        // own white balance module only scales the raw channels (camera reference)
+        "channelmixerrgb": "White balance",
+        "temperature": "Raw white balance",
         "toneequal": "Shadows and highlights",
         "rgbcurve": "RGB curve",
         "colorequal": "Hue curves",
@@ -127,8 +137,8 @@ enum Presentation {
         "hazeremoval": ["dehaze", "haze", "fog"],
         "colorbalancergb": ["saturation", "vibrance", "contrast", "colour grading", "color grading", "split toning", "brilliance"],
         "toneequal": ["shadows", "highlights", "dodge", "burn", "tone equaliser"],
-        "channelmixerrgb": ["white balance", "temperature", "tint", "colour calibration", "color calibration"],
-        "temperature": ["white balance", "temperature"],
+        "channelmixerrgb": ["white balance", "temperature", "tint", "scene white", "colour calibration", "color calibration"],
+        "temperature": ["raw white balance", "camera reference"],
         "denoiseprofile": ["noise", "noise reduction"],
         "lens": ["distortion", "vignetting", "chromatic aberration", "lens correction"],
         "ashift": ["perspective", "keystone", "straighten", "level"],

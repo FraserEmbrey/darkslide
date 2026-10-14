@@ -190,7 +190,7 @@ struct HDRDetailsCard: View {
                     if model.hdrLimitStops > 0 {
                         ParamSlider(label: "Peak", value: model.hdrLimitStops, defaultValue: 2, range: 0.5...4,
                                     isInteger: false, unit: "stops", trackColors: nil,
-                                    step: 0.5, ticks: [1, 2, 3, 4]) { model.hdrLimitStops = max($0, 0.5) }
+                                    step: 0.5, ticks: [1, 2, 3, 4], clipping: true) { model.hdrLimitStops = max($0, 0.5) }
                     }
 
                     HStack { Text("Preview a dimmer display"); Spacer(); Toggle("Preview a dimmer display", isOn: Binding(

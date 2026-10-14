@@ -15,7 +15,8 @@ struct FieldControl: View {
                 ParamSlider(label: label, value: field.value.number, defaultValue: field.defaultValue.number,
                             range: range, isInteger: field.kind == .int,
                             unit: Presentation.units["\(op).\(field.name)"],
-                            trackColors: Presentation.trackColors["\(op).\(field.name)"]) { onChange(.number($0)) }
+                            trackColors: Presentation.trackColors["\(op).\(field.name)"],
+                            clipping: Presentation.clippingOps.contains(op)) { onChange(.number($0)) }
             } else {
                 // no usable range (darktable left it unbounded): type the value
                 HStack {
@@ -100,8 +101,10 @@ struct ParamSlider: View {
     var step: Double? = nil
     /// values marked under the track
     var ticks: [Double] = []
-    /// false for sliders that don't edit the photo: no clipping view, no undo grouping
+    /// false for sliders that don't edit the photo: no undo grouping
     var editsPhoto = true
+    /// Option-drag shows what clips: for tone sliders, where clipping is what matters
+    var clipping = false
     let onChange: (Double) -> Void
 
     @State private var dragStart: Double?
@@ -186,7 +189,7 @@ struct ParamSlider: View {
                         let flags = NSEvent.modifierFlags
                         let fine = flags.contains(.shift)
                         // tell the editor before the value changes, so the change joins the drag's undo step
-                        if editsPhoto { sliderDrag?(true, flags.contains(.option)) }
+                        if editsPhoto { sliderDrag?(true, clipping && flags.contains(.option)) }
                         dragValue = clamp(dragValue + Double((g.location.x - lastX) / max(w, 1)) * span * (fine ? 0.1 : 1))
                         lastX = g.location.x
                         var v = dragValue
@@ -201,8 +204,8 @@ struct ParamSlider: View {
             .simultaneousGesture(TapGesture(count: 2).onEnded { onChange(defaultValue) })
         }
         .frame(height: 22)
-        .help(editsPhoto ? "Drag to adjust: hold Shift for fine control, Option to see what clips. Double-click to reset."
-                         : "Drag to adjust, hold Shift for fine control, double-click to reset")
+        .help(clipping ? "Drag to adjust: hold Shift for fine control, Option to see what clips. Double-click to reset."
+                       : "Drag to adjust, hold Shift for fine control, double-click to reset")
     }
 
     private var decimals: Int {

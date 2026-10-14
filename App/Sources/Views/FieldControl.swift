@@ -86,9 +86,11 @@ struct FieldControl: View {
 
 /// Photomator-style slider: label and value above a thin track, a white
 /// thumb, and a fill from the default value to the current one.
-/// Drag anywhere on the track to adjust (hold Shift for fine control, Option
-/// to see what clips), double-click the track or label to reset, click the
-/// value to type one. A whole drag is one undo step.
+/// Drag anywhere on the track to adjust (hold Option on tone sliders to see
+/// what clips), double-click the track or label to reset, click the value to
+/// type one. A whole drag is one undo step. For small changes: scroll
+/// sideways over it (a two-finger swipe), or use the arrow keys once it's been
+/// used (Shift for bigger steps). Vertical scrolling still scrolls the inspector.
 struct ParamSlider: View {
     let label: String
     let value: Double
@@ -97,7 +99,7 @@ struct ParamSlider: View {
     let isInteger: Bool
     let unit: String?
     let trackColors: [Color]?
-    /// snaps to multiples of this while dragging (Shift drags freely)
+    /// snaps to multiples of this while dragging
     var step: Double? = nil
     /// values marked under the track
     var ticks: [Double] = []
@@ -108,9 +110,7 @@ struct ParamSlider: View {
     let onChange: (Double) -> Void
 
     @State private var dragStart: Double?
-    /// the unsnapped value and pointer x so far in this drag: each movement
-    /// adds to it, at a tenth with Shift, so pressing or releasing Shift
-    /// mid-drag changes the speed from there instead of making the thumb jump
+    /// the unsnapped value so far in this drag
     @State private var dragValue: Double = 0
     @State private var lastX: CGFloat = 0
     /// While dragging, the thumb and number show this, not the model's value:
@@ -125,6 +125,11 @@ struct ParamSlider: View {
     private var shown: Double { liveValue ?? value }
     @State private var hovering = false
     @Environment(\.sliderDrag) private var sliderDrag
+    /// sideways scrolling over the slider, while the pointer is on it
+    @State private var scrollMonitor: Any?
+    @State private var scrollEnd: Task<Void, Never>?
+    /// a slider that's been dragged takes the arrow keys
+    @FocusState private var focused: Bool
 
     private var span: Double { range.upperBound - range.lowerBound }
 
@@ -141,6 +146,26 @@ struct ParamSlider: View {
                 if let unit { Text(unit).foregroundStyle(.secondary) }
             }
             track
+        }
+        // the arrow keys, once the slider has been dragged (Shift: 10% steps)
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+            let size = press.modifiers.contains(.shift) ? 0.1 : 0.01
+            nudge(by: press.key == .rightArrow ? size : -size)
+            return .handled
+        }
+        .onHover { inside in
+            if inside, scrollMonitor == nil {
+                scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { e in scrolled(e) ? nil : e }
+            } else if !inside, let m = scrollMonitor {
+                NSEvent.removeMonitor(m)
+                scrollMonitor = nil
+            }
+        }
+        .onDisappear {
+            if let m = scrollMonitor { NSEvent.removeMonitor(m); scrollMonitor = nil }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
@@ -180,6 +205,8 @@ struct ParamSlider: View {
                 Capsule()
                     .fill(.white)
                     .frame(width: 10, height: 20)
+                    // ringed while it takes the arrow keys
+                    .overlay(Capsule().strokeBorder(Color.accentColor, lineWidth: 2).opacity(focused ? 1 : 0))
                     .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
                     .scaleEffect(dragStart != nil ? 1.1 : hovering ? 1.05 : 1)
                     .offset(x: x(shown) - 5)
@@ -196,15 +223,12 @@ struct ParamSlider: View {
                             dragValue = value
                             lastX = g.startLocation.x
                         }
-                        let flags = NSEvent.modifierFlags
-                        let fine = flags.contains(.shift)
+                        if !focused { focused = true }
                         // tell the editor before the value changes, so the change joins the drag's undo step
-                        if editsPhoto { sliderDrag?(true, clipping && flags.contains(.option)) }
-                        dragValue = clamp(dragValue + Double((g.location.x - lastX) / max(w, 1)) * span * (fine ? 0.1 : 1))
+                        if editsPhoto { sliderDrag?(true, clipping && NSEvent.modifierFlags.contains(.option)) }
+                        dragValue = clamp(dragValue + Double((g.location.x - lastX) / max(w, 1)) * span)
                         lastX = g.location.x
-                        var v = dragValue
-                        if let step, !fine { v = clamp((v / step).rounded() * step) }
-                        send(isInteger ? v.rounded() : v)
+                        send(snapped(dragValue))
                     }
                     .onEnded { _ in
                         trailingSend?.cancel()
@@ -217,8 +241,44 @@ struct ParamSlider: View {
             .simultaneousGesture(TapGesture(count: 2).onEnded { onChange(defaultValue) })
         }
         .frame(height: 22)
-        .help(clipping ? "Drag to adjust: hold Shift for fine control, Option to see what clips. Double-click to reset."
-                       : "Drag to adjust, hold Shift for fine control, double-click to reset")
+        .help(clipping ? "Drag to adjust, with Option to see what clips. Swipe sideways or use the arrow keys for small steps. Double-click to reset."
+                       : "Drag to adjust. Swipe sideways or use the arrow keys for small steps. Double-click to reset.")
+    }
+
+    private func snapped(_ v: Double) -> Double {
+        var v = v
+        if let step { v = clamp((v / step).rounded() * step) }
+        return isInteger ? v.rounded() : v
+    }
+
+    /// Sideways scrolling nudges the value: a trackpad's two-finger swipe moves
+    /// it a little per point (about 0.15% of the range), a mouse wheel's
+    /// sideways click 1%. Fingers right, value up, whichever way scrolling
+    /// is set. Vertical scrolling is left to the inspector.
+    private func scrolled(_ event: NSEvent) -> Bool {
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        guard abs(dx) > abs(dy), dx != 0 else { return false }
+        let fingers = event.isDirectionInvertedFromDevice ? dx : -dx
+        let per = event.hasPreciseScrollingDeltas ? span * 0.0015 : span * 0.01
+        var next = clamp((liveValue ?? value) + Double(fingers) * per)
+        if isInteger { next = (liveValue ?? value) + (fingers > 0 ? 1 : -1); next = clamp(next) }
+        send(next)
+        // the last value goes in once scrolling stops
+        scrollEnd?.cancel()
+        scrollEnd = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, dragStart == nil else { return }
+            trailingSend?.cancel()
+            trailingSend = nil
+            if let v = liveValue { onChange(v) }
+            liveValue = nil
+        }
+        return true
+    }
+
+    private func nudge(by fraction: Double) {
+        let delta = isInteger ? (fraction > 0 ? 1 : -1) * max(1, (abs(fraction) * span).rounded()) : fraction * span
+        onChange(clamp(value + delta))
     }
 
     /// shows the value at once; passes it on now if 33 ms have gone by, else

@@ -35,6 +35,7 @@ actor Engine {
         try fm.createDirectory(at: support, withIntermediateDirectories: true)
         try fm.createDirectory(at: caches, withIntermediateDirectories: true)
 
+        Engine.removeOrphanFrames(in: caches)
         frameURL = caches.appendingPathComponent("frame-\(ProcessInfo.processInfo.processIdentifier).bin")
         self.onExit = onExit
 
@@ -50,6 +51,21 @@ actor Engine {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.standardError
+    }
+
+    /// Frames left by app processes that quit without stopping the engine
+    /// (a crash, a force quit, a test run): each is a full-size render.
+    private static func removeOrphanFrames(in caches: URL) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: caches.path) else { return }
+        for name in names where name.hasPrefix("frame-") {
+            let pid = name.dropFirst("frame-".count).prefix { $0.isNumber }
+            guard let id = Int32(pid), id != ProcessInfo.processInfo.processIdentifier else { continue }
+            // kill with no signal: fails with ESRCH when no such process
+            if kill(id, 0) == -1 && errno == ESRCH {
+                try? fm.removeItem(at: caches.appendingPathComponent(name))
+            }
+        }
     }
 
     /// darktable settings for the chosen GPU backend. Metal is MetalCL, which

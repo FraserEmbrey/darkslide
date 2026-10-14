@@ -15,7 +15,7 @@ Develop.app (Swift, SwiftUI)              darkroom-helper (C, links libdarktable
 
 - **Separate process.** darktable has a lot of global state and pulls in GTK's libraries. Keeping it in a helper keeps the Swift app clean, and if the engine crashes, the app restarts it and reopens the photo.
 - **Metal.** darktable's GPU code runs on Metal through MetalCL (`Engine/metalcl`): a library providing the 40 OpenCL functions darktable loads, running kernels that `Engine/metal/cl2metal.py` translates to Metal. darktable is unchanged; it loads MetalCL through its `opencl_library` setting. Its output matches Apple's OpenCL to within 1 level in 8 bits; renders are 15 to 25% faster, and kernels load in 0.02 s against 1.8 s. Settings › Graphics processing switches between Metal (default), Apple OpenCL and CPU only. Details and numbers are in `Engine/metal/README.md`.
-- **GPU.** darktable's OpenCL path is switched on (darktable leaves it off on macOS). On an M3 Pro with denoise, local contrast and diffuse or sharpen enabled, it is 4–5× faster than the CPU (about 0.75 s against 3–4 s per change at 2800 px), and the output matches the CPU's to within 0.04 levels on average. Apple's OpenCL is deprecated, so a Metal backend behind darktable's `dt_opencl_*` interface is the long-term plan.
+- **GPU.** darktable's OpenCL path is switched on (darktable leaves it off on macOS). On an M3 Pro with denoise, local contrast and diffuse or sharpen enabled, it is 4–5× faster than the CPU (about 0.75 s against 3–4 s per change at 2800 px), and the output matches the CPU's to within 0.04 levels on average. Apple's OpenCL is deprecated, which is why MetalCL (above) is now the default.
 - **Draft renders.** While a slider is dragged, frames render at half size; a full-size frame follows when edits pause.
 - **Warm pipeline.** The helper keeps the image and pipeline open between edits, and darktable's pipe cache means moving a slider only reruns the pipe from that module: about 50 ms per exposure change on a 24 MP raw at 2120 px, against 175 ms when the whole pipe reruns. On the GPU this needs Engine/patches/0003: darktable only copies GPU results back into the cache for the module focused in its interface, so headless nothing was cached until the helper started naming the module being edited.
 - **Generated controls.** Every darktable module publishes metadata for its settings (names, ranges, defaults, enum values). The helper sends that to the app, which builds sliders, pickers and toggles from it. Curves, masks and other array-valued settings are counted and listed as "needs a custom editor".
@@ -241,7 +241,7 @@ For faster iteration on the Swift side, `swift run` works if `DEVELOP_ENGINE` po
 | Path | What |
 | --- | --- |
 | `Engine/helper.c` | The headless engine and its protocol |
-| `Engine/patches/` | Changes to darktable itself (currently one: float output from screen pipes) |
+| `Engine/patches/` | Changes to darktable itself, listed in its README |
 | `App/Sources/Engine/` | Process management, wire types, HDR analysis |
 | `App/Sources/Editor/` | Editor state, edit coalescing, camera style matching, settings, presentation overrides |
 | `App/Sources/Views/` | SwiftUI views |
@@ -249,15 +249,11 @@ For faster iteration on the Swift side, `swift run` works if `DEVELOP_ENGINE` po
 
 ## Known limits
 
-- **Homebrew at runtime:** The engine links Homebrew's dylibs in `/opt/homebrew`, so the app only runs on Macs with the formulae above. Bundling them properly (rewriting install names, as darktable's own macOS packaging does) is the step needed before sharing it.
+- **Not notarised:** The app is signed with a development identity only, so on another Mac Gatekeeper blocks it until it's allowed in System Settings › Privacy & Security.
 - **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
 - **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
 - **White balance:** The temperature module stores RGB multipliers. Kelvin and tint are worked out in darktable's GUI code, so they need a custom editor.
 - **Not supported yet:** masks other than linear and radial gradients (paths, brushes, parametric masks), and local adjustments other than exposure.
-
-## Licence
-
-GPL-3.0-or-later. It links darktable, which is GPL, so the app as a whole is too.
 
 ## Licence
 
@@ -280,6 +276,8 @@ The engine now links 16 Homebrew libraries rather than 39: the GLib family (GLib
 - **What's copied:** the 16 above, plus the 7 they use themselves (PCRE2, Brotli, inih, zstd, xz), 23 in all, about 12 MB. They go into the engine's `lib/darktable` under the names they're referred to by, each with an `@rpath` install name and every reference pointed at it. The helper no longer searches `/opt/homebrew/lib`. Lensfun's lens database goes into `share/lensfun`, where darktable looks for it beside its own data.
 - **Signing:** changing a library breaks its signature. install_name_tool only re-signs what the linker signed, and macOS kills a process that loads a library with a broken signature (exit 137), so the script signs every binary it changes again.
 - **Tested without Homebrew:** the engine run under `sandbox-exec` with all reads of `/opt/homebrew` denied opens raws, finds lenses in the bundled database, renders and exports.
+- **Any Apple silicon Mac:** darktable is built with `BINARY_PACKAGE_BUILD`, so it targets generic arm64 rather than `-march=native`, which would tie it to the build Mac's chip generation.
+- **No build paths:** darktable builds with debug info, and OpenMP and `__FILE__` put source paths into the binaries. The engine build maps the checkout's path away (`-ffile-prefix-map`), the bundle step strips the debug map, and it fails if any binary still contains the home folder.
 - **Size:** the app is 57 MB.
 
 The engine's old frame and watermark support (darktable's modules through an export style) is gone, as it needed Cairo; the app draws them.

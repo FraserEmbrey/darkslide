@@ -19,6 +19,9 @@ struct InspectorPanel: Identifiable {
     static let all: [InspectorPanel] = [
         InspectorPanel(id: "histogram", title: "Histogram", icon: "chart.bar.xaxis", placement: .pinned,
                        applies: { $0.url != nil }, content: { AnyView(PinnedHistogram()) }),
+        // the decoder's own settings first: they come before everything darktable does
+        InspectorPanel(id: "appleRaw", title: "Apple RAW", icon: "camera.aperture", placement: .cards,
+                       applies: { !$0.appleRawControls.isEmpty }, content: { AnyView(AppleRawCard()) }),
         // the SDR card before the HDR one, so switching views with its Show button
         // doesn't move it when the HDR card comes and goes
         InspectorPanel(id: "sdrVersion", title: "SDR Version", icon: "sun.min", placement: .cards,

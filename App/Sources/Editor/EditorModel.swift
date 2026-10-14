@@ -43,6 +43,7 @@ final class EditorModel {
     private(set) var hasUnsavedChanges = false
 
     private static var testLibraryRan = false
+    private static var appleRawTested = false
     private static var decoderSwitchTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
@@ -71,6 +72,12 @@ final class EditorModel {
 
     /// which raw decoder read the open photo: "darktable" or "Apple RAW 9" etc.
     private(set) var decoderInUse: String?
+    /// the Apple raw engine's controls for the open photo, when it decoded it (else empty)
+    private(set) var appleRawControls: [AppleRawControl] = []
+    /// the photo's changes to them, and the decoder's lens correction default (nil if none)
+    private(set) var appleRawSettings = AppleRawSettings()
+    private(set) var appleRawLensDefault: Bool?
+    @ObservationIgnored private var appleRawDecode: Task<Void, Never>?
     /// Apple raw engine versions offered for the open raw, newest first
     private(set) var appleDecoderVersions: [String] = []
     private(set) var canDecodeWithApple = false
@@ -676,6 +683,8 @@ final class EditorModel {
             decodedTIFF = nil
             openedAsHDR = false
             decoderInUse = nil
+            appleRawControls = []
+            appleRawLensDefault = nil
             let reply: OpenReply
             let isRaw = UTType(filenameExtension: url.pathExtension)?.conforms(to: .rawImage) ?? false
             if !isRaw, await Task.detached(operation: { AppleRawFallback.isHDR(url) }).value {
@@ -838,6 +847,30 @@ final class EditorModel {
             if UserDefaults.standard.bool(forKey: "SwitchDecoderToApple"), !Self.decoderSwitchTested {
                 Self.decoderSwitchTested = true
                 Task { @MainActor in try? await Task.sleep(for: .seconds(5)); await setRawDecoder(.apple(nil)) }
+            }
+            // TestAppleRaw: launch argument (-TestAppleRaw YES) for testing, once: decodes
+            // with Apple's engine, raises its exposure and noise reduction, logs the
+            // decode each time, then puts the photo back on darktable's decoder
+            if UserDefaults.standard.bool(forKey: "TestAppleRaw") {
+                @MainActor func log(_ s: String) {
+                    FileHandle.standardError.write("Develop apple raw test: \(s): decoder \(decoderInUse ?? "-"), tiff \(decodedTIFF?.lastPathComponent ?? "-"), controls \(appleRawControls.map { "\($0.id)=\(String(format: "%.2f", $0.defaultValue))" }), settings \(appleRawSettings.values), lens \(appleRawLensDefault.map { "\($0)" } ?? "-")\n".data(using: .utf8)!)
+                }
+                log("opened")
+                if !Self.appleRawTested {
+                    Self.appleRawTested = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(3))
+                        await setRawDecoder(.apple(nil))
+                        try? await Task.sleep(for: .seconds(8))
+                        setAppleRaw("exposure", to: 1)
+                        setAppleRaw("luminanceNR", to: 0.8)
+                        try? await Task.sleep(for: .seconds(10))
+                        log("after change")
+                        resetAppleRaw()
+                        try? await Task.sleep(for: .seconds(8))
+                        await setRawDecoder(.darktable)
+                    }
+                }
             }
             // SwitchToHDR: launch argument (-SwitchToHDR YES) for testing, switches to HDR after opening
             if UserDefaults.standard.bool(forKey: "SwitchToHDR") {
@@ -2545,15 +2578,50 @@ extension EditorModel {
     fileprivate func openWithApple(_ url: URL, version: String?, engine: Engine) async throws -> OpenReply {
         statusNote = "Decoding with macOS…"
         defer { statusNote = nil }
+        let settings = AppleRawSettings.stored(for: url)
         let decoded = try await Task.detached(priority: .userInitiated) {
-            try AppleRawFallback.decodedTIFF(for: url, version: version)
+            try AppleRawFallback.decodedTIFF(for: url, version: version, settings: settings)
         }.value
+        appleRawSettings = settings
+        appleRawControls = decoded.controls
+        appleRawLensDefault = decoded.lensCorrection
         AppleRawFallback.sidecarToDecoded(original: url, decoded: decoded.url, raw: true)
         let reply = try await engine.open(decoded.url, hdrSource: true)
         decodedTIFF = decoded.url
         decoderInUse = AppleRawFallback.versionName(decoded.version)
         openedAsHDR = true
         return reply
+    }
+
+    /// Apple raw engine settings (the Apple RAW card): a change is kept for
+    /// the photo and, once the slider rests, the raw is decoded again with it;
+    /// darktable's edits carry over through the sidecar.
+    func setAppleRaw(_ key: String, to value: Double?) {
+        if let value { appleRawSettings.values[key] = value } else { appleRawSettings.values[key] = nil }
+        appleRawChanged()
+    }
+
+    func setAppleRawLensCorrection(_ on: Bool?) {
+        appleRawSettings.lensCorrection = on
+        appleRawChanged()
+    }
+
+    func resetAppleRaw() {
+        appleRawSettings = AppleRawSettings()
+        appleRawChanged()
+    }
+
+    private func appleRawChanged() {
+        guard let photo = url else { return }
+        appleRawSettings.store(for: photo)
+        appleRawDecode?.cancel()
+        appleRawDecode = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, url == photo else { return }
+            await settleEdits()
+            if hasUnsavedChanges { await save() }
+            await reopen()
+        }
     }
 
     var rawDecoderChoice: RawDecoderChoice {

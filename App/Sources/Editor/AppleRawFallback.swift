@@ -31,9 +31,12 @@ enum AppleRawFallback {
     }
 
     /// The decoded TIFF, made if it's missing or older than the raw, with
-    /// the decoder version macOS used. `version` asks for one of
-    /// decoderVersions(); nil is the newest.
-    static func decodedTIFF(for url: URL, version: String? = nil) throws -> (url: URL, version: String) {
+    /// the decoder version macOS used, the decoder's own controls for this
+    /// photo (with the camera's defaults) and its lens correction default (nil
+    /// if it has none). `version` asks for one of decoderVersions(); nil is
+    /// the newest. `settings` are the photo's changes to those controls.
+    static func decodedTIFF(for url: URL, version: String? = nil, settings: AppleRawSettings = AppleRawSettings())
+        throws -> (url: URL, version: String, controls: [AppleRawControl], lensCorrection: Bool?) {
         guard let filter = CIRAWFilter(imageURL: url) else {
             throw EngineError(message: "Neither darktable nor macOS can decode \(url.lastPathComponent).")
         }
@@ -44,13 +47,17 @@ enum AppleRawFallback {
             filter.decoderVersion = CIRAWDecoderVersion(rawValue: wanted)
         }
         let used = filter.decoderVersion.rawValue
-        let tiff = try cacheURL(for: url, suffix: "rawhdr\(used.isEmpty || used == "None" ? "" : used)")
-        if isFresh(tiff, for: url) { return (tiff, used) }
+        // read before the settings go in, so they're the camera's own
+        let controls = AppleRawSettings.controls(for: filter)
+        let lens = filter.isLensCorrectionSupported ? filter.isLensCorrectionEnabled : nil
+        let tiff = try cacheURL(for: url, suffix: "rawhdr\(used.isEmpty || used == "None" ? "" : used)\(settings.cacheSuffix)")
+        if isFresh(tiff, for: url) { return (tiff, used, controls, lens) }
         // Apple's own rendering, as Photos shows it: darktable has no tone
         // mapper for a decoded image, and a scene-referred decode looks flat
         // and too bright without one (a ProRAW's +3 EV baseline exposure
-        // relies on its tone curve and local tone map)
-        filter.extendedDynamicRangeAmount = 1
+        // relies on its tone curve and local tone map). The HDR amount is 1
+        // unless the photo's settings change it.
+        settings.apply(to: filter)
         guard let image = filter.outputImage else {
             throw EngineError(message: "macOS couldn't decode \(url.lastPathComponent).")
         }
@@ -62,7 +69,7 @@ enum AppleRawFallback {
             throw EngineError(message: "Neither darktable nor macOS can decode \(url.lastPathComponent). Export it as DNG or TIFF from the camera maker's software (Phocus, for Hasselblad) and open that.")
         }
         try writeTIFF(image, to: tiff, format: .RGBAh, space: space, context: context)
-        return (tiff, used)
+        return (tiff, used, controls, lens)
     }
 
     /// how a decoder version reads in the interface

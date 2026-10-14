@@ -50,6 +50,19 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Auto-tune filmic for new photos", isOn: $model.autoTuneForNewPhotos)
+                Picker("Colour for new photos", selection: $model.newPhotoColour) {
+                    ForEach(NewPhotoColour.allCases) { Text($0.title).tag($0) }
+                }
+                Picker("Noise reduction for new photos", selection: $model.noiseReductionFromISO) {
+                    Text("Off").tag(0)
+                    ForEach([400, 800, 1600, 3200], id: \.self) { Text("From ISO \($0)").tag($0) }
+                }
+            } footer: {
+                Text("darktable starts a photo with no colour and filmic set for an average scene, which looks flat next to a camera JPEG. Auto-tune sets filmic's white and black from the photo; the colour is darktable's basic colorfulness preset (skipped when a camera style adds its own); noise reduction is darktable's profiled denoise, measured for each camera, for raws at or above that ISO.")
+            }
+
+            Section {
                 Picker("Camera styles", selection: $model.cameraStyleMode) {
                     ForEach(CameraStyleMode.allCases) { Text($0.title).tag($0) }
                 }

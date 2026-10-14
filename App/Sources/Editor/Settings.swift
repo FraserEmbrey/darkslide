@@ -72,6 +72,36 @@ enum SettingsKey {
     static let autoExposure = "AutoExposureForNewPhotos"
     static let lensCorrection = "LensCorrectionForNewPhotos"
     static let hdrLimitStops = "HDRLimitStops"
+    static let autoTuneForNewPhotos = "AutoTuneForNewPhotos"
+    static let newPhotoColour = "NewPhotoColour"
+    static let noiseReductionFromISO = "NoiseReductionFromISO"
+}
+
+/// darktable's colour balance rgb "basic colorfulness" presets, for new photos:
+/// darktable's own defaults add no colour, which looks flat next to a camera JPEG.
+enum NewPhotoColour: String, CaseIterable, Identifiable {
+    case none, standard, naturalSkin, vibrant
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "None"
+        case .standard: "Standard"
+        case .naturalSkin: "Natural skin"
+        case .vibrant: "Vibrant"
+        }
+    }
+
+    /// the preset's title as darktable shows it
+    var presetTitle: String? {
+        switch self {
+        case .none: nil
+        case .standard: "basic colorfulness | standard"
+        case .naturalSkin: "basic colorfulness | natural skin"
+        case .vibrant: "basic colorfulness | vibrant colors"
+        }
+    }
 }
 
 /// What surrounds the photo. A neutral grey avoids the simultaneous-contrast

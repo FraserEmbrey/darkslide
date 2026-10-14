@@ -265,6 +265,19 @@ final class EditorModel {
     var autoExposureForNewPhotos = UserDefaults.standard.bool(forKey: SettingsKey.autoExposure) {
         didSet { UserDefaults.standard.set(autoExposureForNewPhotos, forKey: SettingsKey.autoExposure) }
     }
+    /// filmic's auto-tune (its white and black from the photo) on new photos; on unless switched off
+    var autoTuneForNewPhotos = UserDefaults.standard.object(forKey: SettingsKey.autoTuneForNewPhotos) != nil
+        ? UserDefaults.standard.bool(forKey: SettingsKey.autoTuneForNewPhotos) : true {
+        didSet { UserDefaults.standard.set(autoTuneForNewPhotos, forKey: SettingsKey.autoTuneForNewPhotos) }
+    }
+    var newPhotoColour = NewPhotoColour(rawValue: UserDefaults.standard.string(forKey: SettingsKey.newPhotoColour) ?? "") ?? .naturalSkin {
+        didSet { UserDefaults.standard.set(newPhotoColour.rawValue, forKey: SettingsKey.newPhotoColour) }
+    }
+    /// darktable's profiled denoise on new raws at this ISO and above; 0 is off
+    var noiseReductionFromISO = UserDefaults.standard.object(forKey: SettingsKey.noiseReductionFromISO) != nil
+        ? UserDefaults.standard.integer(forKey: SettingsKey.noiseReductionFromISO) : 800 {
+        didSet { UserDefaults.standard.set(noiseReductionFromISO, forKey: SettingsKey.noiseReductionFromISO) }
+    }
     var gpuBackend = GPUBackend(rawValue: UserDefaults.standard.string(forKey: SettingsKey.gpuBackend) ?? "") ?? .metal {
         didSet {
             guard gpuBackend != oldValue else { return }
@@ -824,7 +837,8 @@ final class EditorModel {
                     @MainActor func log(_ s: String) {
                         let on = modules.filter { $0.enabled && ["basecurve", "filmicrgb", "sigmoid", "agx", "exposure", "toneequal", "colorbalancergb", "rgbcurve", "tonecurve", "denoiseprofile", "highlights"].contains($0.op) }
                             .map { m in "\(m.op)\(m.op == "exposure" ? "=" + String(format: "%.2f", m.fields.first { $0.name == "exposure" }?.value.number ?? 0) : "")" }
-                        FileHandle.standardError.write("Develop auto test: \(s): on \(on), styles \(appliedStyles)\n".data(using: .utf8)!)
+                        let filmic = modules.first { $0.op == "filmicrgb" }.map { m in ["white_point_source", "black_point_source", "contrast", "latitude"].compactMap { n in m.fields.first { $0.name == n }.map { "\(n)=\(String(format: "%.2f", $0.value.number))" } } } ?? []
+                        FileHandle.standardError.write("Develop auto test: \(s): on \(on), styles \(appliedStyles), filmic \(filmic)\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(3))
                     log("opened")
@@ -1449,7 +1463,8 @@ final class EditorModel {
     }
 
     /// Settings Develop applies to a photo without an edit: lens correction,
-    /// optionally automatic exposure, and the camera style per the settings.
+    /// optionally automatic exposure, the camera style per the settings, a
+    /// basic colour preset, noise reduction at high ISO and filmic's auto-tune.
     /// a DNG's BaselineExposure (EV), if it has one
     nonisolated static func dngBaselineExposure(_ url: URL) -> Double? {
         guard url.pathExtension.lowercased() == "dng",
@@ -1460,10 +1475,13 @@ final class EditorModel {
     }
 
     private func applyNewPhotoDefaults() async {
-        if lensCorrectionForNewPhotos, let lens = modules.first(where: { $0.op == "lens" }), !lens.enabled {
+        if lensCorrectionForNewPhotos, let lens = modules.firstIndex(where: { $0.op == "lens" }), !modules[lens].enabled {
             // darktable picks the camera's embedded correction data if the raw
-            // has it (Sony, Fujifilm, Olympus...), otherwise the Lensfun database
-            setEnabled(true, module: lens.key)
+            // has it (Sony, Fujifilm, Olympus...), otherwise the Lensfun database.
+            // Awaited, unlike setEnabled: a later step (auto-tune, a preset)
+            // takes the engine's module list, which must have it.
+            try? await engine?.enable(module: modules[lens].key, on: true)
+            modules[lens].enabled = true
         }
         if let url, decoderInUse == "darktable", sensor == "linear", let baseline = Self.dngBaselineExposure(url), abs(baseline) > 0.05,
            let exposure = modules.first(where: { $0.op == "exposure" }),
@@ -1484,6 +1502,38 @@ final class EditorModel {
             case .off: break
             }
         }
+        // colour, unless a camera style brought its own
+        if appliedStyles.isEmpty, let title = newPhotoColour.presetTitle,
+           let balance = modules.first(where: { $0.op == "colorbalancergb" }),
+           let preset = presets(for: "colorbalancergb").first(where: { $0.title == title }), let engine {
+            await settleEdits()
+            if let updated = try? await engine.applyPreset(preset.name, module: balance.key) { modules = updated }
+        }
+        // the D80's CCD and other older sensors band and speckle when pushed;
+        // Lightroom hides it with noise reduction that's always on
+        if noiseReductionFromISO > 0, sensor != "linear", decodedTIFF == nil, let url,
+           let iso = await Task.detached(operation: { Self.isoSpeed(url) }).value, iso >= noiseReductionFromISO,
+           let denoise = modules.firstIndex(where: { $0.op == "denoiseprofile" }), !modules[denoise].enabled, let engine {
+            // awaited, not setEnabled's background task: the auto-tune below
+            // takes the engine's module list, which must have it
+            await settleEdits()
+            try? await engine.enable(module: modules[denoise].key, on: true)
+            modules[denoise].enabled = true
+        }
+        // last, once exposure and the style are in: filmic's white and black from the photo
+        if autoTuneForNewPhotos, modules.contains(where: { $0.op == "filmicrgb" && $0.enabled }) {
+            await settleEdits()
+            await autoTuneFilmic()
+        }
+    }
+
+    /// the photo's ISO from its EXIF, if it has one
+    nonisolated static func isoSpeed(_ url: URL) -> Int? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
+              let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first else { return nil }
+        return iso
     }
 
     /// Back to the photo as darktable would first show it, plus Develop's

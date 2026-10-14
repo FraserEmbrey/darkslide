@@ -440,6 +440,10 @@ final class EditorModel {
         zoomCenter = CGPoint(x: min(max(nx, 0), 1), y: min(max(ny, 0), 1))
     }
     private var openWhenReady: URL?
+    /// the frame count when an opening preview was shown; a render moves it on
+    private var openingPreviewFrame: Int?
+    /// counts photos opened, so a slow preview never lands on the next photo
+    private var openingPreviewToken = 0
     private var restarting = false
     private var restartPending = false
 
@@ -455,6 +459,34 @@ final class EditorModel {
     /// recent full-resolution render times, to decide whether drafts are needed
     private var fullRenderMs: Double = 0
     private var framesSinceOpen = 0
+
+    /// Shows something at once while darktable opens a photo: the stored
+    /// render or the camera's preview at thumbnail size, then the camera's
+    /// preview at screen size (see `Library.openingPreview`). Each stage only
+    /// shows if darktable's first render hasn't arrived yet.
+    private func showOpeningPreview(for url: URL) {
+        image = nil
+        imageIsHDR = false
+        imageIsZoomed = false
+        let frame = frameID
+        openingPreviewFrame = nil
+        openingPreviewToken += 1
+        let token = openingPreviewToken
+        let pixels = canvasPixels
+        Task {
+            for quick in [true, false] {
+                guard let preview = await Task.detached(priority: .userInitiated, operation: {
+                    Library.openingPreview(for: url, quick: quick, maxPixels: pixels)
+                }).value else { continue }
+                guard openingPreviewToken == token, frameID == frame else { return }
+                image = preview
+                openingPreviewFrame = frame
+                if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+                    FileHandle.standardError.write("Develop opening preview \(quick ? "quick" : "screen") \(preview.width)x\(preview.height)\n".data(using: .utf8)!)
+                }
+            }
+        }
+    }
 
     // MARK: Engine lifecycle
 
@@ -601,6 +633,7 @@ final class EditorModel {
         await leaveCurrentPhoto()
         isOpening = true
         defer { isOpening = false }
+        showOpeningPreview(for: url)
         // stay in the folder or collection being worked through if it has this photo
         // (a Photos original's cache folder is never shown)
         if openingPhotosAsset == nil, !library.contains(url) { library.show(folder: url.deletingLastPathComponent()) }
@@ -1101,7 +1134,8 @@ final class EditorModel {
             panBackdrop = nil
             selectedLocal = nil
             hasUnsavedChanges = false
-            image = nil
+            // the opening preview stays until the first render replaces it
+            if openingPreviewFrame != frameID { image = nil }
             beforeImage = nil
             beforeKey = ""
             hdrAnalysis = nil

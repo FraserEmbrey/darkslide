@@ -472,6 +472,24 @@ final class Library {
 
     // MARK: Thumbnail sources
 
+    /// What the canvas shows while a photo opens, before darktable's first
+    /// render. `quick` is the stored render of a photo edited here, else the
+    /// camera's preview at thumbnail size; otherwise the camera's preview at
+    /// screen size. A photo with a sidecar but no stored render (edited in
+    /// darktable) gets nothing: the camera's look would misstate its edits.
+    nonisolated static func openingPreview(for url: URL, quick: Bool, maxPixels: Int) -> CGImage? {
+        if let stored = cachedRender(for: url) { return quick ? stored : nil }
+        if FileManager.default.fileExists(atPath: url.path + ".xmp") { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            // the embedded preview only: decoding the raw itself is darktable's job
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: !rawExtensions.contains(url.pathExtension.lowercased()),
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: quick ? thumbnailPixels : maxPixels,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
     nonisolated private static func embeddedPreview(for url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [

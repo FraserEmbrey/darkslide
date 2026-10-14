@@ -33,5 +33,9 @@ LENSFUN="$(brew --prefix lensfun)"
 compile="$compile -I$LENSFUN/include/lensfun"
 link="$link -L$LENSFUN/lib -llensfun"
 
+# GTK's headers include ATK's, which Homebrew has since moved into at-spi2-core
+# (darktable's build still names the old atk path)
+compile="$compile -I$(brew --prefix at-spi2-core)/include/atk-1.0"
+
 (cd "$BUILD" && eval "$compile" && eval "$link")
 echo "built $OUT"

@@ -252,6 +252,20 @@ struct CanvasView: View {
             .overlay(alignment: .bottomLeading) {
                 if model.url != nil { ZoomChip().padding(12) }
             }
+            .overlay(alignment: .top) {
+                // what the Option-drag clipping view shows
+                if model.showsClipping {
+                    Text(model.imageIsHDR
+                         ? "Showing what's brighter than this display"
+                         : "Clipped highlights show in colour or white, clipped shadows in black. The rest is grey.")
+                        .font(.callout)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 12)
+                        .transition(.opacity)
+                }
+            }
         }
         .overlay(alignment: .bottom) {
             if model.showExportDone, let file = model.lastExport {

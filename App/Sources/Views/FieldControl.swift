@@ -105,6 +105,11 @@ struct ParamSlider: View {
     let onChange: (Double) -> Void
 
     @State private var dragStart: Double?
+    /// the unsnapped value and pointer x so far in this drag: each movement
+    /// adds to it, at a tenth with Shift, so pressing or releasing Shift
+    /// mid-drag changes the speed from there instead of making the thumb jump
+    @State private var dragValue: Double = 0
+    @State private var lastX: CGFloat = 0
     @State private var hovering = false
     @Environment(\.sliderDrag) private var sliderDrag
 
@@ -173,12 +178,18 @@ struct ParamSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { g in
-                        if dragStart == nil { dragStart = value }
+                        if dragStart == nil {
+                            dragStart = value
+                            dragValue = value
+                            lastX = g.startLocation.x
+                        }
                         let flags = NSEvent.modifierFlags
                         let fine = flags.contains(.shift)
                         // tell the editor before the value changes, so the change joins the drag's undo step
                         if editsPhoto { sliderDrag?(true, flags.contains(.option)) }
-                        var v = clamp(dragStart! + Double(g.translation.width / max(w, 1)) * span * (fine ? 0.1 : 1))
+                        dragValue = clamp(dragValue + Double((g.location.x - lastX) / max(w, 1)) * span * (fine ? 0.1 : 1))
+                        lastX = g.location.x
+                        var v = dragValue
                         if let step, !fine { v = clamp((v / step).rounded() * step) }
                         onChange(isInteger ? v.rounded() : v)
                     }

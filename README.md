@@ -113,7 +113,7 @@ Edit › Undo and Redo (⌘Z, ⇧⌘Z) step darktable's history position back an
 
 ### Sliders
 
-Drag anywhere on the track. Shift gives fine control (a tenth of the speed). Option shows what clips while you drag, as Lightroom's Option-drag does, for both ends at once: on a grey ground, highlights clipped in a channel show in its colour (white where all three clip) and shadows in its complement (black where all three clip). `Clipping.swift` makes it from the frame on screen, once per frame. In HDR it shows the headroom overlay instead. Double-click the track or label to reset; click the value to type one.
+Drag anywhere on the track. Shift gives fine control (a tenth of the speed) from the moment it's pressed, so the thumb never jumps. Option shows what clips while you drag, as Lightroom's Option-drag does, for both ends at once: on a grey ground, highlights clipped in a channel show in its colour (white where all three clip) and shadows in its complement (black where all three clip). `Clipping.swift` makes it from the frame on screen, once per frame. A caption over the photo says what the colours mean. In HDR it shows the headroom overlay instead. Double-click the track or label to reset; click the value to type one.
 
 ### Inspector
 

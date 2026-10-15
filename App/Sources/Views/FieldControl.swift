@@ -18,11 +18,17 @@ struct FieldControl: View {
             if let range = Presentation.range(op: op, field: field) {
                 // shown in its own units where darktable's GUI scales it
                 let k = Presentation.displayFactors["\(op).\(field.name)"] ?? 1
+                if Presentation.filmSpeedFields.contains("\(op).\(field.name)") {
+                    FilmSpeedSlider(label: label, iso: field.value.number * k, defaultISO: field.defaultValue.number * k) {
+                        onChange(.number($0 / k))
+                    }
+                } else {
                 ParamSlider(label: label, value: field.value.number * k, defaultValue: field.defaultValue.number * k,
                             range: range.lowerBound * k...range.upperBound * k, isInteger: field.kind == .int || k != 1,
                             unit: Presentation.units["\(op).\(field.name)"],
                             trackColors: Presentation.trackColors["\(op).\(field.name)"],
                             clipping: Presentation.clippingOps.contains(op)) { onChange(.number($0 / k)) }
+                }
             } else {
                 // no usable range (darktable left it unbounded): type the value
                 HStack {
@@ -113,7 +119,16 @@ struct ParamSlider: View {
     var editsPhoto = true
     /// Option-drag shows what clips: for tone sliders, where clipping is what matters
     var clipping = false
+    /// how the number reads, where the track works in other units
+    var readout: Readout? = nil
     let onChange: (Double) -> Void
+
+    /// The number shown for a track value, and back: ISO 1600 on a track in stops.
+    struct Readout {
+        let prefix: String?
+        let shown: (Double) -> Double
+        let value: (Double) -> Double
+    }
 
     @State private var dragStart: Double?
     /// the unsnapped value so far in this drag
@@ -148,7 +163,14 @@ struct ParamSlider: View {
                 Text(label)
                     .onTapGesture(count: 2) { onChange(defaultValue) }
                 Spacer()
-                ValueField(value: shown, isInteger: isInteger, decimals: decimals, onCommit: onChange)
+                if let readout {
+                    if let prefix = readout.prefix { Text(prefix).foregroundStyle(.secondary) }
+                    ValueField(value: readout.shown(shown), isInteger: true, decimals: 0, grouping: false,
+                               onCommit: { onChange(clamp(readout.value($0))) })
+                        .fixedSize()
+                } else {
+                    ValueField(value: shown, isInteger: isInteger, decimals: decimals, onCommit: onChange)
+                }
                 if let unit { Text(unit).foregroundStyle(.secondary) }
             }
             track
@@ -175,7 +197,7 @@ struct ParamSlider: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
-        .accessibilityValue(Text(value, format: .number.precision(.fractionLength(0...decimals))))
+        .accessibilityValue(Text(readout?.shown(value) ?? value, format: .number.precision(.fractionLength(0...(readout == nil ? decimals : 0)))))
         .accessibilityAdjustableAction { direction in
             let step = isInteger ? 1 : span / 100
             onChange(clamp(value + (direction == .increment ? step : -step)))
@@ -331,11 +353,13 @@ private struct ValueField: View {
     let value: Double
     let isInteger: Bool
     let decimals: Int
+    /// thousands separators: off for film speeds, which read ISO 1600
+    var grouping = true
     let onCommit: (Double) -> Void
 
     var body: some View {
         TextField("Value", value: Binding(get: { shown }, set: { onCommit(isInteger ? $0.rounded() : $0) }),
-                  format: .number.precision(.fractionLength(0...max(decimals, 0))))
+                  format: .number.precision(.fractionLength(0...max(decimals, 0))).grouping(grouping ? .automatic : .never))
             .textFieldStyle(.plain)
             .labelsHidden()
             .multilineTextAlignment(.trailing)
@@ -384,6 +408,25 @@ struct DescribedPicker: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+/// A film speed slider, as darktable's grain coarseness: in stops along the
+/// track, snapping to thirds, reading ISO 1600.
+struct FilmSpeedSlider: View {
+    let label: String
+    let iso: Double
+    let defaultISO: Double
+    let onChange: (Double) -> Void
+
+    var body: some View {
+        ParamSlider(label: label, value: FilmSpeed.stops(iso), defaultValue: FilmSpeed.stops(defaultISO),
+                    range: FilmSpeed.stops(FilmSpeed.range.lowerBound)...FilmSpeed.stops(FilmSpeed.range.upperBound),
+                    isInteger: false, unit: nil, trackColors: nil, step: 1.0 / 3,
+                    ticks: [100, 400, 1600].map(FilmSpeed.stops),
+                    readout: .init(prefix: "ISO", shown: { FilmSpeed.iso(stops: $0) }, value: FilmSpeed.stops)) {
+            onChange(FilmSpeed.iso(stops: $0))
         }
     }
 }

@@ -244,7 +244,7 @@ enum Presentation {
 
     /// Clearer labels than darktable's field descriptions, keyed "op.field".
     static let fieldLabels: [String: String] = [
-        "grain.scale": "Coarseness",
+        "grain.scale": "Film speed",
         "grain.midtones_bias": "Mid-tones bias",
         "colorbalancergb.vibrance": "Vibrance",
         "colorbalancergb.contrast": "Contrast",
@@ -325,7 +325,7 @@ enum Presentation {
     /// Tooltips for fields whose name alone doesn't say which way to move
     /// them, keyed "op.field". Restates darktable's own tooltips.
     static let fieldHelp: [String: String] = [
-        "grain.scale": "The grain's size, as a film speed: higher is coarser.",
+        "grain.scale": "The grain's size, as a film speed: a faster film is coarser. Matches the film look's speed when you choose one.",
         "grain.strength": "How much grain.",
         "grain.midtones_bias": "Keeps the grain to the mid-tones, as film does. Lower spreads it into the shadows and highlights.",
         "denoiseprofile.strength": "How much noise to remove. Lower it first if the photo looks smeared or waxy.",
@@ -423,6 +423,9 @@ enum Presentation {
     static let displayFactors: [String: Double] = [
         "grain.scale": 213.2,
     ]
+
+    /// fields that are a film speed: a slider in stops, reading ISO
+    static let filmSpeedFields: Set<String> = ["grain.scale"]
 
     static let units: [String: String] = [
         "colorbalancergb.shadows_H": "°", "colorbalancergb.midtones_H": "°",

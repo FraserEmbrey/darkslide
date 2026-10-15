@@ -1133,6 +1133,26 @@ final class EditorModel {
             }
             // TestLook: launch argument (-TestLook YES) for testing: applies the first Portra
             // look in the LUT folder, then 50% strength, and logs the catalogue and state
+            // TestGrain: launch argument (-TestGrain YES) for testing: turns grain on, chooses
+            // films, and logs the film speed the grain is set to
+            if UserDefaults.standard.bool(forKey: "TestGrain") {
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let iso = (grainModule?.fields.first { $0.name == "scale" }?.value.number ?? 0) * FilmSpeed.grainFactor
+                        FileHandle.standardError.write("Develop grain test: \(s): grain \(grainModule?.enabled == true ? "on" : "off") at ISO \(Int(iso.rounded())), film \(currentFilmSpeed.map { "\(Int($0))" } ?? "-")\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    applyLook(filmLooks.first { $0.film.contains("Delta 100") })
+                    try? await Task.sleep(for: .seconds(3)); log("Delta 100, grain off")
+                    if let g = grainModule { setEnabled(true, module: g.key); matchGrainToFilm() }
+                    try? await Task.sleep(for: .seconds(3)); log("grain on")
+                    applyLook(filmLooks.first { $0.film == "Kodak TRI-X 400" && $0.variant == "+" })
+                    try? await Task.sleep(for: .seconds(3)); log("Tri-X pushed")
+                    for name in ["Polaroid 667", "Ilford HP5", "Kodak Portra 160 NC", "Fuji 400H", "Rollei Retro 80s", "Kodak TMAX 3200 3 Alt", "TealOrange1", "Kodak E-100 GX Ektachrome 100"] {
+                        FileHandle.standardError.write("Develop grain test: \(name) is \(FilmSpeed.of(film: name).map { "\(Int($0))" } ?? "-")\n".data(using: .utf8)!)
+                    }
+                }
+            }
             if UserDefaults.standard.bool(forKey: "TestLook") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
@@ -3252,6 +3272,22 @@ extension EditorModel {
         }
     }
 
+    /// the film look's speed, pushed or pulled, for the grain to match; nil without a film
+    var currentFilmSpeed: Double? {
+        filmLooks.first { $0.path == currentLook }.flatMap(FilmSpeed.of)
+    }
+
+    var grainModule: EngineModule? { modules.filter { $0.op == "grain" }.min { $0.key < $1.key } }
+
+    /// Sets the grain's film speed to the film look's, if grain is on, as part
+    /// of the undo step just recorded (choosing the film, or turning grain on).
+    func matchGrainToFilm() {
+        guard let iso = currentFilmSpeed, let grain = grainModule, grain.enabled else { return }
+        undoGroupDepth += 1
+        defer { undoGroupDepth -= 1 }
+        setValue(.number(iso / FilmSpeed.grainFactor), module: grain.key, field: "scale")
+    }
+
     func toggleFavourite(_ film: Film) {
         if favouriteLooks.contains(film.id) { favouriteLooks.remove(film.id) } else { favouriteLooks.insert(film.id) }
     }
@@ -3269,6 +3305,7 @@ extension EditorModel {
                 currentLook = r.file.isEmpty ? nil : r.file
                 lookStrength = r.strength
                 hasUnsavedChanges = true
+                matchGrainToFilm()
                 requestRender()
             } catch {
                 errorMessage = "Couldn't apply the look: \(error.localizedDescription)"

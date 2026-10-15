@@ -85,25 +85,36 @@ struct LookCard: View {
     }
 }
 
-/// The grain module's switch, strength and coarseness, beside the film looks.
-/// Its channel and mid-tones bias stay in the module itself.
+/// The grain module's switch, strength and film speed, beside the film looks.
+/// Choosing a film, or turning grain on with one chosen, sets the speed to the
+/// film's. Its channel and mid-tones bias stay in the module itself.
 struct GrainSection: View {
     @Environment(EditorModel.self) private var model
 
     var body: some View {
-        if let grain = model.modules.filter({ $0.op == "grain" }).min(by: { $0.key < $1.key }) {
+        if let grain = model.grainModule {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Grain")
                     Spacer()
-                    Toggle("Grain", isOn: Binding(get: { grain.enabled }, set: { model.setEnabled($0, module: grain.key) }))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
+                    Toggle("Grain", isOn: Binding(get: { grain.enabled }, set: { on in
+                        model.setEnabled(on, module: grain.key)
+                        if on { model.matchGrainToFilm() }
+                    }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
                 }
                 if grain.enabled {
                     ForEach(grain.fields.filter { ["strength", "scale"].contains($0.name) }, id: \.name) { f in
                         FieldControl(op: "grain", field: f) { model.setValue($0, module: grain.key, field: f.name) }
+                    }
+                    if let iso = model.currentFilmSpeed,
+                       let scale = grain.fields.first(where: { $0.name == "scale" })?.value.number,
+                       abs(FilmSpeed.stops(scale * FilmSpeed.grainFactor) - FilmSpeed.stops(iso)) > 0.05 {
+                        Button("Match the Film, ISO \(Int(iso))") { model.matchGrainToFilm() }
+                            .buttonStyle(.link)
+                            .font(.caption)
                     }
                 }
             }

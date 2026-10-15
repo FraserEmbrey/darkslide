@@ -2230,7 +2230,9 @@ final class EditorModel {
             .hdrImage: framedHDR,
         ]
         let p3 = CGColorSpace(name: CGColorSpace.displayP3)!
-        if settings.format == .heifGainMap {
+        if settings.format == .heifGainMap && settings.bitDepth >= 10 {
+            try CIContext().writeHEIF10Representation(of: framedSDR, to: url, colorSpace: p3, options: options)
+        } else if settings.format == .heifGainMap {
             try CIContext().writeHEIFRepresentation(of: framedSDR, to: url, format: .RGBA8, colorSpace: p3, options: options)
         } else {
             try CIContext().writeJPEGRepresentation(of: framedSDR, to: url, colorSpace: p3, options: options)

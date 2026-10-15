@@ -7,6 +7,8 @@ import Foundation
 /// is built without its HEIF, JPEG XL, WebP and OpenEXR modules: macOS writes
 /// HEIF itself. A 10-bit HLG or PQ HEIF is still written for Photos and tests,
 /// but isn't offered: a gain map HEIC is half the size and shows everywhere.
+/// HEIC can be 10-bit under the sheet's advanced options, for smoother
+/// gradients when the file will be edited again, at about twice the size.
 enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     case jpegGainMap, heifGainMap, jpeg, heif, tiff, png
 
@@ -50,8 +52,8 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     /// bit depths darktable's module for the format offers
     var bitDepths: [Int] {
         switch self {
-        case .jpeg, .jpegGainMap, .heifGainMap: [8]
-        case .heif: [8, 10]     // what Core Image writes; the sheet offers 8
+        case .jpeg, .jpegGainMap: [8]
+        case .heif, .heifGainMap: [8, 10]     // what Core Image writes
         case .tiff: [8, 16, 32]
         case .png: [8, 16]
         }
@@ -63,7 +65,11 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     }
 
     /// bit depths the export sheet offers
-    var offeredBitDepths: [Int] { self == .heif ? [8] : bitDepths }
+    var offeredBitDepths: [Int] { bitDepths }
+
+    /// whether the bit depth sits under the sheet's advanced options: HEIC is
+    /// 8-bit unless asked, while PNG and TIFF are chosen for their depth
+    var bitDepthIsAdvanced: Bool { self == .heif || self == .heifGainMap }
 
     var detail: String {
         switch self {
@@ -144,7 +150,7 @@ struct ExportSettings: Codable, Equatable {
     static func load() -> ExportSettings {
         guard let data = UserDefaults.standard.data(forKey: key),
               var s = try? JSONDecoder().decode(ExportSettings.self, from: data) else { return ExportSettings() }
-        // the sheet offers SDR profiles for SDR formats only, and 8-bit HEIC
+        // the sheet offers SDR profiles for SDR formats only
         if !s.format.isGainMap, s.profile == .fromEdit || s.profile.isHDR { s.profile = .sRGB }
         if !s.format.offeredBitDepths.contains(s.bitDepth) { s.bitDepth = s.format.offeredBitDepths[0] }
         return s

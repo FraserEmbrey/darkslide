@@ -49,6 +49,13 @@ final class ExportOptions {
     var extras = ExportExtras.load() {
         didSet { extras.save() }
     }
+    /// whether the sheet's advanced options are open, kept between exports
+    var showAdvanced = UserDefaults.standard.bool(forKey: "ExportShowAdvanced") {
+        didSet {
+            UserDefaults.standard.set(showAdvanced, forKey: "ExportShowAdvanced")
+            if !showAdvanced && settings.format.bitDepthIsAdvanced { settings.bitDepth = 8 }
+        }
+    }
     weak var panel: NSSavePanel?
     let model: EditorModel
 
@@ -62,6 +69,8 @@ final class ExportOptions {
             if s.format == .jpegGainMap { s.format = .jpeg } else if s.format == .heifGainMap { s.format = .heif }
         }
         if !s.format.offeredBitDepths.contains(s.bitDepth) { s.bitDepth = s.format.offeredBitDepths[0] }
+        // an advanced option only applies while it shows
+        if s.format.bitDepthIsAdvanced && !UserDefaults.standard.bool(forKey: "ExportShowAdvanced") { s.bitDepth = 8 }
         settings = s
     }
 
@@ -137,16 +146,10 @@ struct ExportOptionsView: View {
                         .fixedSize()
                     }
                 }
-                if s.format.offeredBitDepths.count > 1 {
+                if s.format.offeredBitDepths.count > 1 && !s.format.bitDepthIsAdvanced {
                     GridRow {
                         label("Bit Depth:")
-                        Picker("Bit Depth", selection: $options.settings.bitDepth) {
-                            ForEach(s.format.offeredBitDepths, id: \.self) { d in
-                                Text(d == 32 ? "32-bit float" : "\(d)-bit").tag(d)
-                            }
-                        }
-                        .labelsHidden()
-                        .fixedSize()
+                        bitDepthPicker
                     }
                 }
                 GridRow {
@@ -228,8 +231,27 @@ struct ExportOptionsView: View {
             }
             .frame(width: 420)
 
+            if s.format.bitDepthIsAdvanced {
+                DisclosureGroup("Advanced", isExpanded: $options.showAdvanced) {
+                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                        GridRow {
+                            label("Bit Depth:")
+                            bitDepthPicker
+                        }
+                        GridRow {
+                            Text("")
+                            Text("10-bit keeps gradients smoother if you'll edit the file again. About twice the size, and some apps only read 8-bit.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+                .frame(width: 420)
+            }
+
             VStack(spacing: 4) {
-                Text("\(Int(size.width)) × \(Int(size.height)) px")
+                Text("\(Int(size.width)) × \(Int(size.height)) px" + (s.format.bitDepthIsAdvanced && s.bitDepth > 8 ? ", \(s.bitDepth)-bit" : ""))
                     .foregroundStyle(.secondary)
                 Text(s.format.detail)
                     .font(.caption)
@@ -250,6 +272,16 @@ struct ExportOptionsView: View {
     }
 
     static let positions = ["Top left", "Top", "Top right", "Left", "Centre", "Right", "Bottom left", "Bottom", "Bottom right"]
+
+    private var bitDepthPicker: some View {
+        Picker("Bit Depth", selection: $options.settings.bitDepth) {
+            ForEach(options.settings.format.offeredBitDepths, id: \.self) { d in
+                Text(d == 32 ? "32-bit float" : "\(d)-bit").tag(d)
+            }
+        }
+        .labelsHidden()
+        .fixedSize()
+    }
 
     private func label(_ text: String) -> some View {
         Text(text).gridColumnAlignment(.trailing)

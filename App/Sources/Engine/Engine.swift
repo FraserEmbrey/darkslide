@@ -420,6 +420,17 @@ actor Engine {
         return try await request(body, as: PasteReply.self)
     }
 
+    /// the open raw's Bayer mosaic, written to `file` as float32 sensor values
+    func rawMosaic(to file: URL) async throws -> RawDenoise.Layout {
+        try await request(["cmd": "raw_mosaic", "path": file.path], as: RawDenoise.Layout.self)
+    }
+
+    /// a Bayer DNG at `path` from a uint16 mosaic of the open raw's size, with
+    /// the original's Exif and the open photo's edit in its sidecar
+    func writeDNG(mosaic: URL, to path: URL) async throws {
+        _ = try await request(["cmd": "write_dng", "mosaic": mosaic.path, "path": path.path])
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

@@ -28,6 +28,8 @@
                                                         the extension is added; replies with the file
     {"cmd":"apply_style","name":"..."}              -> appends a style to the edit, returns modules
     {"cmd":"add_instance","module":"rgbcurve:0","name":"channels"} -> a new instance after it
+    {"cmd":"raw_mosaic","path":"/tmp/m"}             -> the open raw's Bayer mosaic, as float32, and its layout
+    {"cmd":"write_dng","mosaic":"/tmp/d","path":"/x.dng"} -> a Bayer DNG from a uint16 mosaic, with the edit
 
   GPL-3.0-or-later, as it links darktable.
 */
@@ -58,6 +60,8 @@
 #include "develop/pixelpipe_cache.h"
 #include "develop/pixelpipe_hb.h"
 #include "imageio/imageio_common.h"
+#include "imageio/imageio_dng.h"
+#include "imageio/imageio_jpeg.h"
 
 #include <fcntl.h>
 #include <json-glib/json-glib.h>
@@ -2483,6 +2487,142 @@ static void _cmd_paste(JsonObject *o)
   _ok_done(b);
 }
 
+// ------------------------------------------------------------ raw denoise
+
+// The app denoises the raw itself (Core ML, after darktable's RawNIND raw
+// denoise, src/common/ai/restore_raw_bayer.c) and writes the result as a DNG
+// with darktable's own writer, which carries the camera's matrices, levels
+// and Exif, so the DNG develops as the original does.
+
+// {"cmd":"raw_mosaic","path":"/tmp/m"}: writes the open photo's mosaic as
+// float32 sensor values, row by row, and replies with its layout: size,
+// visible area, black per CFA site (by row and column parity), white, and
+// which colour (0 R, 1 G, 2 B) each site of the 2x2 pattern holds
+static void _cmd_raw_mosaic(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  const char *path = json_object_get_string_member_with_default(o, "path", NULL);
+  if(!path) return _error("no path");
+  const dt_image_t *img = dt_image_cache_get(H.imgid, 'r');
+  if(!img) return _error("no image");
+  const uint32_t filters = img->buf_dsc.filters;
+  const gboolean bayer = filters && filters != 9u && img->buf_dsc.channels == 1
+                         && !dt_image_monochrome_flags(img);
+  const int w = H.edit.buf.width, h = H.edit.buf.height;
+  if(!bayer || w != img->width || h != img->height)
+  {
+    dt_image_cache_read_release(img);
+    return _error("raw denoise works on Bayer raws only");
+  }
+  const size_t n = (size_t)w * h;
+  float *f = g_try_malloc(n * sizeof(float));
+  if(!f) { dt_image_cache_read_release(img); return _error("out of memory"); }
+  if(img->buf_dsc.datatype == TYPE_UINT16)
+  {
+    const uint16_t *src = (const uint16_t *)H.edit.buf.buf;
+    for(size_t i = 0; i < n; i++) f[i] = src[i];
+  }
+  else if(img->buf_dsc.datatype == TYPE_FLOAT)
+    memcpy(f, H.edit.buf.buf, n * sizeof(float));
+  else
+  {
+    g_free(f);
+    dt_image_cache_read_release(img);
+    return _error("unsupported raw data");
+  }
+  const gboolean written = g_file_set_contents(path, (const gchar *)f, n * sizeof(float), NULL);
+  g_free(f);
+  if(!written) { dt_image_cache_read_release(img); return _error("couldn't write the mosaic"); }
+
+  float black[4], range[4], white;
+  white = img->raw_white_point ? (float)img->raw_white_point : 65535.0f;
+  const gboolean separate = img->raw_black_level_separate[0] || img->raw_black_level_separate[1]
+                            || img->raw_black_level_separate[2] || img->raw_black_level_separate[3];
+  for(int k = 0; k < 4; k++)
+  {
+    black[k] = separate ? (float)img->raw_black_level_separate[k] : (float)img->raw_black_level;
+    range[k] = white - black[k];
+  }
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "width"); json_builder_add_int_value(b, w);
+  json_builder_set_member_name(b, "height"); json_builder_add_int_value(b, h);
+  json_builder_set_member_name(b, "cropX"); json_builder_add_int_value(b, img->p_width > 0 ? img->crop_x : 0);
+  json_builder_set_member_name(b, "cropY"); json_builder_add_int_value(b, img->p_height > 0 ? img->crop_y : 0);
+  json_builder_set_member_name(b, "visibleWidth"); json_builder_add_int_value(b, img->p_width > 0 ? img->p_width : w);
+  json_builder_set_member_name(b, "visibleHeight"); json_builder_add_int_value(b, img->p_height > 0 ? img->p_height : h);
+  json_builder_set_member_name(b, "white"); json_builder_add_double_value(b, white);
+  json_builder_set_member_name(b, "black");
+  json_builder_begin_array(b);
+  for(int k = 0; k < 4; k++) json_builder_add_double_value(b, black[k]);
+  json_builder_end_array(b);
+  json_builder_set_member_name(b, "colors");
+  json_builder_begin_array(b);
+  for(int y = 0; y < 2; y++)
+    for(int x = 0; x < 2; x++) json_builder_add_int_value(b, FC(y, x, filters));
+  json_builder_end_array(b);
+  _ok_done(b);
+  dt_image_cache_read_release(img);
+}
+
+// {"cmd":"write_dng","mosaic":"/tmp/d","path":"/x-Denoised.dng"}: writes the
+// uint16 mosaic (the open photo's size) as a Bayer DNG, with the original's
+// Exif and embedded preview, then gives it the open photo's whole edit, as it
+// is now, in its own sidecar. The original's sidecar is left alone.
+static void _cmd_write_dng(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  const char *mosaic = json_object_get_string_member_with_default(o, "mosaic", NULL);
+  const char *path = json_object_get_string_member_with_default(o, "path", NULL);
+  if(!mosaic || !path) return _error("no path");
+  gchar *data = NULL;
+  gsize len = 0;
+  const int w = H.edit.buf.width, h = H.edit.buf.height;
+  if(!g_file_get_contents(mosaic, &data, &len, NULL) || len != (gsize)w * h * sizeof(uint16_t))
+  {
+    g_free(data);
+    return _error("the denoised mosaic is the wrong size");
+  }
+  char src_path[PATH_MAX] = { 0 };
+  gboolean from_cache = FALSE;
+  dt_image_full_path(H.imgid, src_path, sizeof(src_path), &from_cache);
+
+  uint8_t *exif = NULL;
+  const int exif_len = dt_exif_read_blob(&exif, src_path, H.imgid, FALSE, w, h, TRUE);
+  // the camera's embedded JPEG, for Finder and Photos thumbnails
+  uint8_t *thumb = NULL;
+  size_t thumb_len = 0;
+  char *mime = NULL;
+  dt_imageio_dng_preview_t preview = { 0 };
+  if(!dt_exif_get_thumbnail(src_path, &thumb, &thumb_len, &mime) && thumb
+     && mime && !strcmp(mime, "image/jpeg") && thumb_len < INT_MAX)
+  {
+    dt_imageio_jpeg_t jpg;
+    if(!dt_imageio_jpeg_decompress_header(thumb, thumb_len, &jpg) && jpg.width > 0 && jpg.height > 0)
+      preview = (dt_imageio_dng_preview_t){ .data = thumb, .len = (int)thumb_len,
+                                            .width = jpg.width, .height = jpg.height };
+  }
+  const dt_image_t *img = dt_image_cache_get(H.imgid, 'r');
+  const int res = img ? dt_imageio_dng_write_cfa_bayer(path, (const uint16_t *)data, w, h, img, exif,
+                                                       exif_len, preview.data ? &preview : NULL)
+                      : 1;
+  if(img) dt_image_cache_read_release(img);
+  free(thumb);
+  free(mime);
+  g_free(exif);
+  g_free(data);
+  if(res) return _error("couldn't write the DNG");
+
+  // the whole edit, white balance and lens correction included: it's the same photo
+  dt_dev_write_history(&H.edit.dev);
+  const dt_imgid_t dst = _import_path(path);
+  if(!dt_is_valid_imgid(dst)) return _error("couldn't read the DNG back");
+  dt_history_delete_on_image_ext(dst, FALSE, TRUE);
+  if(!dt_history_copy_and_paste_on_image(H.imgid, dst, FALSE, NULL, TRUE, TRUE, FALSE))
+    return _error("couldn't copy the edit to the DNG");
+  if(!_write_sidecar(dst)) return _error("couldn't write the DNG's sidecar");
+  _ok_done(_ok());
+}
+
 // Sets a photo's title, caption, keywords and/or rating in its sidecar, as
 // darktable's metadata, tagging and rating tools do.
 // {"cmd":"set_info","path":...,"title":"...","caption":"...","addTag":"...","removeTag":"...","rating":3}
@@ -2773,6 +2913,8 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "set_shape")) _cmd_set_shape(o);
     else if(!strcmp(cmd, "shape")) _cmd_shape(o);
     else if(!strcmp(cmd, "to_output")) _cmd_to_output(o);
+    else if(!strcmp(cmd, "raw_mosaic")) _cmd_raw_mosaic(o);
+    else if(!strcmp(cmd, "write_dng")) _cmd_write_dng(o);
     else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
     else if(!strcmp(cmd, "presets")) _cmd_presets();
     else if(!strcmp(cmd, "look")) _cmd_look(o);

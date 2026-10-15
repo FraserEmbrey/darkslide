@@ -28,6 +28,26 @@
 	<string>Develop reads the locations of photos in your Photos library, such as your iPhone's, to place your camera's photos on the map.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nikon.nefx</string>
+			<key>UTTypeDescription</key>
+			<string>Nikon pixel shift image</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.camera-raw-image</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>nefx</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

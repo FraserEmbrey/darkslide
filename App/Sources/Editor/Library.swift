@@ -93,9 +93,16 @@ final class Library {
     /// a folder with more photos than this beneath it stops there
     nonisolated private static let scanLimit = 5000
     nonisolated private static let thumbnailPixels = 360
+    /// whether a file is a camera raw: by its type, or by extension for raws
+    /// macOS doesn't know, such as Nikon's pixel shift merges (.nefx)
+    nonisolated static func isRaw(_ url: URL) -> Bool {
+        rawExtensions.contains(url.pathExtension.lowercased())
+            || (UTType(filenameExtension: url.pathExtension)?.conforms(to: .rawImage) ?? false)
+    }
+
     nonisolated private static let rawExtensions: Set<String> = [
         "3fr", "ari", "arw", "bay", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "k25", "kdc",
-        "mef", "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
+        "mef", "mos", "mrw", "nef", "nefx", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
     ]
     nonisolated private static let imageExtensions: Set<String> = ["jpg", "jpeg", "tif", "tiff", "png", "heic", "heif", "jxl", "avif", "webp"]
 

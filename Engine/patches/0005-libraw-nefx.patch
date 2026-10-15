@@ -1,0 +1,90 @@
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -539,7 +539,7 @@
+       "${Exiv2_INCLUDE_DIRS}/exiv2/exv_conf.h"
+       HAVE_EXV_ENABLE_BMFF)
+     if(HAVE_EXV_ENABLE_BMFF)
+-      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} cr3 CACHE INTERNAL "")
++      set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} cr3 nefx CACHE INTERNAL "")
+       message(STATUS "Exiv2 >= 0.27.4 found with ISOBMFF support (CR3, AVIF, HEIF)")
+     else()
+       message(STATUS "Exiv2 >= 0.27.4 found, but was not compiled with ISOBMFF support (CR3, AVIF, HEIF)")
+--- a/src/imageio/imageio.c
++++ b/src/imageio/imageio.c
+@@ -511,7 +511,7 @@
+ // content.
+ static const gchar *_supported_raw[]
+     = { "3fr", "ari", "arw", "bay", "cr2", "cr3", "crw", "dc2", "dcr", "erf", "fff",
+-        "ia",  "iiq", "k25", "kc2", "kdc", "mdc", "mef", "mos", "mrw", "nef", "nrw",
++        "ia",  "iiq", "k25", "kc2", "kdc", "mdc", "mef", "mos", "mrw", "nef", "nefx", "nrw",
+         "orf", "ori", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "sti",
+         "x3f", NULL };
+ static const gchar *_supported_ldr[]
+--- a/src/imageio/imageio_libraw.c
++++ b/src/imageio/imageio_libraw.c
+@@ -303,7 +303,8 @@
+   // At the moment of writing this code CR3 files are not supported by RawSpeed,
+   // so they are always processed by LibRaw.
+   gchar *extensions_whitelist;
+-  const gchar *always_by_libraw = "cr3 x3f";
++  // nefx: Nikon's pixel shift merges (NX Studio), already full colour
++  const gchar *always_by_libraw = "cr3 x3f nefx";
+ 
+   gchar *ext = g_strrstr(filename, ".");
+   if(!ext)
+@@ -415,7 +416,7 @@
+   // are not populated into libraw structure, or image is not of CFA type.
+   if(raw->rawdata.color.cam_mul[0] == 0.0f
+      || dt_isnan(raw->rawdata.color.cam_mul[0])
+-     || !raw->rawdata.raw_image)
++     || !(raw->rawdata.raw_image || raw->rawdata.color4_image))
+   {
+     dt_print(DT_DEBUG_ALWAYS,
+              "[libraw_open] detected unsupported image `%s'", img->filename);
+@@ -489,6 +490,46 @@
+ 
+   dt_exif_img_check_additional_tags(img, filename);
+ 
++  // A full-colour raw, such as a Nikon NEFX (pixel shift shots merged into
++  // one, with red, green and blue at every pixel): LibRaw keeps it as four
++  // channels a pixel. Loaded as an sRAW is: floats, no demosaic, but still
++  // camera RGB, so raw prepare, white balance and the camera matrix apply.
++  if(!raw->rawdata.raw_image && raw->rawdata.color4_image)
++  {
++    img->flags &= ~(DT_IMAGE_LDR | DT_IMAGE_RAW | DT_IMAGE_HDR | DT_IMAGE_4BAYER);
++    img->flags |= DT_IMAGE_S_RAW;
++    img->buf_dsc.filters = 0u;
++    img->buf_dsc.channels = 4;
++    img->buf_dsc.datatype = TYPE_FLOAT;
++    img->buf_dsc.cst = IOP_CS_RAW;
++    img->loader = LOADER_LIBRAW;
++    if(!mbuf)
++    {
++      err = DT_IMAGEIO_OK;
++      goto error;
++    }
++    float *out = dt_mipmap_cache_alloc(mbuf, img);
++    if(!out)
++    {
++      err = DT_IMAGEIO_CACHE_FULL;
++      goto error;
++    }
++    const ushort(*in)[4] = raw->rawdata.color4_image;
++    const int pitch = raw->rawdata.sizes.raw_pitch / 8;
++    const int w = img->width, h = img->height;
++    DT_OMP_FOR()
++    for(int j = 0; j < h; j++)
++      for(int i = 0; i < w; i++)
++      {
++        float *o = out + 4 * ((size_t)j * w + i);
++        const ushort *p = in[(size_t)j * pitch + i];
++        for(int k = 0; k < 3; k++) o[k] = p[k] / 65535.0f;
++        o[3] = 0.0f;
++      }
++    err = DT_IMAGEIO_OK;
++    goto error;
++  }
++
+   // For CR3, we only have Bayer data and a single channel
+   img->buf_dsc.channels = 1;
+ 

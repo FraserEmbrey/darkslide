@@ -724,7 +724,7 @@ final class EditorModel {
             appleRawControls = []
             appleRawLensDefault = nil
             let reply: OpenReply
-            let isRaw = UTType(filenameExtension: url.pathExtension)?.conforms(to: .rawImage) ?? false
+            let isRaw = Library.isRaw(url)
             if !isRaw, await Task.detached(operation: { AppleRawFallback.isHDR(url) }).value {
                 // a gain map or HLG/PQ image: darktable would read only the SDR
                 // base, so edit macOS's HDR decode of it
@@ -2844,7 +2844,7 @@ extension EditorModel {
     /// within 30 minutes (LocationMatcher). For the MatchLocations launch argument.
     func matchLocations(in folders: [URL]) async {
         func log(_ s: String) { FileHandle.standardError.write("Develop match locations: \(s)\n".data(using: .utf8)!) }
-        let exts: Set<String> = ["nef", "hif", "heic", "jpg", "jpeg", "dng"]
+        let exts: Set<String> = ["nef", "nefx", "hif", "heic", "jpg", "jpeg", "dng"]
         let photos = folders.flatMap { f in
             ((try? FileManager.default.contentsOfDirectory(at: f, includingPropertiesForKeys: nil)) ?? [])
                 .filter { exts.contains($0.pathExtension.lowercased()) }

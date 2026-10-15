@@ -133,7 +133,7 @@ struct PhotoMetadata: Sendable {
             image.append(Row(label: "Size", value: "\(w) × \(h) (\(String(format: "%.1f", mp)) MP)"))
         }
         // for raws these describe the camera's embedded preview, not the raw data
-        let isRaw = UTType(filenameExtension: url.pathExtension)?.conforms(to: .rawImage) ?? false
+        let isRaw = Library.isRaw(url)
         if !isRaw {
             if let depth = props[kCGImagePropertyDepth] as? Int { image.append(Row(label: "Bit depth", value: "\(depth)-bit")) }
             if let profile = props[kCGImagePropertyProfileName] as? String { image.append(Row(label: "Colour profile", value: profile)) }

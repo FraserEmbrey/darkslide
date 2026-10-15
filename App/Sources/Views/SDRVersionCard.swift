@@ -4,6 +4,7 @@ import SwiftUI
 struct SDRVersionCard: View {
     @Environment(EditorModel.self) private var model
     @State private var isExpanded = true
+    @State private var appleBase = ExportSettings.load().sdrBase == .automatic
 
     var body: some View {
         @Bindable var model = model
@@ -38,12 +39,17 @@ struct SDRVersionCard: View {
                             isInteger: false, unit: nil, trackColors: nil, clipping: true) { model.sdrVersion.contrast = $0 }
                 ParamSlider(label: "Saturation", value: model.sdrVersion.saturation, defaultValue: 0, range: -1...1,
                             isInteger: false, unit: nil, trackColors: nil) { model.sdrVersion.saturation = $0 }
-                if ExportSettings.load().sdrBase == .automatic {
-                    Label("Export is set to make the SDR version with Apple's tone mapping, which ignores these. Choose darktable's SDR rendering in Export.",
-                          systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+                // what HDR exports use as their SDR image (their base, under the gain map)
+                Toggle("Use Apple's tone mapping instead", isOn: Binding(
+                    get: { appleBase },
+                    set: { on in
+                        var e = ExportSettings.load()
+                        e.sdrBase = on ? .automatic : .darktable
+                        e.save()
+                        appleBase = on
+                    }))
+                    .font(.caption)
+                    .help("HDR exports carry an SDR version for screens without HDR. Normally it's this one; Apple's automatic tone mapping of the HDR image is quicker but flatter, and ignores these adjustments.")
             }
         }
         .cardStyle()

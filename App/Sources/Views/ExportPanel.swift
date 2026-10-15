@@ -40,7 +40,7 @@ final class ExportOptions {
     var settings: ExportSettings {
         didSet {
             if settings.format != oldValue.format {
-                if !settings.format.bitDepths.contains(settings.bitDepth) { settings.bitDepth = settings.format.bitDepths.first ?? 8 }
+                if !settings.format.offeredBitDepths.contains(settings.bitDepth) { settings.bitDepth = settings.format.offeredBitDepths[0] }
                 updateFileType()
             }
         }
@@ -55,11 +55,13 @@ final class ExportOptions {
     init(model: EditorModel) {
         self.model = model
         var s = ExportSettings.load()
-        // an HDR edit starts on HDR-capable settings
-        if model.exportTarget.isHDR && !s.format.holdsHDR(bitDepth: s.bitDepth) {
-            s.format = .jpegGainMap
-            s.bitDepth = 8
+        // an HDR edit starts on the HDR kind of the last format, an SDR one on the SDR kind
+        if model.exportTarget.isHDR {
+            if s.format == .jpeg { s.format = .jpegGainMap } else if s.format == .heif { s.format = .heifGainMap }
+        } else {
+            if s.format == .jpegGainMap { s.format = .jpeg } else if s.format == .heifGainMap { s.format = .heif }
         }
+        if !s.format.offeredBitDepths.contains(s.bitDepth) { s.bitDepth = s.format.offeredBitDepths[0] }
         settings = s
     }
 
@@ -91,30 +93,18 @@ struct ExportOptionsView: View {
                 GridRow {
                     label("Format:")
                     Picker("Format", selection: $options.settings.format) {
-                        ForEach(ExportFormat.allCases) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                }
-                GridRow {
-                    label("Colour Profile:")
-                    Picker("Colour Profile", selection: $options.settings.profile) {
-                        Text("From the edit (\(model.exportTarget.isHDR ? model.exportTarget.name : "SDR"))")
-                            .tag(ExportProfile.fromEdit)
-                        Divider()
-                        ForEach(ExportProfile.sdr) { Text($0.title).tag($0) }
-                        Divider()
-                        ForEach(ExportProfile.hdr) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden()
-                }
-                GridRow {
-                    label("Size:")
-                    Picker("Size", selection: $options.settings.longEdge) {
-                        ForEach(ExportSettings.sizes, id: \.self) { e in
-                            Text(e == 0 ? "Original Size" : "Long edge \(e) px").tag(e)
+                        Section("HDR") {
+                            ForEach(ExportFormat.hdrFormats) { f in
+                                Text(f.title).tag(f).selectionDisabled(!model.exportTarget.isHDR)
+                            }
+                        }
+                        Section("SDR") {
+                            ForEach(ExportFormat.sdrFormats) { Text($0.title).tag($0) }
                         }
                     }
                     .labelsHidden()
+                    .fixedSize()
+                    .help(model.exportTarget.isHDR ? "" : "HDR formats need an HDR edit: turn on HDR in the HDR card")
                 }
                 if s.format.usesQuality {
                     GridRow {
@@ -127,24 +117,36 @@ struct ExportOptionsView: View {
                         }
                     }
                 }
-                if s.format.bitDepths.count > 1 {
+                GridRow {
+                    label("Size:")
+                    Picker("Size", selection: $options.settings.longEdge) {
+                        ForEach(ExportSettings.sizes, id: \.self) { e in
+                            Text(e == 0 ? "Original Size" : "Long edge \(e) px").tag(e)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                if !s.format.isGainMap {
+                    GridRow {
+                        label("Colour Profile:")
+                        Picker("Colour Profile", selection: $options.settings.profile) {
+                            ForEach(ExportProfile.offered) { Text($0.title).tag($0) }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                }
+                if s.format.offeredBitDepths.count > 1 {
                     GridRow {
                         label("Bit Depth:")
                         Picker("Bit Depth", selection: $options.settings.bitDepth) {
-                            ForEach(s.format.bitDepths, id: \.self) { d in
+                            ForEach(s.format.offeredBitDepths, id: \.self) { d in
                                 Text(d == 32 ? "32-bit float" : "\(d)-bit").tag(d)
                             }
                         }
                         .labelsHidden()
-                    }
-                }
-                if s.format == .jpegGainMap {
-                    GridRow {
-                        label("SDR Version:")
-                        Picker("SDR Version", selection: $options.settings.sdrBase) {
-                            ForEach(SDRBase.allCases) { Text($0.title).tag($0) }
-                        }
-                        .labelsHidden()
+                        .fixedSize()
                     }
                 }
                 GridRow {
@@ -229,25 +231,15 @@ struct ExportOptionsView: View {
             VStack(spacing: 4) {
                 Text("\(Int(size.width)) × \(Int(size.height)) px")
                     .foregroundStyle(.secondary)
-                Text(s.format == .jpegGainMap ? s.sdrBase.detail : s.format.detail)
+                Text(s.format.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                if target.isHDR && !s.format.holdsHDR(bitDepth: s.bitDepth) {
-                    Label("This edit is HDR. \(s.format.title) at \(s.bitDepth)-bit only covers standard brightness, so highlights brighter than white would be lost. Choose JPEG with HDR gain map, or HEIF or JPEG XL at 10-bit or more.",
-                          systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                } else if s.format == .jpegGainMap && !target.isHDR {
-                    Label("A gain map needs HDR: choose an HDR colour profile, or set one in the HDR card.",
-                          systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                } else if target.isHDR && model.hdrLimitStops > 0 && s.format != .jpegGainMap {
-                    Label("The HDR peak limit only applies to JPEG with HDR gain map. For \(s.format.title), lower your tone mapper's target white instead.",
-                          systemImage: "info.circle")
+                if model.exportTarget.isHDR && !s.format.isGainMap {
+                    Text("Standard brightness only: highlights brighter than white are brought within it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
             }
             .frame(width: 460)

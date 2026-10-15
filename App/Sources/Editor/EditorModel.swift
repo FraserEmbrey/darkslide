@@ -783,7 +783,15 @@ final class EditorModel {
                 t.format = ExportFormat(rawValue: UserDefaults.standard.string(forKey: "TestExportFormat") ?? "") ?? .jpeg
                 t.longEdge = 3000
                 if let p = ExportProfile(rawValue: UserDefaults.standard.integer(forKey: "TestExportProfile")) { t.profile = p }
-                Task { await export(t, to: URL(fileURLWithPath: path), remember: false) }
+                // -TestExportLift 2: exposure raised first, for highlights above white
+                let lift = UserDefaults.standard.double(forKey: "TestExportLift")
+                Task {
+                    if lift != 0, let ev = modules.first(where: { $0.key == "exposure:0" })?.fields.first(where: { $0.name == "exposure" })?.value.number {
+                        setValue(.number(ev + lift), module: "exposure:0", field: "exposure")
+                        await settleEdits()
+                    }
+                    await export(t, to: URL(fileURLWithPath: path), remember: false)
+                }
             }
             // TestSDREdits: launch argument (-TestSDREdits YES) for testing, steps SDR brightness a few times
             if UserDefaults.standard.bool(forKey: "TestSDREdits") {
@@ -2006,16 +2014,19 @@ final class EditorModel {
         isExporting = true
         defer { isExporting = false }
         if remember { settings.save() }
+        // a gain map is made from the edit's own HDR and SDR renderings
+        var settings = settings
+        if settings.format.isGainMap, settings.profile.isHDR == false { settings.profile = .fromEdit }
         do {
             // an HDR file from an SDR edit: the edit takes the HDR profile (and
             // its reference white and tone mapper white), as for a gain map
             if settings.profile != .fromEdit, HDRTarget(darktableProfile: settings.profile.rawValue).isHDR,
-               !exportTarget.isHDR, settings.format != .jpegGainMap {
+               !exportTarget.isHDR, !settings.format.isGainMap {
                 setOutputProfile(settings.profile.rawValue)
                 await settleEdits()
             }
-            if settings.format == .jpegGainMap {
-                try await exportGainMapJPEG(settings, to: url, engine: engine)
+            if settings.format.isGainMap {
+                try await exportGainMap(settings, to: url, engine: engine)
                 lastExport = url
                 FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
             } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings) {
@@ -2056,7 +2067,7 @@ final class EditorModel {
     }
 
     private func toneMapsExport(_ settings: ExportSettings) -> Bool {
-        guard openedAsHDR, settings.format != .jpegGainMap else { return false }
+        guard openedAsHDR, !settings.format.isGainMap else { return false }
         let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
         return !HDRTarget(darktableProfile: profile).isHDR
     }
@@ -2111,8 +2122,8 @@ final class EditorModel {
             case .tiff:
                 let format: CIFormat = settings.bitDepth >= 32 ? .RGBAf : settings.bitDepth >= 16 ? .RGBA16 : .RGBA8
                 try context.writeTIFFRepresentation(of: image, to: url, format: format, colorSpace: space, options: [:])
-            case .jpegGainMap:
-                throw EngineError(message: "A gain map JPEG is made from renders, not an export.")
+            case .jpegGainMap, .heifGainMap:
+                throw EngineError(message: "A gain map is made from renders, not an export.")
             }
         }.value
         FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
@@ -2165,13 +2176,13 @@ final class EditorModel {
         return name.flatMap { CGColorSpace(name: $0) }
     }
 
-    /// A JPEG with an ISO 21496-1 HDR gain map, written by Core Image.
+    /// A JPEG or HEIC with an ISO 21496-1 HDR gain map, written by Core Image.
     /// The HDR image is exactly what the HDR preview shows: darktable's output
     /// in the edit's HDR profile, on the EDR scale. The SDR base is, by default,
     /// darktable's own SDR rendering of the edit (the tone mapper's target white
     /// back at 100%); Core Image computes the gain map between the two. Viewers
     /// without HDR, or with little headroom, mostly see that SDR base.
-    private func exportGainMapJPEG(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
+    private func exportGainMap(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
         var target = exportTarget
         if settings.profile != .fromEdit { target = HDRTarget(darktableProfile: settings.profile.rawValue) }
         guard target.isHDR else {
@@ -2186,6 +2197,9 @@ final class EditorModel {
         let hdrFrame = try await engine.render(maxPixels: maxPixels, hdr: true, displayHeadroom: 16, wantOverlay: false,
                                                hdrLimit: hdrLimit)
         let hdr = CIImage(cgImage: hdrFrame.image)
+        if UserDefaults.standard.string(forKey: "TestExport") != nil {
+            FileHandle.standardError.write("Develop gain map test: target \(target.name), HDR frame peak \(hdrFrame.analysis?.peak ?? -1), isHDR \(hdrFrame.isHDR)\n".data(using: .utf8)!)
+        }
 
         let sdr: CIImage
         switch settings.sdrBase {
@@ -2210,8 +2224,12 @@ final class EditorModel {
             CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): Double(settings.quality) / 100,
             .hdrImage: framedHDR,
         ]
-        try CIContext().writeJPEGRepresentation(of: framedSDR, to: url, colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
-                                                options: options)
+        let p3 = CGColorSpace(name: CGColorSpace.displayP3)!
+        if settings.format == .heifGainMap {
+            try CIContext().writeHEIFRepresentation(of: framedSDR, to: url, format: .RGBA8, colorSpace: p3, options: options)
+        } else {
+            try CIContext().writeJPEGRepresentation(of: framedSDR, to: url, colorSpace: p3, options: options)
+        }
         // render the preview again at its own size (the frame file was reused)
         requestRender()
     }
@@ -3618,7 +3636,7 @@ extension EditorModel {
                     destination = try target.output.renderedContentURL(for: .jpeg)
                     settings.format = .jpegGainMap
                     settings.bitDepth = 8
-                    try await exportGainMapJPEG(settings, to: destination, engine: engine)
+                    try await exportGainMap(settings, to: destination, engine: engine)
                 } else if target.type.conforms(to: .heic) {
                     settings.format = .heif
                     settings.bitDepth = 8

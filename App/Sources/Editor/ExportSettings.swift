@@ -1,19 +1,28 @@
 import Foundation
 
-/// The export formats Develop offers: JPEG, TIFF and PNG from darktable, and
-/// a JPEG with an HDR gain map and HEIF from Core Image (see
-/// EditorModel.exportGainMapJPEG and exportThroughCoreImage). darktable is built without
-/// its HEIF, JPEG XL, WebP and OpenEXR modules: macOS writes HEIF itself.
+/// The export formats Develop offers, as Pixelmator and Lightroom group them:
+/// HDR JPEG and HDR HEIC (an 8-bit SDR image with an ISO 21496-1 gain map,
+/// from Core Image; see EditorModel.exportGainMap), and SDR JPEG, TIFF and PNG
+/// from darktable and HEIC from Core Image (exportThroughCoreImage). darktable
+/// is built without its HEIF, JPEG XL, WebP and OpenEXR modules: macOS writes
+/// HEIF itself. A 10-bit HLG or PQ HEIF is still written for Photos and tests,
+/// but isn't offered: a gain map HEIC is half the size and shows everywhere.
 enum ExportFormat: String, CaseIterable, Identifiable, Codable {
-    case jpeg, jpegGainMap, heif, tiff, png
+    case jpegGainMap, heifGainMap, jpeg, heif, tiff, png
+
+    static let hdrFormats: [ExportFormat] = [.jpegGainMap, .heifGainMap]
+    static let sdrFormats: [ExportFormat] = [.jpeg, .heif, .png, .tiff]
+
+    var isGainMap: Bool { self == .jpegGainMap || self == .heifGainMap }
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .jpeg: "JPEG"
-        case .jpegGainMap: "JPEG with HDR gain map"
-        case .heif: "HEIF"
+        case .jpegGainMap: "HDR JPEG"
+        case .heifGainMap: "HDR HEIC"
+        case .heif: "HEIC"
         case .tiff: "TIFF"
         case .png: "PNG"
         }
@@ -22,7 +31,7 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     /// darktable's format module, for formats darktable writes
     var darktableName: String? {
         switch self {
-        case .jpegGainMap, .heif: nil
+        case .jpegGainMap, .heifGainMap, .heif: nil
         default: rawValue
         }
     }
@@ -30,19 +39,19 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     var fileExtension: String {
         switch self {
         case .jpeg, .jpegGainMap: "jpg"
-        case .heif: "heic"
+        case .heif, .heifGainMap: "heic"
         case .tiff: "tif"
         case .png: "png"
         }
     }
 
-    var usesQuality: Bool { [.jpeg, .jpegGainMap, .heif].contains(self) }
+    var usesQuality: Bool { [.jpeg, .jpegGainMap, .heif, .heifGainMap].contains(self) }
 
     /// bit depths darktable's module for the format offers
     var bitDepths: [Int] {
         switch self {
-        case .jpeg, .jpegGainMap: [8]
-        case .heif: [8, 10]     // what Core Image writes
+        case .jpeg, .jpegGainMap, .heifGainMap: [8]
+        case .heif: [8, 10]     // what Core Image writes; the sheet offers 8
         case .tiff: [8, 16, 32]
         case .png: [8, 16]
         }
@@ -50,14 +59,18 @@ enum ExportFormat: String, CaseIterable, Identifiable, Codable {
 
     /// whether the format can carry HDR at the given depth
     func holdsHDR(bitDepth: Int) -> Bool {
-        self == .jpegGainMap || (self == .heif && bitDepth >= 10)
+        isGainMap || (self == .heif && bitDepth >= 10)
     }
+
+    /// bit depths the export sheet offers
+    var offeredBitDepths: [Int] { self == .heif ? [8] : bitDepths }
 
     var detail: String {
         switch self {
-        case .jpeg: "Opens everywhere. 8-bit, so standard brightness only."
-        case .jpegGainMap: "An ordinary JPEG that also carries the HDR highlights (ISO 21496-1 gain map, as Ultra HDR and iPhone photos use). Shows as HDR in Apple apps, Chrome and Android, and as a normal JPEG elsewhere."
-        case .heif: "Apple's format: smaller than JPEG, and 10-bit for HDR."
+        case .jpegGainMap: "A JPEG that also carries the HDR highlights in a gain map (ISO 21496-1). HDR in Apple apps, Chrome and Android; a normal JPEG everywhere else."
+        case .heifGainMap: "A HEIC with an HDR gain map, as iPhone photos are. About half the size of HDR JPEG; HDR in Apple apps and recent browsers."
+        case .jpeg: "Opens everywhere."
+        case .heif: "Apple's format: about half the size of JPEG at the same quality."
         case .tiff: "Lossless, for printing or editing elsewhere. Large files."
         case .png: "Lossless, mainly for graphics. Large files for photos."
         }
@@ -88,6 +101,8 @@ enum ExportProfile: Int, CaseIterable, Identifiable, Codable {
 
     var isHDR: Bool { [.hlgP3, .pqP3, .hlgRec2020, .pqRec2020].contains(self) }
     static let sdr: [ExportProfile] = [.sRGB, .displayP3, .adobeRGB, .linearRec2020]
+    /// what the export sheet offers
+    static let offered: [ExportProfile] = [.sRGB, .displayP3, .adobeRGB]
     static let hdr: [ExportProfile] = [.hlgP3, .pqP3, .hlgRec2020, .pqRec2020]
 }
 
@@ -117,8 +132,8 @@ enum SDRBase: String, CaseIterable, Identifiable, Codable {
 struct ExportSettings: Codable, Equatable {
     var format: ExportFormat = .jpeg
     var sdrBase: SDRBase = .darktable
-    var profile: ExportProfile = .fromEdit
-    var quality = 92
+    var profile: ExportProfile = .sRGB
+    var quality = 85
     var bitDepth = 8
     /// 0 is the original size, otherwise the long edge in pixels
     var longEdge = 0
@@ -128,7 +143,10 @@ struct ExportSettings: Codable, Equatable {
 
     static func load() -> ExportSettings {
         guard let data = UserDefaults.standard.data(forKey: key),
-              let s = try? JSONDecoder().decode(ExportSettings.self, from: data) else { return ExportSettings() }
+              var s = try? JSONDecoder().decode(ExportSettings.self, from: data) else { return ExportSettings() }
+        // the sheet offers SDR profiles for SDR formats only, and 8-bit HEIC
+        if !s.format.isGainMap, s.profile == .fromEdit || s.profile.isHDR { s.profile = .sRGB }
+        if !s.format.offeredBitDepths.contains(s.bitDepth) { s.bitDepth = s.format.offeredBitDepths[0] }
         return s
     }
 

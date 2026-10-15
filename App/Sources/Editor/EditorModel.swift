@@ -1313,6 +1313,15 @@ final class EditorModel {
                     }
                 }
             }
+            // TestDenoise: launch argument (-TestDenoise YES) for testing: denoises the photo to a
+            // new DNG next to it, which then opens
+            if UserDefaults.standard.bool(forKey: "TestDenoise"), url.pathExtension.lowercased() != "dng" {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    await denoiseToDNG()
+                    FileHandle.standardError.write("Develop denoise test: open \(self.url?.lastPathComponent ?? "-"), noise reduction \(modules.first { $0.op == "denoiseprofile" }?.enabled == true ? "on" : "off"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                }
+            }
             // TestHEIF: launch argument (-TestHEIF /folder) for testing: exports this photo as
             // HEIC, 8-bit sRGB and 10-bit HLG P3, into the folder
             if let folder = UserDefaults.standard.string(forKey: "TestHEIF"), !folder.isEmpty {
@@ -2347,6 +2356,78 @@ final class EditorModel {
     }
 
     // MARK: Match Camera
+
+    // MARK: Denoise
+
+    private(set) var isDenoising = false
+
+    /// a Bayer raw that darktable decodes, with the model installed
+    var canDenoise: Bool {
+        url != nil && !showingLibrary && !isDenoising && sensor == "bayer" && decodedTIFF == nil
+            && photosAsset == nil && RawDenoise.isAvailable && url.map(Library.isRaw) == true
+    }
+
+    /// Image › Denoise to New DNG: as Lightroom's Denoise, a new raw next to
+    /// the original with the noise taken out before demosaicing (RawDenoise),
+    /// carrying the edit as it is now, then opened. darktable's own noise
+    /// reduction is turned off in it, as the noise is gone.
+    func denoiseToDNG() async {
+        guard canDenoise, let engine, let url else { return }
+        isDenoising = true
+        defer { isDenoising = false; statusNote = nil }
+        statusNote = "Denoising…"
+        await settleEdits()
+        let temp = FileManager.default.temporaryDirectory
+        let mosaicIn = temp.appendingPathComponent("develop-mosaic-\(UUID().uuidString)")
+        let mosaicOut = temp.appendingPathComponent("develop-denoised-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: mosaicIn)
+            try? FileManager.default.removeItem(at: mosaicOut)
+        }
+        let dest = Self.denoisedName(for: url)
+        do {
+            let started = Date()
+            let layout = try await engine.rawMosaic(to: mosaicIn)
+            let progress: @Sendable (Double) -> Void = { p in
+                Task { @MainActor [weak self] in
+                    if self?.isDenoising == true { self?.statusNote = "Denoising… \(Int(p * 100))%" }
+                }
+            }
+            try await Task.detached(priority: .userInitiated) {
+                let data = try Data(contentsOf: mosaicIn)
+                let mosaic = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                let out = try RawDenoise.run(mosaic, layout: layout, progress: progress)
+                try out.withUnsafeBytes { try Data($0).write(to: mosaicOut) }
+            }.value
+            statusNote = "Writing the DNG…"
+            try await engine.writeDNG(mosaic: mosaicOut, to: dest)
+            FileHandle.standardError.write("Develop denoised to \(dest.path) in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
+        } catch {
+            errorMessage = "Couldn't denoise: \(error.localizedDescription)"
+            return
+        }
+        isDenoising = false
+        await open(dest)
+        guard self.url == dest else { return }
+        if let nr = modules.first(where: { $0.op == "denoiseprofile" && $0.enabled }) {
+            setEnabled(false, module: nr.key)
+            await settleEdits()
+            await save()
+        }
+    }
+
+    /// "DSC_0001-Denoised.dng" next to the original, numbered if it's taken
+    nonisolated static func denoisedName(for url: URL) -> URL {
+        let folder = url.deletingLastPathComponent()
+        let base = url.deletingPathExtension().lastPathComponent + "-Denoised"
+        var candidate = folder.appendingPathComponent(base + ".dng")
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(base) \(n).dng")
+            n += 1
+        }
+        return candidate
+    }
 
     /// Camera style plus darktable's automatic exposure: roughly what the
     /// camera's own JPEG would look like. Nothing here analyses the content.

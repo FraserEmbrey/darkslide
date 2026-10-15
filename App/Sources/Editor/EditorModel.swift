@@ -1153,6 +1153,20 @@ final class EditorModel {
                     }
                 }
             }
+            // TestAutoLift: launch argument (-TestAutoLift YES) for testing: runs Auto and
+            // logs the exposure; then starts two stops darker and lifts again
+            if UserDefaults.standard.bool(forKey: "TestAutoLift") {
+                Task { @MainActor in
+                    @MainActor func ev() -> Double { modules.first { $0.op == "exposure" }?.fields.first { $0.name == "exposure" }?.value.number ?? -99 }
+                    try? await Task.sleep(for: .seconds(4))
+                    FileHandle.standardError.write("Develop auto lift test: rule \(autoExposure ?? -99)\n".data(using: .utf8)!)
+                    await autoAll()
+                    FileHandle.standardError.write("Develop auto lift test: after Auto \(ev())\n".data(using: .utf8)!)
+                    if let key = modules.first(where: { $0.op == "exposure" })?.key { setValue(.number(ev() - 2), module: key, field: "exposure") }
+                    await liftDarkExposure()
+                    FileHandle.standardError.write("Develop auto lift test: two stops under, lifted to \(ev())\n".data(using: .utf8)!)
+                }
+            }
             if UserDefaults.standard.bool(forKey: "TestLook") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
@@ -1598,6 +1612,7 @@ final class EditorModel {
         undoGroupDepth += 1
         defer { undoGroupDepth -= 1 }
         await matchCamera()
+        await liftDarkExposure()
         if let filmic = modules.first(where: { $0.op == "filmicrgb" }), filmic.enabled { await autoTuneFilmic() }
         if let te = modules.first(where: { $0.op == "toneequal" }), te.enabled { await fitToneEqualizer() }
     }
@@ -2303,6 +2318,66 @@ final class EditorModel {
         if let exposure = modules.first(where: { $0.op == "exposure" }), !isAuto(exposure) {
             setAuto(true, module: exposure)
         }
+    }
+
+    /// darktable's metering puts the raw median four stops under white. With a
+    /// bright sky or backlight in the frame that leaves the photo dark (a dusk
+    /// portrait came out a stop and a half under). So Auto then looks at the
+    /// photo as it renders, and if its middle tone is more than a third of a
+    /// stop under a typical photo's, lifts the exposure, at most 2 EV: a few
+    /// passes, as the tone mapper doesn't pass exposure through one to one.
+    /// It only lifts, as a dark scene left dark is a choice the metering can't
+    /// see, and a bright one is held by the tone mapper.
+    func liftDarkExposure() async {
+        guard !openedAsHDR, let key = modules.first(where: { $0.op == "exposure" })?.key else { return }
+        // display-linear: a typical photo's median, about 40% in sRGB
+        let target = 0.13
+        var lifted = 0.0
+        for _ in 0..<3 {
+            await settleEdits()
+            guard let median = await renderedMedian(), median > 0.0005,
+                  let ev = modules.first(where: { $0.key == key })?.fields.first(where: { $0.name == "exposure" })?.value.number
+            else { return }
+            let under = log2(target / median)
+            if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
+                FileHandle.standardError.write(String(format: "Develop auto lift: median %.3f, %.2f EV under, exposure %.2f\n", median, under, ev).data(using: .utf8)!)
+            }
+            guard under > 1.0 / 3 else { break }
+            // the tone mapper's mid-tones turn a stop of exposure into about 1.4 on screen
+            let step = min(under / 1.4, 2 - lifted)
+            guard step > 0.05 else { break }
+            lifted += step
+            let next = ((ev + step) * 100).rounded() / 100
+            setValue(.number(next), module: key, field: "exposure")
+            // this is Auto's exposure now: the pill shows on
+            autoExposure = next
+        }
+    }
+
+    /// the median display-linear luminance of a small SDR render as edited
+    private func renderedMedian() async -> Double? {
+        guard let engine,
+              let frame = try? await engine.render(maxPixels: 400, hdr: false, displayHeadroom: 1, wantOverlay: false)
+        else { return nil }
+        let image = frame.image
+        let w = image.width, h = image.height
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        func linear(_ v: UInt8) -> Double {
+            let c = Double(v) / 255
+            return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        let table = (0...255).map { linear(UInt8($0)) }
+        var lum = [Double]()
+        lum.reserveCapacity(w * h)
+        for i in stride(from: 0, to: px.count, by: 4) {
+            lum.append(0.2126 * table[Int(px[i])] + 0.7152 * table[Int(px[i + 1])] + 0.0722 * table[Int(px[i + 2])])
+        }
+        lum.sort()
+        return lum.isEmpty ? nil : lum[lum.count / 2]
     }
 
     private func settleAfterEdits() {

@@ -171,6 +171,9 @@ struct AppCommands: Commands {
             Button("Zoom Out") { model.zoomOut() }
                 .keyboardShortcut("-")
             Divider()
+            Toggle("Show Focus Point", isOn: Binding(get: { model.showFocusPoint }, set: { model.showFocusPoint = $0 }))
+                .disabled(model.showingLibrary || !model.canShowFocusPoint)
+            Divider()
             Picker("Background", selection: Binding(get: { model.canvasBackground },
                                                     set: { model.canvasBackground = $0 })) {
                 ForEach(CanvasBackground.allCases) { Text($0.title).tag($0) }

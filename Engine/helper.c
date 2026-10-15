@@ -1473,6 +1473,33 @@ static void _cmd_shape(JsonObject *o)
   _ok_done(b);
 }
 
+// {"cmd":"to_output","points":[x, y, ...]}: points given 0...1 across the
+// photo as darktable reads it (before lens correction, perspective, crop and
+// flip) -> where they land in the photo as processed, in output pixels. For
+// marks that belong to the camera's frame, such as the focus point.
+static void _cmd_to_output(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  JsonArray *a = json_object_has_member(o, "points") ? json_object_get_array_member(o, "points") : NULL;
+  const int n = a ? json_array_get_length(a) / 2 : 0;
+  if(n <= 0) return _error("no points");
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+  float *pts = g_new(float, 2 * n);
+  for(int i = 0; i < n; i++)
+  {
+    pts[2 * i] = json_array_get_double_element(a, 2 * i) * iw;
+    pts[2 * i + 1] = json_array_get_double_element(a, 2 * i + 1) * ih;
+  }
+  _to_output(pts, n);
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "points");
+  json_builder_begin_array(b);
+  for(int i = 0; i < 2 * n; i++) json_builder_add_double_value(b, pts[i]);
+  json_builder_end_array(b);
+  g_free(pts);
+  _ok_done(b);
+}
+
 // {"cmd":"rename_instance","module":"exposure:1","name":"..."}: an instance's
 // name, kept in the history and the sidecar
 static void _cmd_rename_instance(JsonObject *o)
@@ -2745,6 +2772,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "add_local")) _cmd_add_local(o);
     else if(!strcmp(cmd, "set_shape")) _cmd_set_shape(o);
     else if(!strcmp(cmd, "shape")) _cmd_shape(o);
+    else if(!strcmp(cmd, "to_output")) _cmd_to_output(o);
     else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
     else if(!strcmp(cmd, "presets")) _cmd_presets();
     else if(!strcmp(cmd, "look")) _cmd_look(o);

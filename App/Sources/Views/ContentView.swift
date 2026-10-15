@@ -388,6 +388,12 @@ struct ZoomableImage: View {
                                           toImage: { toImage($0, in: geo.size, frame: size) })
                     }
                 }
+                .overlay {
+                    if model.showFocusPoint, !model.isCropping, !model.comparing, let corners = model.focusOutline {
+                        FocusPointOverlay(corners: corners.map { toView($0, in: geo.size, frame: size) },
+                                          inFocus: model.cameraFocus?.inFocus)
+                    }
+                }
                 .scaleEffect(pinch, anchor: pinchAnchor)
                 .contentShape(Rectangle())
                 .simultaneousGesture(

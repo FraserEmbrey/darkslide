@@ -352,6 +352,16 @@ actor Engine {
         try await request(["cmd": "rename_instance", "module": module, "name": name], as: ModulesReply.self).modules
     }
 
+    private struct PointsReply: Decodable { let points: [Double] }
+
+    /// points 0...1 across the photo as the camera framed it, to where they
+    /// land in the photo as processed (output pixels), through crop, rotation
+    /// and lens corrections (see the helper's "to_output")
+    func toOutput(_ points: [CGPoint]) async throws -> [CGPoint] {
+        let r = try await request(["cmd": "to_output", "points": points.flatMap { [$0.x, $0.y] }], as: PointsReply.self)
+        return stride(from: 0, to: r.points.count - 1, by: 2).map { CGPoint(x: r.points[$0], y: r.points[$0 + 1]) }
+    }
+
     func shape(module: String) async throws -> ShapeReply {
         try await request(["cmd": "shape", "module": module], as: ShapeReply.self)
     }

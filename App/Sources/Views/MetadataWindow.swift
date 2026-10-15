@@ -95,6 +95,10 @@ struct MetadataWindow: View {
                     Divider()
                     cameraCard(f).padding(10)
                     Divider()
+                    if let focus = f.focus {
+                        focusRow(focus, photo: photo)
+                        Divider()
+                    }
                     field("Add a Caption", text: $captionDraft, focus: .caption) {
                         if captionDraft != (f.caption ?? "") { Task { await model.setInfo(photo, caption: captionDraft) } }
                     }
@@ -293,6 +297,33 @@ struct MetadataWindow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    /// how the camera focused, and a switch for its AF area on the photo
+    private func focusRow(_ focus: CameraFocus, photo: URL) -> some View {
+        let main = [focus.mode?.uppercased() == "MANUAL" ? "Manual focus" : focus.mode, focus.area].compactMap { $0 }.joined(separator: ", ")
+        let found = focus.inFocus.map { $0 ? "Focus found" : "Focus not found" }
+        let detail = [found, focus.detection.map { "\($0) AF" }].compactMap { $0 }.joined(separator: ", ")
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "viewfinder").foregroundStyle(.secondary).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(main).help(focus.modeText ?? "")
+                if !detail.isEmpty {
+                    Text(detail).font(.system(size: 11))
+                        .foregroundStyle(focus.inFocus == false ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                }
+            }
+            Spacer(minLength: 6)
+            if !model.showingLibrary, model.url == photo, model.canShowFocusPoint {
+                @Bindable var model = model
+                Toggle("Show", isOn: $model.showFocusPoint)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .help("Show the camera's AF area on the photo (View › Show Focus Point)")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
     }
 
     private func row(_ symbol: String, _ text: String, secondary: String? = nil) -> some View {

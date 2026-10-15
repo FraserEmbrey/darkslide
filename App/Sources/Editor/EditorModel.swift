@@ -113,6 +113,19 @@ final class EditorModel {
     }
     /// its shape in output pixels, as the engine has it
     var localShape: LocalShape?
+    /// how the camera focused, from its maker note (Nikon)
+    private(set) var cameraFocus: CameraFocus?
+    /// View › Show Focus Point: the AF area drawn on the photo, as NX Studio does
+    var showFocusPoint = UserDefaults.standard.bool(forKey: "ShowFocusPoint") {
+        didSet {
+            UserDefaults.standard.set(showFocusPoint, forKey: "ShowFocusPoint")
+            if showFocusPoint { Task { await fetchFocusOutline() } } else { focusOutline = nil }
+        }
+    }
+    /// the AF area's corners in output pixels, through the edit's crop and rotation
+    private(set) var focusOutline: [CGPoint]?
+    /// the photo has an AF area that can be drawn on it
+    private(set) var canShowFocusPoint = false
     /// Vision is looking for the subject
     var isFindingSubject = false
     var pendingShape: ShapeEdit?
@@ -754,6 +767,10 @@ final class EditorModel {
             sdrVersion = SDRVersion.load(for: url)
             camera = reply.camera
             imageSize = CGSize(width: reply.width, height: reply.height)
+            // a decode by macOS has its orientation applied, so the camera's frame no longer lines up
+            cameraFocus = await Task.detached { CameraFocus.read(url) }.value
+            focusOutline = nil
+            canShowFocusPoint = cameraFocus?.box != nil && decodedTIFF == nil
             zoomCenter = CGPoint(x: 0.5, y: 0.5)
             // StartZoom: launch argument (-StartZoom 1) for testing
             let startZoom = UserDefaults.standard.double(forKey: "StartZoom")
@@ -1856,6 +1873,8 @@ final class EditorModel {
                     }
                     // the shape may have changed with an undo, or been placed by the engine
                     if selectedLocal != nil, pendingShape == nil, !sendingShape { await fetchLocalShape() }
+                    // the crop or rotation may have changed
+                    if showFocusPoint, crop == nil { await fetchFocusOutline() }
                     frameStraighten = renderStraighten
                     if crop == nil, !isCropping, !isSimulatingHeadroom {
                         thumbnailFrame = frame.image
@@ -3179,6 +3198,19 @@ extension EditorModel {
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    func fetchFocusOutline() async {
+        guard showFocusPoint, canShowFocusPoint, let engine, let box = cameraFocus?.box, let shown = url else { focusOutline = nil; return }
+        let corners = [CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.minY),
+                       CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY)]
+        let mapped = try? await engine.toOutput(corners)
+        guard url == shown else { return }
+        focusOutline = mapped
+        // TestFocus: launch argument (-TestFocus YES) for testing
+        if UserDefaults.standard.bool(forKey: "TestFocus") {
+            FileHandle.standardError.write("Develop focus test: \(cameraFocus.map { "\($0.mode ?? "-") \($0.area ?? "-") \($0.inFocus.map(String.init) ?? "-") box \($0.box.map { "\($0)" } ?? "-")" } ?? "-") image \(Int(imageSize.width))x\(Int(imageSize.height)) outline \(mapped.map { $0.map { "(\(Int($0.x)),\(Int($0.y)))" }.joined(separator: " ") } ?? "-")\n".data(using: .utf8)!)
         }
     }
 

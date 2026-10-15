@@ -40,6 +40,8 @@ struct PhotoMetadata: Sendable {
         var hasSidecar = false
         var hdr = false
         var locationFromSidecar = false
+        /// how the camera focused (Nikon)
+        var focus: CameraFocus?
 
         var megapixels: String? {
             guard let width, let height else { return nil }
@@ -111,6 +113,18 @@ struct PhotoMetadata: Sendable {
             capture.append(Row(label: "Serial number", value: serial))
         }
         if !capture.isEmpty { summary.append(Section(title: "Capture", rows: capture)) }
+
+        // Focus, from the maker note
+        let focus = CameraFocus.read(url)
+        if let focus {
+            var rows: [Row] = []
+            if let m = focus.modeText { rows.append(Row(label: "Focus mode", value: m)) }
+            if let a = focus.area { rows.append(Row(label: "AF area", value: a)) }
+            if let d = focus.detection { rows.append(Row(label: "AF detection", value: d)) }
+            if let found = focus.inFocus { rows.append(Row(label: "Focus", value: found ? "Found" : "Not found")) }
+            if let b = focus.box { rows.append(Row(label: "AF area position", value: String(format: "%.0f%% across, %.0f%% down", b.midX * 100, b.midY * 100))) }
+            if !rows.isEmpty { summary.append(Section(title: "Focus", rows: rows)) }
+        }
 
         // Image
         var image: [Row] = []
@@ -213,6 +227,7 @@ struct PhotoMetadata: Sendable {
         f.hasSidecar = sidecar.exists
         f.hdr = !isRaw && AppleRawFallback.isHDR(url)
         f.locationFromSidecar = sidecar.location != nil
+        f.focus = focus
         if let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String {
             let df = DateFormatter()
             df.locale = Locale(identifier: "en_US_POSIX")

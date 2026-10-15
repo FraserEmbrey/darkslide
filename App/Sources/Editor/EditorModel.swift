@@ -781,11 +781,16 @@ final class EditorModel {
                 FileHandle.standardError.write("Develop test export to \(path)\n".data(using: .utf8)!)
                 var t = ExportSettings()
                 t.format = ExportFormat(rawValue: UserDefaults.standard.string(forKey: "TestExportFormat") ?? "") ?? .jpeg
-                t.longEdge = 3000
+                // -TestExportEdge 0 for the original size
+                t.longEdge = UserDefaults.standard.object(forKey: "TestExportEdge") != nil ? UserDefaults.standard.integer(forKey: "TestExportEdge") : 3000
+                if let depth = Int(UserDefaults.standard.string(forKey: "TestExportDepth") ?? "") { t.bitDepth = depth }
                 if let p = ExportProfile(rawValue: UserDefaults.standard.integer(forKey: "TestExportProfile")) { t.profile = p }
                 // -TestExportLift 2: exposure raised first, for highlights above white
                 let lift = UserDefaults.standard.double(forKey: "TestExportLift")
+                // -TestExportDelay 8: after the new-photo defaults (noise reduction and the rest) are in
+                let delay = UserDefaults.standard.double(forKey: "TestExportDelay")
                 Task {
+                    if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
                     if lift != 0, let ev = modules.first(where: { $0.key == "exposure:0" })?.fields.first(where: { $0.name == "exposure" })?.value.number {
                         setValue(.number(ev + lift), module: "exposure:0", field: "exposure")
                         await settleEdits()

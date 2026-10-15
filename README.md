@@ -249,9 +249,12 @@ Then:
 
 ```fish
 Engine/fetch-engine.sh     # darktable source + patches -> vendor/dt-install (~5 min)
+Scripts/fetch-models.sh    # optional: darktable's raw denoise model -> Models/, as Core ML (needs uv)
 Scripts/build-app.sh       # helper + app -> build/Develop.app, signed
 open build/Develop.app
 ```
+
+Without the model, Image › Denoise to New DNG is greyed out. The model is darktable 5.6's RawNIND raw denoiser (GPL-3.0), downloaded from darktable-ai's release and converted, so it isn't kept in git.
 
 For faster iteration on the Swift side, `swift run` works if `DEVELOP_ENGINE` points at `vendor/dt-install/bin/darkroom-helper`.
 

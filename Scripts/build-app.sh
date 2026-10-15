@@ -26,6 +26,12 @@ xcrun actool "$ROOT/Design/AppIcon.icon" --compile "$APP/Contents/Resources" --p
   --minimum-deployment-target 26.0 --app-icon AppIcon --target-device mac \
   --output-partial-info-plist "$ROOT/.build/icon-partial.plist" > /dev/null
 
+# Core ML models, when Scripts/fetch-models.sh has made them: raw denoise
+if [ -d "$ROOT/Models/RawDenoise.mlpackage" ]; then
+  mkdir -p "$APP/Contents/Resources/Models"
+  xcrun coremlcompiler compile "$ROOT/Models/RawDenoise.mlpackage" "$APP/Contents/Resources/Models" > /dev/null
+fi
+
 # engine layout mirrors the install prefix so darktable finds its
 # modules (lib/darktable) and data (share/darktable) relative to the binary
 cp "$ENGINE_SRC/bin/darkroom-helper" "$APP/Contents/Resources/engine/bin/"

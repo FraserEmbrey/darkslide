@@ -238,7 +238,9 @@ struct CurveEditor: View {
 struct RGBCurveControls: View {
     @Environment(EditorModel.self) private var model
     let module: EngineModule
-    private var channel: Int { model.curveChannel }
+    /// darktable's tone curve: one lightness curve, on the same scale
+    private var isToneCurve: Bool { module.op == "tonecurve" }
+    private var channel: Int { isToneCurve ? 0 : model.curveChannel }
 
     private static let tints: [Color] = [.primary, Color(.sRGB, red: 0.95, green: 0.3, blue: 0.3),
                                          Color(.sRGB, red: 0.3, green: 0.85, blue: 0.35), Color(.sRGB, red: 0.35, green: 0.5, blue: 1)]
@@ -265,8 +267,10 @@ struct RGBCurveControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            WideSegments(options: ["RGB", "Red", "Green", "Blue"],
-                         selection: Binding(get: { model.curveChannel }, set: { model.curveChannel = $0 }))
+            if !isToneCurve {
+                WideSegments(options: ["RGB", "Red", "Green", "Blue"],
+                             selection: Binding(get: { model.curveChannel }, set: { model.curveChannel = $0 }))
+            }
             CurveEditor(nodes: nodes, histogram: histogram, tint: Self.tints[channel]) { updated in
                 if channel == 0 {
                     model.setCurve(module: module.key, channel: 0, nodes: updated)
@@ -274,10 +278,12 @@ struct RGBCurveControls: View {
                     model.setChannelCurve(base: module.key, channel: channel - 1, nodes: updated)
                 }
             }
-            if channel == 0, let field = module.fields.first(where: { $0.name == "preserve_colors" }) {
+            ForEach(channel == 0 ? module.fields.filter { ["tonecurve_autoscale_ab", "preserve_colors"].contains($0.name) } : []) { field in
                 FieldControl(op: module.op, field: field) { model.setValue($0, module: module.key, field: field.name) }
             }
-            Text(channel == 0
+            Text(isToneCurve
+                 ? "Middle grey is at the centre. Works in the colour space chosen above; the RGB curve is the more modern of the two."
+                 : channel == 0
                  ? "Middle grey is at the centre. Brighter than the top (+2.4 EV), the curve carries on along its last slope, so HDR highlights aren't clipped."
                  : "Raise a colour's curve to add it, lower it to add its opposite. Applied after the RGB curve.")
                 .font(.caption)

@@ -1071,6 +1071,24 @@ final class EditorModel {
                 }
             }
             // TestHueCurves: launch argument (-TestHueCurves YES) for testing: shows the hue
+            // TestToneCurve: launch argument (-TestToneCurve YES) for testing: shows the tone
+            // curve card and lifts middle grey, logging the curve the engine reads back
+            if UserDefaults.standard.bool(forKey: "TestToneCurve") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    search = "tone curve"
+                    guard let m = modules.first(where: { $0.op == "tonecurve" }) else { return }
+                    expanded.insert(m.key)
+                    try? await Task.sleep(for: .seconds(3))
+                    FileHandle.standardError.write("Darkslide tone curve test: before \(curveInfo?.nodes ?? []), histogram \(curveInfo?.histogram.reduce(0, +) ?? 0)\n".data(using: .utf8)!)
+                    setCurve(module: m.key, channel: 0, nodes: [.zero, CGPoint(x: 0.5, y: 0.65), CGPoint(x: 1, y: 1)])
+                    try? await Task.sleep(for: .seconds(3))
+                    requestRender()
+                    try? await Task.sleep(for: .seconds(2))
+                    let info = try? await engine.curve(module: m.key)
+                    FileHandle.standardError.write("Darkslide tone curve test: after \(info?.nodes ?? []), enabled \(modules.first { $0.key == m.key }?.enabled ?? false), histogram \(info?.histogram.reduce(0, +) ?? 0)\n".data(using: .utf8)!)
+                }
+            }
             // curves card and lifts blue's saturation and shifts green's hue
             if UserDefaults.standard.bool(forKey: "TestHueCurves") {
                 Task { @MainActor in

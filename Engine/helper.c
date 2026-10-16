@@ -2699,9 +2699,7 @@ static void _cmd_set_curve(JsonObject *o)
 {
   if(!H.edit.loaded) return _error("no image open");
   dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
-  if(!m || g_strcmp0(m->op, "rgbcurve")) return _error("not an rgb curve");
-  if(m->params_size != sizeof(rgbcurve_params_t)) return _error("unexpected rgb curve layout");
-  rgbcurve_params_t *p = (rgbcurve_params_t *)m->params;
+  if(!_is_curve(m)) return _error("not a curve this app can edit");
   const int ch = CLAMP((int)json_object_get_int_member_with_default(o, "channel", 0), 0, 2);
   JsonArray *nodes = json_object_has_member(o, "nodes") ? json_object_get_array_member(o, "nodes") : NULL;
   const int n = nodes ? MIN((int)json_array_get_length(nodes), RGBCURVE_MAXNODES) : 0;
@@ -2729,8 +2727,8 @@ static void _cmd_curve(JsonObject *o)
 {
   if(!H.edit.loaded) return _error("no image open");
   dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
-  if(!m || g_strcmp0(m->op, "rgbcurve")) return _error("not an rgb curve");
-  if(m->params_size != sizeof(rgbcurve_params_t)) return _error("unexpected rgb curve layout");
+  if(!_is_curve(m)) return _error("not a curve this app can edit");
+  const gboolean tone = !strcmp(m->op, "tonecurve");
   const rgbcurve_params_t *p = (const rgbcurve_params_t *)m->params;
   dt_dev_pixelpipe_iop_t *piece = _edit_piece(m);
   // collect the input histogram headless, on the compensated scale, from
@@ -2745,38 +2743,43 @@ static void _cmd_curve(JsonObject *o)
   json_builder_set_member_name(b, "enabled");
   json_builder_add_boolean_value(b, m->enabled);
   json_builder_set_member_name(b, "compensated");
-  json_builder_add_boolean_value(b, p->compensate_middle_grey);
+  json_builder_add_boolean_value(b, tone || p->compensate_middle_grey);
   json_builder_set_member_name(b, "linked");
-  json_builder_add_boolean_value(b, p->curve_autoscale == 0);
+  json_builder_add_boolean_value(b, tone || p->curve_autoscale == 0);
   json_builder_set_member_name(b, "nodes");
   json_builder_begin_array(b);
-  for(int ch = 0; ch < 3; ch++)
+  const gboolean lin = tone && _tonecurve_linear(t);
+  for(int ch = 0; ch < (tone ? 1 : 3); ch++)
   {
     json_builder_begin_array(b);
-    for(int i = 0; i < CLAMP(p->curve_num_nodes[ch], 0, RGBCURVE_MAXNODES); i++)
+    const int count = tone ? t->tonecurve_nodes[ch] : p->curve_num_nodes[ch];
+    for(int i = 0; i < CLAMP(count, 0, RGBCURVE_MAXNODES); i++)
     {
       json_builder_begin_array(b);
-      json_builder_add_double_value(b, p->curve_nodes[ch][i].x);
-      json_builder_add_double_value(b, p->curve_nodes[ch][i].y);
+      json_builder_add_double_value(b, lin ? _lightness(node.x) : node.x);
+      json_builder_add_double_value(b, lin ? _lightness(node.y) : node.y);
       json_builder_end_array(b);
     }
     json_builder_end_array(b);
   }
   json_builder_end_array(b);
-  // histogram: bins of red, green and blue (4 values a bin in darktable's buffer)
+  // histogram: bins of red, green and blue (4 values a bin in darktable's
+  // buffer); the tone curve's input is Lab, whose lightness is the first
+  const gboolean has = piece && piece->histogram && piece->histogram_stats.bins_count > 0;
   json_builder_set_member_name(b, "histogram");
   json_builder_begin_array(b);
-  if(piece && piece->histogram && piece->histogram_stats.bins_count > 0)
+  if(has)
     for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
-      json_builder_add_int_value(b, (gint64)piece->histogram[4 * i] + piece->histogram[4 * i + 1] + piece->histogram[4 * i + 2]);
+      json_builder_add_int_value(b, tone ? (gint64)piece->histogram[4 * i]
+                                         : (gint64)piece->histogram[4 * i] + piece->histogram[4 * i + 1] + piece->histogram[4 * i + 2]);
   json_builder_end_array(b);
   // and each channel's, for the red, green and blue curves
   json_builder_set_member_name(b, "channels");
   json_builder_begin_array(b);
-  for(int c = 0; c < 3; c++)
+  for(int c = 0; c < (tone ? 0 : 3); c++)
   {
     json_builder_begin_array(b);
-    if(piece && piece->histogram && piece->histogram_stats.bins_count > 0)
+    if(has)
       for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
         json_builder_add_int_value(b, (gint64)piece->histogram[4 * i + c]);
     json_builder_end_array(b);
@@ -2787,6 +2790,45 @@ static void _cmd_curve(JsonObject *o)
 
 static void _cmd_save(void)
 {
+// tonecurve's params, as in iop/tonecurve.c (private there). Its first curve
+// is the one the app edits: on lightness (L/100) in the Lab modes, on linear
+// values in the RGB and XYZ ones.
+typedef struct
+{
+  rgbcurve_node_t tonecurve[3][RGBCURVE_MAXNODES];
+  int tonecurve_nodes[3];
+  int tonecurve_type[3];
+  int tonecurve_autoscale_ab;    // 0, 1 Lab; 2 XYZ; 3 RGB
+  int tonecurve_preset;
+  int tonecurve_unbound_ab;
+  int preserve_colors;
+} tonecurve_params_t;
+
+static gboolean _is_curve(const dt_iop_module_t *m)
+{
+  return m && ((!strcmp(m->op, "rgbcurve") && m->params_size == sizeof(rgbcurve_params_t))
+               || (!strcmp(m->op, "tonecurve") && m->params_size == sizeof(tonecurve_params_t)));
+}
+
+// The app's curve scale is lightness, middle grey at about 0.5, as rgb
+// curve's "compensate middle gray"; a linear tone curve converts to and from it.
+static float _lightness(const float y)
+{
+  const float f = y > 216.0f / 24389.0f ? cbrtf(y) : (24389.0f / 27.0f * y + 16.0f) / 116.0f;
+  return CLAMP((116.0f * f - 16.0f) / 100.0f, 0.0f, 1.0f);
+}
+
+static float _linear(const float l)
+{
+  const float f = (100.0f * l + 16.0f) / 116.0f;
+  return CLAMP(f > 6.0f / 29.0f ? f * f * f : 27.0f / 24389.0f * 100.0f * l, 0.0f, 1.0f);
+}
+
+static gboolean _tonecurve_linear(const tonecurve_params_t *p)
+{
+  return p->tonecurve_autoscale_ab >= 2;
+}
+
   if(!H.edit.loaded) return _error("no image open");
   dt_dev_write_history(&H.edit.dev);
   // "on import" means always: "after edit" skips the write when darktable's
@@ -2802,6 +2844,24 @@ static void _cmd_save(void)
 // ------------------------------------------------------------------ main
 
 int main(int argc, char *argv[])
+  if(!strcmp(m->op, "tonecurve"))
+  {
+    // its lightness curve only (a and b are colour curves)
+    tonecurve_params_t *t = (tonecurve_params_t *)m->params;
+    const gboolean lin = _tonecurve_linear(t);
+    for(int i = 0; i < n; i++)
+    {
+      JsonArray *pt = json_array_get_array_element(nodes, i);
+      const float x = CLAMP((float)json_array_get_double_element(pt, 0), 0.0f, 1.0f);
+      const float y = CLAMP((float)json_array_get_double_element(pt, 1), 0.0f, 1.0f);
+      t->tonecurve[0][i].x = lin ? _linear(x) : x;
+      t->tonecurve[0][i].y = lin ? _linear(y) : y;
+    }
+    t->tonecurve_nodes[0] = n;
+    _commit(m, TRUE);
+    return _ok_done(_ok());
+  }
+  rgbcurve_params_t *p = (rgbcurve_params_t *)m->params;
 {
   const char *frame = NULL, *config = NULL, *cache = NULL;
   // default tone mapper for unedited photos. darktable registers its
@@ -2828,6 +2888,7 @@ int main(int argc, char *argv[])
 
   // keep the protocol channel private; everything else printed goes to stderr
   H.out = fdopen(dup(STDOUT_FILENO), "w");
+  const tonecurve_params_t *t = (const tonecurve_params_t *)m->params;
   dup2(STDERR_FILENO, STDOUT_FILENO);
 
   H.frame_path = frame;
@@ -2851,6 +2912,7 @@ int main(int argc, char *argv[])
   if(dt_init(base + MAX(argc - extra, 0), dt_argv, FALSE, TRUE, NULL))
   {
     fprintf(stderr, "darktable failed to initialise\n");
+      const rgbcurve_node_t node = tone ? t->tonecurve[ch][i] : p->curve_nodes[ch][i];
     return 1;
   }
   // sidecars only on Save: darktable would otherwise write one whenever the

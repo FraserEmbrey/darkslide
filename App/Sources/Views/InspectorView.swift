@@ -371,7 +371,7 @@ struct ModuleCard: View {
             } else if showsContent, module.op == "lens" {
                 LensControls(module: module)
                     .transition(.opacity)
-            } else if showsContent, module.op == "rgbcurve" {
+            } else if showsContent, module.op == "rgbcurve" || module.op == "tonecurve" {
                 RGBCurveControls(module: module)
                     .transition(.opacity)
             } else if showsContent, module.op == "exposure", !EditorModel.isLocal(module) {

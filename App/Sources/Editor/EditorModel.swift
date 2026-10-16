@@ -327,8 +327,21 @@ final class EditorModel {
             guard viewHDR != oldValue else { return }
             watchHeadroom()
             if viewHDR { useHDRProfileIfSDR() }
+            if !switchingViewForPhoto { viewHDRFollowsPhoto = false }
             if url != nil { requestRender() }
         }
+    }
+    /// HDR viewing was switched on because the photo's edit is HDR (an HLG
+    /// NEF, an HDR edit saved earlier), not by the user: it goes off again for
+    /// the next photo that isn't, rather than making that one HDR too
+    private var viewHDRFollowsPhoto = false
+    private var switchingViewForPhoto = false
+
+    private func setViewHDRForPhoto(_ on: Bool) {
+        switchingViewForPhoto = true
+        defer { switchingViewForPhoto = false }
+        viewHDR = on
+        viewHDRFollowsPhoto = on
     }
     var showHeadroomOverlay = false { didSet { if showHeadroomOverlay != oldValue, viewHDR, url != nil { requestRender() } } }
     /// a slider is being dragged: the whole drag is one undo step
@@ -1548,6 +1561,7 @@ final class EditorModel {
             // only unedited photos get the new-photo defaults; an existing
             // sidecar is the user's edit
             offerSuggestedStyle = false
+            if viewHDRFollowsPhoto { setViewHDRForPhoto(false) }
             if viewHDR { useHDRProfileIfSDR() }
             openedWithEdit = reply.hadSidecar
             lensInfo = await Task.detached { Self.readLens(url) }.value
@@ -1560,6 +1574,11 @@ final class EditorModel {
             aiDenoise = nil
             denoiseSent = false
             if let amount = catalog.aiDenoise(of: url) { await setAIDenoise(amount, restoring: true) }
+            // an HDR edit is shown in HDR, on a display that can
+            if exportTarget.isHDR, !viewHDR,
+               (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1 {
+                setViewHDRForPhoto(true)
+            }
             requestRender()
         } catch {
             errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"

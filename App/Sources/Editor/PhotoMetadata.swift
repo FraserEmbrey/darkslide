@@ -150,7 +150,7 @@ struct PhotoMetadata: Sendable {
         if let c = location {
             var rows = [Row(label: "Coordinates", value: String(format: "%.5f, %.5f", c.latitude, c.longitude))]
             if let alt = gps[kCGImagePropertyGPSAltitude] as? Double { rows.append(Row(label: "Altitude", value: "\(Int(alt.rounded())) m")) }
-            rows.append(Row(label: "From", value: sidecar.location != nil ? "The sidecar (placed in Develop or darktable)" : "The camera's GPS"))
+            rows.append(Row(label: "From", value: sidecar.location != nil ? "The sidecar (placed in Darkslide or darktable)" : "The camera's GPS"))
             summary.append(Section(title: "Location", rows: rows))
         }
 

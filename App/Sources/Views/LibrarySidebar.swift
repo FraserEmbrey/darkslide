@@ -41,7 +41,7 @@ final class FolderCache {
 }
 
 /// The library's source list, for one of two libraries: the folders on this
-/// Mac that Develop works through (with the collections it gathers from them),
+/// Mac that Darkslide works through (with the collections it gathers from them),
 /// or Apple Photos. A switch at the top picks which; they never mix.
 struct LibrarySidebar: View {
     @Environment(EditorModel.self) private var model

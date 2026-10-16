@@ -3,7 +3,7 @@
 
 darktable is built with GTK and the libraries under it, which its build
 requires and its code refers to throughout (every module has interface code),
-but Develop never runs darktable's interface. This generates, for each of
+but Darkslide never runs darktable's interface. This generates, for each of
 those libraries, a small dynamic library exporting every function the engine
 refers to from it, each doing nothing and returning zero, and points the
 engine's binaries at them. The real GTK stack is then never loaded.
@@ -69,7 +69,7 @@ for m in machos():
                 needed[g].add(sym)
 
 # the generated sources go to a temporary folder, outside the bundle
-work = tempfile.mkdtemp(prefix="develop-gui-stubs-")
+work = tempfile.mkdtemp(prefix="darkslide-gui-stubs-")
 built = {}
 for g, syms in needed.items():
     if not any(g == name for _, deps_ in users for _, name in deps_):
@@ -78,7 +78,7 @@ for g, syms in needed.items():
     c = os.path.join(work, g + ".c")
     with open(c, "w") as f:
         f.write('#include <stdio.h>\n'
-                '/* stand-ins for %s: darktable refers to these, Develop never runs them */\n'
+                '/* stand-ins for %s: darktable refers to these, Darkslide never runs them */\n'
                 'static void hit(const char *n) { fprintf(stderr, "[gui stub] %%s called\\n", n); }\n' % g)
         for s in sorted(syms):
             cname = s[1:] if s.startswith("_") else s

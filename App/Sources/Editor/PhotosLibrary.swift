@@ -16,8 +16,10 @@ import UniformTypeIdentifiers
 /// here restores every setting.
 enum PhotosLibrary {
     static let scheme = "photos"
-    /// identifies Develop's edits among Photos' adjustment data
-    static let formatIdentifier = "me.frsr.develop"
+    /// identifies Darkslide's edits among Photos' adjustment data
+    static let formatIdentifier = "me.frsr.darkslide"
+    /// ours too: edits saved while the app was called Develop
+    static let formatIdentifiers: Set<String> = [formatIdentifier, "me.frsr.develop"]
     static let formatVersion = "1"
 
     struct Album: Identifiable, Hashable {
@@ -206,11 +208,11 @@ enum PhotosLibrary {
     /// where originals are written to be edited
     static var cache: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Develop/photos", isDirectory: true)
+            .appendingPathComponent("Darkslide/photos", isDirectory: true)
     }
 
     /// The asset's original as a file: the raw of a raw (or raw and JPEG)
-    /// photo, otherwise the photo as taken, before any edit. If Develop
+    /// photo, otherwise the photo as taken, before any edit. If Darkslide
     /// edited it before, the edit is written beside it as its XMP sidecar.
     static func original(_ id: String) async throws -> URL {
         guard let asset = asset(id) else { throw PhotosError("This photo is no longer in Photos.") }
@@ -228,23 +230,23 @@ enum PhotosLibrary {
             options.isNetworkAccessAllowed = true
             try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: options)
         }
-        // Develop's last edit, if the photo's edit in Photos is one of ours
+        // Darkslide's last edit, if the photo's edit in Photos is one of ours
         if let xmp = await developAdjustment(asset) {
             try xmp.write(to: URL(fileURLWithPath: file.path + ".xmp"))
         }
         return file
     }
 
-    /// the darktable edit stored in the photo's Photos edit, if Develop made it
+    /// the darktable edit stored in the photo's Photos edit, if Darkslide made it
     private static func developAdjustment(_ asset: PHAsset) async -> Data? {
         guard asset.hasAdjustments else { return nil }
         let options = PHContentEditingInputRequestOptions()
         options.isNetworkAccessAllowed = true
-        options.canHandleAdjustmentData = { $0.formatIdentifier == formatIdentifier }
+        options.canHandleAdjustmentData = { formatIdentifiers.contains($0.formatIdentifier) }
         return await withCheckedContinuation { c in
             asset.requestContentEditingInput(with: options) { input, _ in
                 let data = input?.adjustmentData
-                c.resume(returning: data?.formatIdentifier == formatIdentifier ? data?.data : nil)
+                c.resume(returning: data.map { formatIdentifiers.contains($0.formatIdentifier) } == true ? data?.data : nil)
             }
         }
     }
@@ -256,7 +258,7 @@ enum PhotosLibrary {
         guard let asset = asset(id) else { throw PhotosError("This photo is no longer in Photos.") }
         let options = PHContentEditingInputRequestOptions()
         options.isNetworkAccessAllowed = true
-        options.canHandleAdjustmentData = { $0.formatIdentifier == formatIdentifier }
+        options.canHandleAdjustmentData = { formatIdentifiers.contains($0.formatIdentifier) }
         let input: PHContentEditingInput = try await withCheckedThrowingContinuation { (c: CheckedContinuation<Handed<PHContentEditingInput>, Error>) in
             asset.requestContentEditingInput(with: options) { input, info in
                 if let input { c.resume(returning: Handed(value: input)) } else {

@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "Develop",
+    name: "Darkslide",
     platforms: [.macOS("26.0")],
     targets: [
         .executableTarget(
-            name: "Develop",
+            name: "Darkslide",
             path: "App/Sources"
         )
     ]

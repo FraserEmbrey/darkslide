@@ -47,7 +47,7 @@ struct AppleRawSettings: Codable, Equatable, Sendable {
         return "-" + SHA256.hash(data: Data(text.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Develop's HDR amount when it isn't changed: Apple's rendering as Photos
+    /// Darkslide's HDR amount when it isn't changed: Apple's rendering as Photos
     /// shows it, in HDR (see AppleRawFallback.decodedTIFF)
     static let defaultHDRAmount = 1.0
 

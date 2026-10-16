@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// What Develop remembers across folders: the folders added to the library,
+/// What Darkslide remembers across folders: the folders added to the library,
 /// and a record of photos edited and exported. Kept as JSON in Application
 /// Support; paths, since the app isn't sandboxed.
 @MainActor
@@ -31,7 +31,7 @@ final class Catalog {
     // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone
     private let file: URL? = UserDefaults.standard.string(forKey: "CatalogPath").map { URL(fileURLWithPath: $0) }
         ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Develop/catalog.json")
+            .appendingPathComponent("Darkslide/catalog.json")
     private var saveTask: Task<Void, Never>?
 
     init() {

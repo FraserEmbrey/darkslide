@@ -71,7 +71,7 @@ enum LocationMatcher {
     static func photosLibraryTrack(from start: Date, to end: Date) async throws -> [TrackPoint] {
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         guard status == .authorized || status == .limited else {
-            throw EngineError(message: "Develop needs access to Photos to use your iPhone's locations. Allow it in System Settings › Privacy & Security › Photos.")
+            throw EngineError(message: "Darkslide needs access to Photos to use your iPhone's locations. Allow it in System Settings › Privacy & Security › Photos.")
         }
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate <= %@", start as NSDate, end as NSDate)
@@ -99,7 +99,7 @@ enum LocationMatcher {
             let reader = GPXReader()
             parser.delegate = reader
             guard parser.parse() else {
-                throw EngineError(message: "\(file.lastPathComponent) isn't a GPX file Develop can read.")
+                throw EngineError(message: "\(file.lastPathComponent) isn't a GPX file Darkslide can read.")
             }
             points += reader.points
         }

@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 /// too new for rawspeed and LibRaw, an iPhone's ProRAW), Apple's raw engine
 /// renders the file as Photos shows it, in HDR (its tone curve, local tone
 /// mapping and highlights above SDR white), to a half-float linear Rec.2020
-/// TIFF in Develop's cache, and darktable edits that as an HDR photo. Everything else refers to the
+/// TIFF in Darkslide's cache, and darktable edits that as an HDR photo. Everything else refers to the
 /// original: the library, Info, exports and the catalog. The edit's sidecar is
 /// kept beside the original (photo.fff.xmp) and copied to and from the
 /// cached TIFF's on open and save. darktable's raw steps (demosaic, raw white
@@ -220,7 +220,7 @@ enum AppleRawFallback {
 
     private static func cacheDirectory() throws -> URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Develop/decoded", isDirectory: true)
+            .appendingPathComponent("Darkslide/decoded", isDirectory: true)
         try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
         return caches
     }

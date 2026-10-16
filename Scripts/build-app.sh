@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Develop.app: the Swift app plus the darktable engine in
+# Builds Darkslide.app: the Swift app plus the darktable engine in
 # Contents/Resources/engine, signed with the local Apple Development identity.
 #
 # The engine's libraries are copied in from Homebrew (Scripts/bundle-libs.py),
@@ -8,16 +8,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${1:-release}"
-APP="$ROOT/build/Develop.app"
+APP="$ROOT/build/Darkslide.app"
 ENGINE_SRC="$ROOT/vendor/dt-install"
-IDENTITY="${DEVELOP_SIGN_IDENTITY:-Apple Development}"
+IDENTITY="${DARKSLIDE_SIGN_IDENTITY:-Apple Development}"
 
 "$ROOT/Engine/build-helper.sh"
 swift build --package-path "$ROOT" -c "$CONFIG"
 
 if [ -e "$APP" ]; then trash "$APP"; fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/engine/bin" "$APP/Contents/Resources/engine/share"
-cp "$ROOT/.build/$CONFIG/Develop" "$APP/Contents/MacOS/Develop"
+cp "$ROOT/.build/$CONFIG/Darkslide" "$APP/Contents/MacOS/Darkslide"
 cp "$ROOT/App/Info.plist" "$APP/Contents/Info.plist"
 
 # app icon: Design/AppIcon.icon (Icon Composer layers, made by Design/make-icon.py)
@@ -51,7 +51,7 @@ python3 "$ROOT/Scripts/stub-gui-libs.py" "$APP/Contents/Resources/engine"
 python3 "$ROOT/Scripts/bundle-libs.py" "$APP/Contents/Resources/engine"
 
 # the app and MetalCL keep a debug map naming their build paths; drop it
-strip -S "$APP/Contents/MacOS/Develop" "$APP/Contents/Resources/engine/lib/libMetalCL.dylib"
+strip -S "$APP/Contents/MacOS/Darkslide" "$APP/Contents/Resources/engine/lib/libMetalCL.dylib"
 if grep -rlqa "$HOME" "$APP"; then
   echo "these files contain $HOME:" >&2; grep -rla "$HOME" "$APP" >&2; exit 1
 fi

@@ -6,7 +6,7 @@ import SwiftUI
 /// focus from it, so arrows, shortcuts and clicks keep going to the photos,
 /// and it follows the selection. ⌘I shows and hides it. It becomes the key
 /// window only while a field in it is being typed in, and hides while
-/// Develop is in the background.
+/// Darkslide is in the background.
 @MainActor
 final class InfoPanel: NSObject, NSWindowDelegate {
     static let shared = InfoPanel()

@@ -419,7 +419,7 @@ final class EditorModel {
                 let start = ContinuousClock.now
                 defer {
                     if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
-                        FileHandle.standardError.write("Develop HDR refresh \(ContinuousClock.now - start), limit \(hdrLimitStops), preview \(stops.map { "\($0)" } ?? "off"), peak \(hdrAnalysis?.peak ?? 0)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide HDR refresh \(ContinuousClock.now - start), limit \(hdrLimitStops), preview \(stops.map { "\($0)" } ?? "off"), peak \(hdrAnalysis?.peak ?? 0)\n".data(using: .utf8)!)
                     }
                 }
                 let frame = try? await engine.reprocessLastHDR(
@@ -563,7 +563,7 @@ final class EditorModel {
                 image = preview
                 openingPreviewFrame = frame
                 if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
-                    FileHandle.standardError.write("Develop opening preview \(quick ? "quick" : "screen") \(preview.width)x\(preview.height)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide opening preview \(quick ? "quick" : "screen") \(preview.width)x\(preview.height)\n".data(using: .utf8)!)
                 }
             }
         }
@@ -635,7 +635,7 @@ final class EditorModel {
         engine = nil
         failedStarts += 1
         guard failedStarts <= 5 else {
-            errorMessage = "The darktable engine keeps stopping (status \(status)). Another copy of Develop may still be running; quit it and reopen Develop."
+            errorMessage = "The darktable engine keeps stopping (status \(status)). Another copy of Darkslide may still be running; quit it and reopen Darkslide."
             return
         }
         if failedStarts == 1 {
@@ -780,7 +780,7 @@ final class EditorModel {
             // TestExport: launch arguments (-TestExport /path/file.jpg -TestExportFormat jpegGainMap
             // -TestExportProfile 1) for testing
             if let path = UserDefaults.standard.string(forKey: "TestExport") {
-                FileHandle.standardError.write("Develop test export to \(path)\n".data(using: .utf8)!)
+                FileHandle.standardError.write("Darkslide test export to \(path)\n".data(using: .utf8)!)
                 var t = ExportSettings()
                 t.format = ExportFormat(rawValue: UserDefaults.standard.string(forKey: "TestExportFormat") ?? "") ?? .jpeg
                 // -TestExportEdge 0 for the original size
@@ -832,7 +832,7 @@ final class EditorModel {
             if UserDefaults.standard.bool(forKey: "TestWorkspaces") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
-                        FileHandle.standardError.write("Develop workspace test: \(s): \(currentWorkspace?.name ?? "-"), essentials \(essentials.count), open \(expanded.count), hidden \(hiddenPanels.sorted()), all \(workspaces.map(\.name))\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide workspace test: \(s): \(currentWorkspace?.name ?? "-"), essentials \(essentials.count), open \(expanded.count), hidden \(hiddenPanels.sorted()), all \(workspaces.map(\.name))\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(2)); log("start")
                     let first = workspaceID
@@ -864,7 +864,7 @@ final class EditorModel {
                     }
                     sliderDrag(active: false, clipping: false)
                     let sorted = late.sorted()
-                    FileHandle.standardError.write("Develop drag test \(op).\(f.name): 90 values, main thread late by median \(String(format: "%.1f", sorted[45])) ms, p95 \(String(format: "%.1f", sorted[85])) ms, max \(String(format: "%.1f", sorted.last!)) ms; frames shown \(frameID - frames0) in 2.9 s\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide drag test \(op).\(f.name): 90 values, main thread late by median \(String(format: "%.1f", sorted[45])) ms, p95 \(String(format: "%.1f", sorted[85])) ms, max \(String(format: "%.1f", sorted.last!)) ms; frames shown \(frameID - frames0) in 2.9 s\n".data(using: .utf8)!)
                 }
             }
             // TestAutoExport: launch argument (-TestAutoExport /path/file.jpg) for testing:
@@ -877,7 +877,7 @@ final class EditorModel {
                         let on = modules.filter { $0.enabled && ["basecurve", "filmicrgb", "sigmoid", "agx", "exposure", "toneequal", "colorbalancergb", "rgbcurve", "tonecurve", "denoiseprofile", "highlights"].contains($0.op) }
                             .map { m in "\(m.op)\(m.op == "exposure" ? "=" + String(format: "%.2f", m.fields.first { $0.name == "exposure" }?.value.number ?? 0) : "")" }
                         let filmic = modules.first { $0.op == "filmicrgb" }.map { m in ["white_point_source", "black_point_source", "contrast", "latitude"].compactMap { n in m.fields.first { $0.name == n }.map { "\(n)=\(String(format: "%.2f", $0.value.number))" } } } ?? []
-                        FileHandle.standardError.write("Develop auto test: \(s): on \(on), styles \(appliedStyles), filmic \(filmic)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide auto test: \(s): on \(on), styles \(appliedStyles), filmic \(filmic)\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(3))
                     log("opened")
@@ -912,13 +912,13 @@ final class EditorModel {
                         return String(format: "median %.3f, p99.9 %.3f, max %.3f", lum[lum.count / 2], lum[lum.count * 999 / 1000], lum.last!)
                     }
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop HDR match: SDR \(stats(image)), tone mapper white \(modules.first { $0.op == "filmicrgb" || $0.op == "sigmoid" }.flatMap { m in m.fields.first { $0.name == "white_point_target" || $0.name == "display_white_target" }?.value.number } ?? -1)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide HDR match: SDR \(stats(image)), tone mapper white \(modules.first { $0.op == "filmicrgb" || $0.op == "sigmoid" }.flatMap { m in m.fields.first { $0.name == "white_point_target" || $0.name == "display_white_target" }?.value.number } ?? -1)\n".data(using: .utf8)!)
                     viewHDR = true
                     try? await Task.sleep(for: .seconds(4))
-                    FileHandle.standardError.write("Develop HDR match: HDR \(stats(image)), profile \(exportTarget.name), tone mapper white \(modules.first { $0.op == "filmicrgb" || $0.op == "sigmoid" }.flatMap { m in m.fields.first { $0.name == "white_point_target" || $0.name == "display_white_target" }?.value.number } ?? -1)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide HDR match: HDR \(stats(image)), profile \(exportTarget.name), tone mapper white \(modules.first { $0.op == "filmicrgb" || $0.op == "sigmoid" }.flatMap { m in m.fields.first { $0.name == "white_point_target" || $0.name == "display_white_target" }?.value.number } ?? -1)\n".data(using: .utf8)!)
                     viewHDR = false
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop HDR match: SDR again \(stats(image))\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide HDR match: SDR again \(stats(image))\n".data(using: .utf8)!)
                     // an sRGB JPEG of the HDR edit is its SDR rendition, and leaves the edit as it was
                     if let path = UserDefaults.standard.string(forKey: "TestHDRMatchExport") {
                         let before = await engine.historyEnd
@@ -926,10 +926,10 @@ final class EditorModel {
                         await export(t, to: URL(fileURLWithPath: path), remember: false)
                         let after = await engine.historyEnd
                         let file = lastExport.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
-                        FileHandle.standardError.write("Develop HDR match: sRGB export \(stats(file)), history \(before) -> \(after), profile now \(exportTarget.name)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide HDR match: sRGB export \(stats(file)), history \(before) -> \(after), profile now \(exportTarget.name)\n".data(using: .utf8)!)
                         requestRender()
                         try? await Task.sleep(for: .seconds(3))
-                        FileHandle.standardError.write("Develop HDR match: SDR after export \(stats(image))\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide HDR match: SDR after export \(stats(image))\n".data(using: .utf8)!)
                     }
                 }
             }
@@ -948,7 +948,7 @@ final class EditorModel {
             if UserDefaults.standard.bool(forKey: "TestUndo") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
-                        FileHandle.standardError.write("Develop undo test: \(s), steps \(undoStack.map(\.label)), redo \(redoStack.map(\.label))\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide undo test: \(s), steps \(undoStack.map(\.label)), redo \(redoStack.map(\.label))\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4))
                     log("start")
@@ -981,7 +981,7 @@ final class EditorModel {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
                         let xmps = library.items.filter { FileManager.default.fileExists(atPath: $0.url.path + ".xmp") }.map(\.name)
-                        FileHandle.standardError.write("Develop library test: \(s): at \(self.url?.lastPathComponent ?? "-"), sidecars \(xmps), thumbnails \(library.thumbnails.count)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide library test: \(s): at \(self.url?.lastPathComponent ?? "-"), sidecars \(xmps), thumbnails \(library.thumbnails.count)\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(3)); log("start")
                     await openNeighbour(1); try? await Task.sleep(for: .seconds(3)); log("after next, no edit")
@@ -1002,7 +1002,7 @@ final class EditorModel {
             // decode each time, then puts the photo back on darktable's decoder
             if UserDefaults.standard.bool(forKey: "TestAppleRaw") {
                 @MainActor func log(_ s: String) {
-                    FileHandle.standardError.write("Develop apple raw test: \(s): decoder \(decoderInUse ?? "-"), tiff \(decodedTIFF?.lastPathComponent ?? "-"), controls \(appleRawControls.map { "\($0.id)=\(String(format: "%.2f", $0.defaultValue))" }), settings \(appleRawSettings.values), lens \(appleRawLensDefault.map { "\($0)" } ?? "-")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide apple raw test: \(s): decoder \(decoderInUse ?? "-"), tiff \(decodedTIFF?.lastPathComponent ?? "-"), controls \(appleRawControls.map { "\($0.id)=\(String(format: "%.2f", $0.defaultValue))" }), settings \(appleRawSettings.values), lens \(appleRawLensDefault.map { "\($0)" } ?? "-")\n".data(using: .utf8)!)
                 }
                 log("opened")
                 if !Self.appleRawTested {
@@ -1046,7 +1046,7 @@ final class EditorModel {
                     if UserDefaults.standard.bool(forKey: "TestStraightenPreview") {
                         try? await Task.sleep(for: .seconds(4))
                         setStraighten(15)
-                        FileHandle.standardError.write("Develop straighten preview now\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide straighten preview now\n".data(using: .utf8)!)
                         return
                     }
                     cropAspect = .r3x2
@@ -1067,7 +1067,7 @@ final class EditorModel {
                     guard let base = modules.first(where: { $0.op == "rgbcurve" && !Self.isChannelCurve($0) }) else { return }
                     setChannelCurve(base: base.key, channel: 0, nodes: [.zero, CGPoint(x: 0.5, y: 0.65), CGPoint(x: 1, y: 1)])
                     try? await Task.sleep(for: .seconds(4))
-                    FileHandle.standardError.write("Develop channel test: instances \(modules.filter { $0.op == "rgbcurve" }.map { "\($0.key) '\($0.instanceName)' \($0.enabled)" }), shown \(curveInfoKey ?? "-")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide channel test: instances \(modules.filter { $0.op == "rgbcurve" }.map { "\($0.key) '\($0.instanceName)' \($0.enabled)" }), shown \(curveInfoKey ?? "-")\n".data(using: .utf8)!)
                 }
             }
             // TestHueCurves: launch argument (-TestHueCurves YES) for testing: shows the hue
@@ -1091,7 +1091,7 @@ final class EditorModel {
                     zoom = .scale(1)
                     try? await Task.sleep(for: .seconds(4))
                     pan(byPixels: CGSize(width: 900, height: 300))
-                    FileHandle.standardError.write("Develop pan test: panned\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide pan test: panned\n".data(using: .utf8)!)
                 }
             }
             // TestUpright: launch argument (-TestUpright YES) for testing: adds a vertical lens
@@ -1107,7 +1107,7 @@ final class EditorModel {
                         }.joined(separator: " ")
                     }
                     @MainActor func log(_ s: String) {
-                        FileHandle.standardError.write("Develop upright test: \(s): \(perspective), corners \(corners())\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide upright test: \(s): \(perspective), corners \(corners())\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4))
                     setGeometry(.init(rotation: 0, vertical: 0.4))
@@ -1125,7 +1125,7 @@ final class EditorModel {
             if UserDefaults.standard.bool(forKey: "TestLocal") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
-                        FileHandle.standardError.write("Develop local test: \(s): selected \(selectedLocal ?? "-"), locals \(localAdjustments.map { "\($0.key) \($0.instanceName) \($0.enabled)" }), shape \(localShape.map { "\($0.kind) \($0.points.prefix(3).map { "(\(Int($0.x)),\(Int($0.y)))" })" } ?? "-")\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide local test: \(s): selected \(selectedLocal ?? "-"), locals \(localAdjustments.map { "\($0.key) \($0.instanceName) \($0.enabled)" }), shape \(localShape.map { "\($0.kind) \($0.points.prefix(3).map { "(\(Int($0.x)),\(Int($0.y)))" })" } ?? "-")\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4))
                     addLocal(.gradient)
@@ -1150,7 +1150,7 @@ final class EditorModel {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
                         let shown = visibleModules.filter { $0.op == "exposure" || $0.op == "diffuse" }.map { "\(Presentation.title(of: $0)) \($0.enabled)" }
-                        FileHandle.standardError.write("Develop presets test: \(s): presets \(presetList.count), diffuse \(presets(for: "diffuse").prefix(3).map(\.title)), shown \(shown)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide presets test: \(s): presets \(presetList.count), diffuse \(presets(for: "diffuse").prefix(3).map(\.title)), shown \(shown)\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4))
                     filter = .all
@@ -1173,7 +1173,7 @@ final class EditorModel {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
                         let iso = (grainModule?.fields.first { $0.name == "scale" }?.value.number ?? 0) * FilmSpeed.grainFactor
-                        FileHandle.standardError.write("Develop grain test: \(s): grain \(grainModule?.enabled == true ? "on" : "off") at ISO \(Int(iso.rounded())), film \(currentFilmSpeed.map { "\(Int($0))" } ?? "-")\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide grain test: \(s): grain \(grainModule?.enabled == true ? "on" : "off") at ISO \(Int(iso.rounded())), film \(currentFilmSpeed.map { "\(Int($0))" } ?? "-")\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4))
                     applyLook(filmLooks.first { $0.film.contains("Delta 100") })
@@ -1183,7 +1183,7 @@ final class EditorModel {
                     applyLook(filmLooks.first { $0.film == "Kodak TRI-X 400" && $0.variant == "+" })
                     try? await Task.sleep(for: .seconds(3)); log("Tri-X pushed")
                     for name in ["Polaroid 667", "Ilford HP5", "Kodak Portra 160 NC", "Fuji 400H", "Rollei Retro 80s", "Kodak TMAX 3200 3 Alt", "TealOrange1", "Kodak E-100 GX Ektachrome 100"] {
-                        FileHandle.standardError.write("Develop grain test: \(name) is \(FilmSpeed.of(film: name).map { "\(Int($0))" } ?? "-")\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide grain test: \(name) is \(FilmSpeed.of(film: name).map { "\(Int($0))" } ?? "-")\n".data(using: .utf8)!)
                     }
                 }
             }
@@ -1193,19 +1193,19 @@ final class EditorModel {
                 Task { @MainActor in
                     @MainActor func ev() -> Double { modules.first { $0.op == "exposure" }?.fields.first { $0.name == "exposure" }?.value.number ?? -99 }
                     try? await Task.sleep(for: .seconds(4))
-                    FileHandle.standardError.write("Develop auto lift test: rule \(autoExposure ?? -99)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide auto lift test: rule \(autoExposure ?? -99)\n".data(using: .utf8)!)
                     await autoAll()
-                    FileHandle.standardError.write("Develop auto lift test: after Auto \(ev())\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide auto lift test: after Auto \(ev())\n".data(using: .utf8)!)
                     if let key = modules.first(where: { $0.op == "exposure" })?.key { setValue(.number(ev() - 2), module: key, field: "exposure") }
                     await liftDarkExposure()
-                    FileHandle.standardError.write("Develop auto lift test: two stops under, lifted to \(ev())\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide auto lift test: two stops under, lifted to \(ev())\n".data(using: .utf8)!)
                 }
             }
             if UserDefaults.standard.bool(forKey: "TestLook") {
                 Task { @MainActor in
                     @MainActor func log(_ s: String) {
                         let films = Set(filmLooks.map(\.film)).count
-                        FileHandle.standardError.write("Develop look test: \(s): looks \(filmLooks.count) in \(films) films, current \(currentLook ?? "none") at \(lookStrength)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide look test: \(s): looks \(filmLooks.count) in \(films) films, current \(currentLook ?? "none") at \(lookStrength)\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4))
                     log("start")
@@ -1226,7 +1226,7 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(2))
                     renamePhoto(to: newName)
                     try? await Task.sleep(for: .seconds(5))
-                    FileHandle.standardError.write("Develop rename test: now \(self.url?.lastPathComponent ?? "-"), files \((try? FileManager.default.contentsOfDirectory(atPath: self.url?.deletingLastPathComponent().path ?? "")) ?? [])\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide rename test: now \(self.url?.lastPathComponent ?? "-"), files \((try? FileManager.default.contentsOfDirectory(atPath: self.url?.deletingLastPathComponent().path ?? "")) ?? [])\n".data(using: .utf8)!)
                 }
             }
             // TestPaste: launch argument (-TestPaste /path/to/other.NEF) for testing: edits this
@@ -1241,13 +1241,13 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(1))
                     await open(URL(fileURLWithPath: other))
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop paste test: opened \(self.url?.lastPathComponent ?? "-") exposure \(ev()), can paste \(canPaste)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide paste test: opened \(self.url?.lastPathComponent ?? "-") exposure \(ev()), can paste \(canPaste)\n".data(using: .utf8)!)
                     pasteAdjustments()
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop paste test: pasted, exposure \(ev()), undo \(undoTitle ?? "-")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide paste test: pasted, exposure \(ev()), undo \(undoTitle ?? "-")\n".data(using: .utf8)!)
                     await undo()
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop paste test: undone, exposure \(ev())\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide paste test: undone, exposure \(ev())\n".data(using: .utf8)!)
                 }
             }
             // TestMultiPaste: launch argument (-TestMultiPaste YES) for testing: edits this photo,
@@ -1264,11 +1264,11 @@ final class EditorModel {
                     let others = library.items.map(\.url).filter { $0 != self.url }
                     if let first = others.first { library.click(first, command: false, shift: false) }
                     for o in others.dropFirst() { library.click(o, command: true, shift: false) }
-                    FileHandle.standardError.write("Develop multi test: selected \(library.selectedInOrder.map(\.lastPathComponent)), targets \(pasteTargets.count)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide multi test: selected \(library.selectedInOrder.map(\.lastPathComponent)), targets \(pasteTargets.count)\n".data(using: .utf8)!)
                     pasteAdjustments()
                     try? await Task.sleep(for: .seconds(4))
                     let dir = self.url?.deletingLastPathComponent().path ?? ""
-                    FileHandle.standardError.write("Develop multi test: sidecars \(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted())\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide multi test: sidecars \(((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted())\n".data(using: .utf8)!)
                 }
             }
             // MatchLocations: launch argument (-MatchLocations "/folder1:/folder2") to place
@@ -1292,7 +1292,7 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(2))
                     if let key = selectedLocal { setValue(.number(2), module: key, field: "exposure") }
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop subject test: \(String(format: "%.2f", found))s, selected \(selectedLocal ?? "-"), kind \(String(describing: localShape?.kind)), outlines \(localShape?.outlines.map(\.count) ?? []), error \(errorMessage ?? "-")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide subject test: \(String(format: "%.2f", found))s, selected \(selectedLocal ?? "-"), kind \(String(describing: localShape?.kind)), outlines \(localShape?.outlines.map(\.count) ?? []), error \(errorMessage ?? "-")\n".data(using: .utf8)!)
                 }
             }
             // TestPhotos: launch argument (-TestPhotos YES) for testing: reads Photos (access,
@@ -1301,19 +1301,19 @@ final class EditorModel {
                 UserDefaults.standard.set(false, forKey: "TestPhotos")
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Develop photos test: authorised \(PhotosLibrary.authorised)\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide photos test: authorised \(PhotosLibrary.authorised)\n".data(using: .utf8)!)
                     let shown = Date()
                     showPhotos(UserDefaults.standard.bool(forKey: "TestPhotosPlaces") ? .photosPlaces : .photos(album: nil, title: "All Photos"))
                     while library.items.isEmpty || library.isScanning || library.isLoadingLocations { try? await Task.sleep(for: .milliseconds(50)) }
-                    FileHandle.standardError.write("Develop photos test: shown in \(String(format: "%.2f", Date().timeIntervalSince(shown)))s\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide photos test: shown in \(String(format: "%.2f", Date().timeIntervalSince(shown)))s\n".data(using: .utf8)!)
                     try? await Task.sleep(for: .seconds(6))
                     let t0 = Date()
                     library.loadLocations()
-                    FileHandle.standardError.write("Develop photos test: albums \(photosAlbums.count), items \(library.items.count), thumbnails \(library.thumbnails.count), located \(library.items.filter { library.locations[$0.url] != nil }.count) in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide photos test: albums \(photosAlbums.count), items \(library.items.count), thumbnails \(library.thumbnails.count), located \(library.items.filter { library.locations[$0.url] != nil }.count) in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s\n".data(using: .utf8)!)
                     if let first = library.items.first {
                         await open(first.url)
                         try? await Task.sleep(for: .seconds(4))
-                        FileHandle.standardError.write("Develop photos test: opened \(self.url?.lastPathComponent ?? "-"), asset \(photosAsset != nil), library url matches \(libraryURL == first.url), modules \(modules.count), source \(library.source?.title ?? "-")\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide photos test: opened \(self.url?.lastPathComponent ?? "-"), asset \(photosAsset != nil), library url matches \(libraryURL == first.url), modules \(modules.count), source \(library.source?.title ?? "-")\n".data(using: .utf8)!)
                     }
                 }
             }
@@ -1323,7 +1323,7 @@ final class EditorModel {
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(4))
                     await denoiseToDNG(amount: Self.denoiseAmount)
-                    FileHandle.standardError.write("Develop denoise test: open \(self.url?.lastPathComponent ?? "-"), noise reduction \(modules.first { $0.op == "denoiseprofile" }?.enabled == true ? "on" : "off"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide denoise test: open \(self.url?.lastPathComponent ?? "-"), noise reduction \(modules.first { $0.op == "denoiseprofile" }?.enabled == true ? "on" : "off"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
             // TestHEIF: launch argument (-TestHEIF /folder) for testing: exports this photo as
@@ -1336,7 +1336,7 @@ final class EditorModel {
                     await export(s, to: URL(fileURLWithPath: folder + "/sdr8.heic"), remember: false)
                     s.bitDepth = 10; s.profile = .hlgP3
                     await export(s, to: URL(fileURLWithPath: folder + "/hlg10.heic"), remember: false)
-                    FileHandle.standardError.write("Develop heif test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide heif test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
             // TestExtras: launch argument (-TestExtras /folder) for testing: exports with a frame
@@ -1363,7 +1363,7 @@ final class EditorModel {
                     s.format = .jpeg; s.bitDepth = 8; s.profile = .sRGB
                     await export(s, to: URL(fileURLWithPath: folder + "/plain.jpg"), remember: false)
                     saved.save()
-                    FileHandle.standardError.write("Develop extras test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    FileHandle.standardError.write("Darkslide extras test: done, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
             // TestLevel: launch argument (-TestLevel YES) for testing: auto straighten from known rotations
@@ -1378,7 +1378,7 @@ final class EditorModel {
                         for _ in 0..<150 where frameID == frame { try? await Task.sleep(for: .milliseconds(30)) }
                         try? await Task.sleep(for: .seconds(1))
                         await autoStraighten()
-                        FileHandle.standardError.write("Develop level test: from \(deg) -> \(straighten)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide level test: from \(deg) -> \(straighten)\n".data(using: .utf8)!)
                     }
                 }
             }
@@ -1396,7 +1396,7 @@ final class EditorModel {
                         }.joined(separator: " ")
                     }
                     @MainActor func log(_ s: String) {
-                        FileHandle.standardError.write("Develop crop test: \(s): size \(imageSize), frame \(image.map { "\($0.width)x\($0.height)" } ?? "-"), straighten \(straighten), corners \(corners())\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide crop test: \(s): size \(imageSize), frame \(image.map { "\($0.width)x\($0.height)" } ?? "-"), straighten \(straighten), corners \(corners())\n".data(using: .utf8)!)
                     }
                     try? await Task.sleep(for: .seconds(4)); log("start")
                     beginCrop()
@@ -1544,7 +1544,7 @@ final class EditorModel {
         }
     }
 
-    /// Settings Develop applies to a photo without an edit: lens correction,
+    /// Settings Darkslide applies to a photo without an edit: lens correction,
     /// optionally automatic exposure, the camera style per the settings, a
     /// basic colour preset, noise reduction at high ISO and filmic's auto-tune.
     /// a DNG's BaselineExposure (EV), if it has one
@@ -1618,7 +1618,7 @@ final class EditorModel {
         return iso
     }
 
-    /// Back to the photo as darktable would first show it, plus Develop's
+    /// Back to the photo as darktable would first show it, plus Darkslide's
     /// new-photo defaults. Not undoable, so the button asks first.
     func resetAll() async {
         guard let engine else { return }
@@ -1914,7 +1914,7 @@ final class EditorModel {
                     }
                     isSimulatingHeadroom = simulate != nil && frame.isHDR
                     if isSimulatingHeadroom, let img = image {
-                        FileHandle.standardError.write("Develop preview at +\(simulate!) stops: headroom \(img.contentHeadroom), frame peak \(frame.analysis?.peak ?? 0)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide preview at +\(simulate!) stops: headroom \(img.contentHeadroom), frame peak \(frame.analysis?.peak ?? 0)\n".data(using: .utf8)!)
                     }
                     imageIsZoomed = crop != nil
                     shownCrop = crop
@@ -1952,15 +1952,15 @@ final class EditorModel {
                                 let f = raw.bindMemory(to: Float.self)
                                 let n = Double(f.count / (4 * 97))
                                 let rgb = (0..<3).map { c in stride(from: c, to: f.count, by: 4 * 97).reduce(0) { $0 + Double(f[$1]) } / n }
-                                FileHandle.standardError.write("Develop HDR frame RGB means \(rgb.map { String(format: "%.3f", $0) })\n".data(using: .utf8)!)
+                                FileHandle.standardError.write("Darkslide HDR frame RGB means \(rgb.map { String(format: "%.3f", $0) })\n".data(using: .utf8)!)
                                 return rgb[0]
                             }
                             let b = raw.bindMemory(to: UInt8.self)
                             return stride(from: 0, to: b.count, by: 4 * 97).reduce(0) { $0 + Double(b[$1]) } / Double(b.count / (4 * 97))
                         }
                         func ms(_ d: Duration) -> Int { Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000) }
-                        FileHandle.standardError.write("Develop frame split: set \(ms(setDone - start)) ms, render call \(ms(renderDone - setDone)) ms, after \(ms(ContinuousClock.now - renderDone)) ms\n".data(using: .utf8)!)
-                        FileHandle.standardError.write("Develop frame \(lastRenderMs ?? 0) ms (engine \(frame.ms) ms) at \(pixels) px\(draft ? " draft" : ""), mean \(String(format: "%.3f", mean))\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide frame split: set \(ms(setDone - start)) ms, render call \(ms(renderDone - setDone)) ms, after \(ms(ContinuousClock.now - renderDone)) ms\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide frame \(lastRenderMs ?? 0) ms (engine \(frame.ms) ms) at \(pixels) px\(draft ? " draft" : ""), mean \(String(format: "%.3f", mean))\n".data(using: .utf8)!)
                     }
                     framesSinceOpen += 1
                     // the first frame after opening fills the cache and is always slow
@@ -2046,7 +2046,7 @@ final class EditorModel {
             if settings.format.isGainMap {
                 try await exportGainMap(settings, to: url, engine: engine)
                 lastExport = url
-                FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+                FileHandle.standardError.write("Darkslide exported \(url.path)\n".data(using: .utf8)!)
             } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings)
                         || settings.enlargement != nil {
                 // HEIF, anything with a frame or watermark, an HDR source made SDR, and enlargements, through Core Image
@@ -2064,7 +2064,7 @@ final class EditorModel {
                 catalog.recordExport(photo, file: file, format: settings.format.title)
             }
         } catch {
-            FileHandle.standardError.write("Develop export failed: \(error)\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide export failed: \(error)\n".data(using: .utf8)!)
             errorMessage = "Couldn't export: \(error.localizedDescription)"
         }
     }
@@ -2093,7 +2093,7 @@ final class EditorModel {
 
     private func exportThroughCoreImage(_ settings: ExportSettings, to url: URL, engine: Engine) async throws {
         let profile = settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("develop-export-\(UUID().uuidString)")
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("darkslide-export-\(UUID().uuidString)")
         let toneMap = toneMapsExport(settings)
         let float = toneMap || (settings.format == .tiff && settings.bitDepth == 32)
         let extras = ExportExtras.load()
@@ -2154,7 +2154,7 @@ final class EditorModel {
                 throw EngineError(message: "A gain map is made from renders, not an export.")
             }
         }.value
-        FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+        FileHandle.standardError.write("Darkslide exported \(url.path)\n".data(using: .utf8)!)
     }
 
     /// the status line's progress while an export is enlarged
@@ -2238,7 +2238,7 @@ final class EditorModel {
                                                hdrLimit: hdrLimit)
         var hdr = CIImage(cgImage: hdrFrame.image)
         if UserDefaults.standard.string(forKey: "TestExport") != nil {
-            FileHandle.standardError.write("Develop gain map test: target \(target.name), HDR frame peak \(hdrFrame.analysis?.peak ?? -1), isHDR \(hdrFrame.isHDR)\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide gain map test: target \(target.name), HDR frame peak \(hdrFrame.analysis?.peak ?? -1), isHDR \(hdrFrame.isHDR)\n".data(using: .utf8)!)
         }
 
         var sdr: CIImage
@@ -2419,8 +2419,8 @@ final class EditorModel {
         statusNote = "Denoising…"
         await settleEdits()
         let temp = FileManager.default.temporaryDirectory
-        let mosaicIn = temp.appendingPathComponent("develop-mosaic-\(UUID().uuidString)")
-        let mosaicOut = temp.appendingPathComponent("develop-denoised-\(UUID().uuidString)")
+        let mosaicIn = temp.appendingPathComponent("darkslide-mosaic-\(UUID().uuidString)")
+        let mosaicOut = temp.appendingPathComponent("darkslide-denoised-\(UUID().uuidString)")
         defer {
             try? FileManager.default.removeItem(at: mosaicIn)
             try? FileManager.default.removeItem(at: mosaicOut)
@@ -2442,7 +2442,7 @@ final class EditorModel {
             }.value
             statusNote = "Writing the DNG…"
             try await engine.writeDNG(mosaic: mosaicOut, to: dest)
-            FileHandle.standardError.write("Develop denoised to \(dest.path) in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide denoised to \(dest.path) in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
         } catch {
             errorMessage = "Couldn't denoise: \(error.localizedDescription)"
             return
@@ -2506,7 +2506,7 @@ final class EditorModel {
             else { return }
             let under = log2(target / median)
             if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
-                FileHandle.standardError.write(String(format: "Develop auto lift: median %.3f, %.2f EV under, exposure %.2f\n", median, under, ev).data(using: .utf8)!)
+                FileHandle.standardError.write(String(format: "Darkslide auto lift: median %.3f, %.2f EV under, exposure %.2f\n", median, under, ev).data(using: .utf8)!)
             }
             guard under > 1.0 / 3 else { break }
             // the tone mapper's mid-tones turn a stop of exposure into about 1.4 on screen
@@ -2972,7 +2972,7 @@ extension EditorModel {
     /// of the iPhone photos in Photos and the folders' own located photos,
     /// within 30 minutes (LocationMatcher). For the MatchLocations launch argument.
     func matchLocations(in folders: [URL]) async {
-        func log(_ s: String) { FileHandle.standardError.write("Develop match locations: \(s)\n".data(using: .utf8)!) }
+        func log(_ s: String) { FileHandle.standardError.write("Darkslide match locations: \(s)\n".data(using: .utf8)!) }
         let exts: Set<String> = ["nef", "nefx", "hif", "heic", "jpg", "jpeg", "dng"]
         let photos = folders.flatMap { f in
             ((try? FileManager.default.contentsOfDirectory(at: f, includingPropertiesForKeys: nil)) ?? [])
@@ -3357,7 +3357,7 @@ extension EditorModel {
         focusOutline = mapped
         // TestFocus: launch argument (-TestFocus YES) for testing
         if UserDefaults.standard.bool(forKey: "TestFocus") {
-            FileHandle.standardError.write("Develop focus test: \(cameraFocus.map { "\($0.mode ?? "-") \($0.area ?? "-") \($0.inFocus.map(String.init) ?? "-") box \($0.box.map { "\($0)" } ?? "-")" } ?? "-") image \(Int(imageSize.width))x\(Int(imageSize.height)) outline \(mapped.map { $0.map { "(\(Int($0.x)),\(Int($0.y)))" }.joined(separator: " ") } ?? "-")\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide focus test: \(cameraFocus.map { "\($0.mode ?? "-") \($0.area ?? "-") \($0.inFocus.map(String.init) ?? "-") box \($0.box.map { "\($0)" } ?? "-")" } ?? "-") image \(Int(imageSize.width))x\(Int(imageSize.height)) outline \(mapped.map { $0.map { "(\(Int($0.x)),\(Int($0.y)))" }.joined(separator: " ") } ?? "-")\n".data(using: .utf8)!)
         }
     }
 
@@ -3514,12 +3514,12 @@ extension EditorModel {
                 lookPreviewBaseID += 1
                 lookPreviewError = nil
                 if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
-                    FileHandle.standardError.write(String(format: "Develop look previews: settled %.2fs, rendered %.2fs\n",
+                    FileHandle.standardError.write(String(format: "Darkslide look previews: settled %.2fs, rendered %.2fs\n",
                                                           settled.timeIntervalSince(started), Date().timeIntervalSince(settled)).data(using: .utf8)!)
                 }
                 return
             } catch {
-                FileHandle.standardError.write("Develop look previews: attempt \(attempt) failed: \(error.localizedDescription)\n".data(using: .utf8)!)
+                FileHandle.standardError.write("Darkslide look previews: attempt \(attempt) failed: \(error.localizedDescription)\n".data(using: .utf8)!)
                 lookPreviewError = error.localizedDescription
                 try? await Task.sleep(for: .milliseconds(500))
             }
@@ -3722,7 +3722,7 @@ extension EditorModel {
     func showPhotos(_ source: LibrarySource) {
         Task {
             guard await PhotosLibrary.authorise() else {
-                errorMessage = "Develop needs access to Photos: allow it in System Settings › Privacy & Security › Photos."
+                errorMessage = "Darkslide needs access to Photos: allow it in System Settings › Privacy & Security › Photos."
                 return
             }
             if photosAlbums.isEmpty { loadPhotosAlbums() }

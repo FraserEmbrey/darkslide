@@ -2,12 +2,18 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @main
-struct DevelopApp: App {
+struct DarkslideApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
-    @State private var model = EditorModel()
+    @State private var model: EditorModel
+
+    init() {
+        // before the model, whose catalog and engine read the folders
+        FormerName.migrate()
+        _model = State(initialValue: EditorModel())
+    }
 
     var body: some Scene {
-        Window("Develop", id: "main") {
+        Window("Darkslide", id: "main") {
             ContentView()
                 .environment(model)
                 .environment(\.sliderDrag) { [model] active, clipping in model.sliderDrag(active: active, clipping: clipping) }

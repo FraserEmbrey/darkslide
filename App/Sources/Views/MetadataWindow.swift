@@ -124,7 +124,7 @@ struct MetadataWindow: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
                         .textSelection(.enabled)
-                        .help(f.locationFromSidecar ? "Placed in Develop or darktable" : "From the camera's GPS")
+                        .help(f.locationFromSidecar ? "Placed in Darkslide or darktable" : "From the camera's GPS")
                     Map(initialPosition: .camera(MapCamera(centerCoordinate: c, distance: 3000))) {
                         Annotation("", coordinate: c, anchor: .bottom) { Pin() }
                     }

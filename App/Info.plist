@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>Develop</string>
+	<string>Darkslide</string>
 	<key>CFBundleIdentifier</key>
-	<string>me.frsr.develop</string>
+	<string>me.frsr.darkslide</string>
 	<key>CFBundleName</key>
-	<string>Develop</string>
+	<string>Darkslide</string>
 	<key>CFBundleDisplayName</key>
-	<string>Develop</string>
+	<string>Darkslide</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleIconFile</key>
@@ -25,7 +25,7 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.photography</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Develop reads the locations of photos in your Photos library, such as your iPhone's, to place your camera's photos on the map.</string>
+	<string>Darkslide reads the locations of photos in your Photos library, such as your iPhone's, to place your camera's photos on the map.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>UTImportedTypeDeclarations</key>

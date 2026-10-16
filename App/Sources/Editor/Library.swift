@@ -514,7 +514,7 @@ final class Library {
         let xmp = (try? FileManager.default.attributesOfItem(atPath: url.path + ".xmp")[.modificationDate] as? Date)
             .map { "\($0.timeIntervalSince1970)" } ?? "none"
         let digest = SHA256.hash(data: Data((url.path + "|" + xmp).utf8)).map { String(format: "%02x", $0) }.joined()
-        return caches.appendingPathComponent("Develop/thumbnails/\(digest.prefix(32)).jpg")
+        return caches.appendingPathComponent("Darkslide/thumbnails/\(digest.prefix(32)).jpg")
     }
 
     nonisolated private static func cachedRender(for url: URL) -> CGImage? {

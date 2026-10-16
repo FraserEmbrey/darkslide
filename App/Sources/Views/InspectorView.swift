@@ -1289,7 +1289,7 @@ struct ModuleMenu: View {
             Button("Save") { model.savePreset(named: presetName, module: module.key) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Saved in Develop's darktable presets, for any photo.")
+            Text("Saved in Darkslide's darktable presets, for any photo.")
         }
     }
 

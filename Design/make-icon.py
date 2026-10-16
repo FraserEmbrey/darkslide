@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates Develop's app icon: darktable's six-colour aperture redrawn as a
+"""Generates Darkslide's app icon: darktable's six-colour aperture redrawn as a
 real iris, each blade lying on the next, around a hexagonal opening. Writes
 Icon Composer layers (AppIcon.icon, compiled by Scripts/build-app.sh) and a
 flat preview (preview.svg)."""

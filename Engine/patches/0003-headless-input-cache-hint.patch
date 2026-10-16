@@ -41,7 +41,7 @@ diff -ru a/src/develop/pixelpipe_hb.h b/src/develop/pixelpipe_hb.h
    // reusable ping-pong buffers for mask distortion walks
    float *mask_distort_buf[2];
    size_t mask_distort_buf_size[2];
-+  // Develop (headless): the module being edited. darktable keeps the input
++  // Darkslide (headless): the module being edited. darktable keeps the input
 +  // of the module focused in its interface in the cache; with no interface
 +  // this hint does the same, so a slider only reruns the pipe from there.
 +  const struct dt_iop_module_t *input_hint;

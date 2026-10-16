@@ -27,11 +27,11 @@ actor Engine {
         let fm = FileManager.default
         let support = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                   appropriateFor: nil, create: true)
-            .appendingPathComponent("Develop/darktable", isDirectory: true)
+            .appendingPathComponent("Darkslide/darktable", isDirectory: true)
         configDir = support
         let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
                                 appropriateFor: nil, create: true)
-            .appendingPathComponent("Develop", isDirectory: true)
+            .appendingPathComponent("Darkslide", isDirectory: true)
         try fm.createDirectory(at: support, withIntermediateDirectories: true)
         try fm.createDirectory(at: caches, withIntermediateDirectories: true)
 
@@ -86,9 +86,9 @@ actor Engine {
         }
     }
 
-    /// The bundled helper, or DEVELOP_ENGINE for running from a dev checkout.
+    /// The bundled helper, or DARKSLIDE_ENGINE for running from a dev checkout.
     private static func helperURL() throws -> URL {
-        if let path = ProcessInfo.processInfo.environment["DEVELOP_ENGINE"] {
+        if let path = ProcessInfo.processInfo.environment["DARKSLIDE_ENGINE"] {
             return URL(fileURLWithPath: path)
         }
         if let url = Bundle.main.resourceURL?.appendingPathComponent("engine/bin/darkroom-helper"),
@@ -184,7 +184,7 @@ actor Engine {
                                        "items": items.map { ["module": $0.module, "field": $0.field, "value": $0.value.json] }])
         if UserDefaults.standard.bool(forKey: "LogRenderTimes"),
            let ms = (try? JSONSerialization.jsonObject(with: reply) as? [String: Any])?["ms"] as? Int {
-            FileHandle.standardError.write("Develop set_many \(items.count) in helper \(ms) ms\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide set_many \(items.count) in helper \(ms) ms\n".data(using: .utf8)!)
         }
     }
 
@@ -516,7 +516,7 @@ actor Engine {
         }
         let reply = try await request(body, as: RenderReply.self)
         if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
-            FileHandle.standardError.write("Develop render hdr \(hdr) toneMapped \(toneMapped) profile \(reply.outputProfile)\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide render hdr \(hdr) toneMapped \(toneMapped) profile \(reply.outputProfile)\n".data(using: .utf8)!)
         }
         var frame = toneMapped
             ? try toneMappedFrame(try self.frame(from: reply, hdr: true, keepForRefresh: false, displayHeadroom: 16,

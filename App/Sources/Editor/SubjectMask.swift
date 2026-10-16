@@ -39,7 +39,7 @@ enum SubjectMask {
             }
         }
         guard inside > 0 else { return nil }
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("develop-subject-\(UUID().uuidString).mask")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("darkslide-subject-\(UUID().uuidString).mask")
         try bytes.write(to: file)
         return Found(file: file, width: w, height: h)
     }

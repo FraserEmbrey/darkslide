@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fetches darktable's source, applies Develop's patches and builds a minimal
+# Fetches darktable's source, applies Darkslide's patches and builds a minimal
 # engine (no GUI extras, no Lua; GPU via Apple OpenCL) into vendor/dt-install.
 set -euo pipefail
 

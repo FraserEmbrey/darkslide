@@ -258,7 +258,7 @@ struct LookTile: View {
         let started = Date()
         let image = await Task.detached(priority: .utility) { LUTPreview.render(url, on: base) }.value
         if UserDefaults.standard.bool(forKey: "LogRenderTimes") {
-            FileHandle.standardError.write(String(format: "Develop look tile %@: %.2fs, base %dx%d %@\n", film.name, Date().timeIntervalSince(started),
+            FileHandle.standardError.write(String(format: "Darkslide look tile %@: %.2fs, base %dx%d %@\n", film.name, Date().timeIntervalSince(started),
                                                   base.width, base.height, base.colorSpace?.name as String? ?? "-").data(using: .utf8)!)
         }
         preview = image

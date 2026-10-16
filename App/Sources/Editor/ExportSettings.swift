@@ -1,6 +1,6 @@
 import Foundation
 
-/// The export formats Develop offers, as Pixelmator and Lightroom group them:
+/// The export formats Darkslide offers, as Pixelmator and Lightroom group them:
 /// HDR JPEG and HDR HEIC (an 8-bit SDR image with an ISO 21496-1 gain map,
 /// from Core Image; see EditorModel.exportGainMap), and SDR JPEG, TIFF and PNG
 /// from darktable and HEIC from Core Image (exportThroughCoreImage). darktable

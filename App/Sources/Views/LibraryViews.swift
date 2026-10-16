@@ -293,7 +293,7 @@ struct LibraryGrid: View {
         case .edited: "Photos you edit and save appear here, from every folder."
         case .exported: "Photos you export appear here, from every folder."
         case .map: "Add folders to the library to see their photos on the map."
-        case .photos, .photosPlaces: PhotosLibrary.authorised ? "No photos here." : "Allow Develop to use Photos in System Settings › Privacy & Security › Photos."
+        case .photos, .photosPlaces: PhotosLibrary.authorised ? "No photos here." : "Allow Darkslide to use Photos in System Settings › Privacy & Security › Photos."
         case .folder: model.library.includeSubfolders ? "No raw files or images in this folder or its subfolders."
                                                       : "No raw files or images in this folder. Turn on Include Subfolders to look further down."
         }
@@ -366,7 +366,7 @@ struct LibraryGrid: View {
         reveal(target)
         // LogKeys: launch argument (-LogKeys YES) for testing
         if UserDefaults.standard.bool(forKey: "LogKeys") {
-            FileHandle.standardError.write("Develop grid move \(offset): \(library.index(of: target) ?? -1) of \(items.count), \(perRow) a row, \(library.selected.count) selected\n".data(using: .utf8)!)
+            FileHandle.standardError.write("Darkslide grid move \(offset): \(library.index(of: target) ?? -1) of \(items.count), \(perRow) a row, \(library.selected.count) selected\n".data(using: .utf8)!)
         }
     }
 

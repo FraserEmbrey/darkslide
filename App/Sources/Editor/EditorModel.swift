@@ -1072,34 +1072,52 @@ final class EditorModel {
                 }
             }
             // TestComposite: launch argument (-TestComposite /folder -TestCompositeLayer /photo) for
-            // testing: a screen blend, a silhouette on white and a gradient cutout, each exported
+            // testing: a silhouette on white with the open photo as the base, previewed into the
+            // folder, then made into a new photo
             if let folder = UserDefaults.standard.string(forKey: "TestComposite"), !folder.isEmpty,
-               let other = UserDefaults.standard.string(forKey: "TestCompositeLayer") {
+               let other = UserDefaults.standard.string(forKey: "TestCompositeLayer"), let base = self.url,
+               !Self.compositeTestRan {
+                Self.compositeTestRan = true
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(4))
-                    var t = ExportSettings(); t.format = .jpeg; t.longEdge = 1600; t.profile = .sRGB
-                    @MainActor func run(_ name: String) async {
-                        let started = Date()
-                        await export(t, to: URL(fileURLWithPath: folder + "/\(name).jpg"), remember: false)
-                        FileHandle.standardError.write("Darkslide composite test: \(name) in \(Int(Date().timeIntervalSince(started) * 1000)) ms, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    // TestCompositeSheet: just show the sheet, set for a silhouette
+                    if UserDefaults.standard.bool(forKey: "TestCompositeSheet") {
+                        newComposite([base, URL(fileURLWithPath: other)])
+                        compositeDraft?.region = .subject
+                        compositeDraft?.backdrop = .colour
+                        return
                     }
-                    addCompositeLayers([URL(fileURLWithPath: other)])
-                    composite.blend = .screen
-                    await run("screen")
-                    composite.region = .subject
-                    composite.backdrop = .colour
-                    composite.colour = [1, 1, 1]
-                    await run("silhouette")
-                    composite.layers = []
-                    composite.backdrop = .gradient
-                    composite.colour = [0.95, 0.75, 0.55]
-                    composite.colour2 = [0.2, 0.25, 0.4]
-                    await run("cutout")
-                    composite.layers = [CompositeSettings.Layer(path: other)]
-                    composite.backdrop = .none
-                    composite.region = .everywhere
-                    try? await Task.sleep(for: .seconds(3))
-                    FileHandle.standardError.write("Darkslide composite test: preview shown\n".data(using: .utf8)!)
+                    // the base on its own first, previewed and made, to compare
+                    let plain = CompositeSettings(base: base.path)
+                    if let p = try? await compositePreview(plain),
+                       let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/base-preview.png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, p, nil)
+                        CGImageDestinationFinalize(dest)
+                    }
+                    if let p = try? await compositePreview(CompositeSettings(base: other)),
+                       let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/layer-preview.png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, p, nil)
+                        CGImageDestinationFinalize(dest)
+                    }
+                    await createComposite(plain)
+                    await createComposite(CompositeSettings(base: other))
+                    await open(base)
+                    newComposite([base, URL(fileURLWithPath: other)])
+                    guard var draft = compositeDraft else { return }
+                    draft.region = .subject
+                    draft.backdrop = .colour
+                    draft.colour = [1, 1, 1]
+                    compositeDraft = draft
+                    try? await Task.sleep(for: .seconds(1))
+                    let started = Date()
+                    if let p = try? await compositePreview(draft),
+                       let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/preview.png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, p, nil)
+                        CGImageDestinationFinalize(dest)
+                    }
+                    let previewMs = Int(Date().timeIntervalSince(started) * 1000)
+                    await createComposite(draft)
+                    FileHandle.standardError.write("Darkslide composite test: preview \(previewMs) ms, made \(Int(Date().timeIntervalSince(started) * 1000) - previewMs) ms, open \(self.url?.lastPathComponent ?? "-"), recipe \(compositeRecipe != nil), size \(imageSize), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
             // TestToneCurve: launch argument (-TestToneCurve YES) for testing: shows the tone
@@ -1518,8 +1536,6 @@ final class EditorModel {
             aiDenoise = nil
             denoiseSent = false
             if let amount = catalog.aiDenoise(of: url) { await setAIDenoise(amount, restoring: true) }
-            compositeMatte = nil
-            composite = catalog.composite(of: url) ?? CompositeSettings()
             requestRender()
         } catch {
             errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
@@ -1979,9 +1995,6 @@ final class EditorModel {
                     if let r = frame.rotateInSize { rotateInSize = r }
                     if let simulate, frame.isHDR {
                         image = try await gainMapPreview(frame, stops: simulate, maxPixels: pixels, crop: crop, engine: engine)
-                    } else if composite.isActive, !frame.isHDR,
-                              let made = await compositePreview(frame, crop: crop, engine: engine) {
-                        image = made
                     } else {
                         image = frame.image
                     }
@@ -2109,10 +2122,6 @@ final class EditorModel {
         var settings = settings
         if settings.format.isGainMap, settings.profile.isHDR == false { settings.profile = .fromEdit }
         do {
-            if composite.isActive, settings.format.isGainMap
-                || HDRTarget(darktableProfile: settings.profile == .fromEdit ? (outputProfileType ?? 1) : settings.profile.rawValue).isHDR {
-                throw EngineError(message: "Composites export in SDR for now. Choose an SDR colour profile, such as sRGB or Display P3.")
-            }
             // an HDR file from an SDR edit: the edit takes the HDR profile (and
             // its reference white and tone mapper white), as for a gain map
             if settings.profile != .fromEdit, HDRTarget(darktableProfile: settings.profile.rawValue).isHDR,
@@ -2125,7 +2134,7 @@ final class EditorModel {
                 lastExport = url
                 FileHandle.standardError.write("Darkslide exported \(url.path)\n".data(using: .utf8)!)
             } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings)
-                        || settings.enlargement != nil || composite.isActive {
+                        || settings.enlargement != nil {
                 // HEIF, anything with a frame or watermark, an HDR source made SDR, and enlargements, through Core Image
                 try await exportThroughCoreImage(settings, to: url, engine: engine)
                 lastExport = url
@@ -2183,13 +2192,6 @@ final class EditorModel {
                                            profile: toneMap ? 4 : profile,
                                            sdrFromHDR: !toneMap && exportsSDRRendition(settings))
         defer { try? FileManager.default.removeItem(at: tiff) }
-        // the other photos of a composite, at the export's size and in its profile
-        let compositeSettings = composite
-        let layerFiles = composite.isActive
-            ? try await compositeLayersForExport(longEdge: maxEdge > 0 ? maxEdge : Int(max(imageSize.width, imageSize.height)),
-                                                 profile: profile, engine: engine)
-            : []
-        defer { for (f, _) in layerFiles { try? FileManager.default.removeItem(at: f) } }
         let quality = Double(settings.quality) / 100
         let progress = enlargeProgress()
         defer { statusNote = nil }
@@ -2210,10 +2212,6 @@ final class EditorModel {
                     throw EngineError(message: "Couldn't read darktable's export.")
                 }
                 (image, space) = (read, s)
-            }
-            if compositeSettings.isActive {
-                image = try Self.applyComposite(compositeSettings, to: image, layers: layerFiles,
-                                                tagged: !toneMap && tagged != nil, space: space)
             }
             if let enlarge {
                 // in the export's encoding, or gamma-encoded Rec.2020 for the tone mapped one
@@ -2489,19 +2487,14 @@ final class EditorModel {
             && photosAsset == nil && RawDenoise.isAvailable && url.map(Library.isRaw) == true
     }
 
-    /// Other photos blended into the open one, and its backdrop (Composite.swift).
-    var composite = CompositeSettings() {
-        didSet {
-            guard composite != oldValue, let url else { return }
-            catalog.setComposite(composite.isActive ? composite : nil, for: url)
-            requestRender()
-        }
-    }
-    var choosingCompositePhotos = false
-    /// the other photos' renders for the preview, by path, with their sidecars' dates
+    /// New Composite's sheet: the photos and settings being put together,
+    /// made into a new photo by createComposite (Composite.swift)
+    var compositeDraft: CompositeSettings?
+    static var compositeTestRan = false
+    /// the photos' renders for the sheet's preview, by path, with their sidecars' dates
     @ObservationIgnored var compositeRenders: [String: (date: Date?, image: CIImage)] = [:]
-    /// the open photo's subject for the preview, and the photo size it was found at
-    @ObservationIgnored var compositeMatte: (size: CGSize, matte: CIImage?)?
+    /// the base photo's subject for the preview, by path
+    @ObservationIgnored var compositeMattes: [String: CIImage?] = [:]
     @ObservationIgnored let compositeContext = CIContext()
 
     /// AI denoise's amount (1 to 100) on the open photo, or nil when it's off.
@@ -3984,30 +3977,34 @@ extension EditorModel {
 // MARK: - Composite
 
 extension EditorModel {
-    /// Adds photos to blend into the open one; the open photo itself and ones
-    /// already in are skipped.
-    func addCompositeLayers(_ urls: [URL]) {
-        guard let url else { return }
-        let have = Set(composite.layers.map(\.path))
-        let new = urls.filter { $0 != url && !have.contains($0.path) }
-        guard !new.isEmpty else { return }
-        composite.layers += new.map { CompositeSettings.Layer(path: $0.path) }
-    }
-
-    /// Library › Composite: opens the first photo and blends the rest into it.
-    func composite(_ urls: [URL]) async {
+    /// New Composite… from the library's selection or the open photo: the
+    /// first photo is the base, the rest blend into it.
+    func newComposite(_ urls: [URL]) {
         guard let first = urls.first else { return }
-        await open(first)
-        guard url == first else { return }
-        addCompositeLayers(Array(urls.dropFirst()))
+        // the photos may have been edited since the last preview
+        compositeRenders = [:]
+        compositeMattes = [:]
+        var draft = CompositeSettings(base: first.path)
+        draft.layers = urls.dropFirst().filter { $0 != first }.map { CompositeSettings.Layer(path: $0.path) }
+        compositeDraft = draft
     }
 
-    /// a photo's render for compositing, with its own saved edit, through
-    /// darktable's export: a 16-bit TIFF in `profile`
-    private func compositeRender(_ layer: URL, maxEdge: Int, profile: Int, engine: Engine) async throws -> URL {
+    /// the recipe of the open photo, when it's a composite made here
+    var compositeRecipe: CompositeSettings? { url.flatMap { catalog.composite(of: $0) } }
+
+    /// Edit Composite…: the open composite's recipe, to make a new version from
+    func editComposite() {
+        compositeRenders = [:]
+        compositeMattes = [:]
+        compositeDraft = compositeRecipe
+    }
+
+    /// a photo's render with its own saved edit, through darktable's export:
+    /// a 16-bit Display P3 TIFF
+    private func compositeRender(_ photo: URL, maxEdge: Int, engine: Engine) async throws -> URL {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("darkslide-layer-\(UUID().uuidString)")
         return try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: 16,
-                                       maxEdge: maxEdge, profile: profile, source: layer)
+                                       maxEdge: maxEdge, profile: 26, source: photo)
     }
 
     private static func sidecarDate(_ photo: URL) -> Date? {
@@ -4015,94 +4012,116 @@ extension EditorModel {
         return (try? xmp.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
-    /// The preview frame with the composite on it, or nil to show it as it is.
-    /// The other photos are rendered once (again when their edit changes) and
-    /// the subject found once for the photo's current shape.
-    fileprivate func compositePreview(_ frame: Engine.Frame, crop: Engine.Crop?, engine: Engine) async -> CGImage? {
-        let settings = composite
-        var layers: [(CIImage, CompositeSettings.Layer)] = []
-        for layer in settings.layers {
-            let date = Self.sidecarDate(layer.url)
-            if let cached = compositeRenders[layer.path], cached.date == date {
-                layers.append((cached.image, layer))
-                continue
-            }
-            statusNote = "Rendering \(layer.url.lastPathComponent)…"
-            defer { statusNote = nil }
-            do {
-                let file = try await compositeRender(layer.url, maxEdge: 3000, profile: 1, engine: engine)
-                defer { try? FileManager.default.removeItem(at: file) }
-                // read into memory, as the file goes
-                guard let read = CIImage(contentsOf: file),
-                      let cg = compositeContext.createCGImage(read, from: read.extent) else { continue }
-                let image = CIImage(cgImage: cg)
-                compositeRenders[layer.path] = (date, image)
-                layers.append((image, layer))
-            } catch {
-                errorMessage = "Couldn't render \(layer.url.lastPathComponent) for the composite: \(error.localizedDescription)"
-            }
+    /// a photo at preview size, rendered once (again when its edit changes)
+    private func compositePreviewRender(_ photo: URL, engine: Engine) async throws -> CIImage {
+        let date = Self.sidecarDate(photo)
+        if let cached = compositeRenders[photo.path], cached.date == date { return cached.image }
+        let file = try await compositeRender(photo, maxEdge: 1400, engine: engine)
+        defer { try? FileManager.default.removeItem(at: file) }
+        // into memory, as the file goes
+        guard let read = CIImage(contentsOf: file), let cg = compositeContext.createCGImage(read, from: read.extent) else {
+            throw EngineError(message: "Couldn't read the render of \(photo.lastPathComponent).")
         }
-        // the subject, from a whole-photo render
-        var matte: CIImage?
-        if settings.needsSubject {
-            if let found = compositeMatte, found.size == imageSize {
-                matte = found.matte
-            } else {
-                let whole = crop == nil ? frame.image
-                    : try? await engine.render(maxPixels: 1600, hdr: false, displayHeadroom: 1, wantOverlay: false,
-                                               overrides: [], hdrLimit: nil).image
-                if let whole {
-                    matte = try? await Task.detached { try Compositor.subjectMatte(in: whole) }.value
-                    compositeMatte = (imageSize, matte)
-                }
-            }
-        }
-        let base = CIImage(cgImage: frame.image)
-        let canvas = imageSize
-        let region = crop.map { c in
-            CGRect(x: Double(c.x) / c.scale, y: Double(c.y) / c.scale, width: Double(c.w) / c.scale, height: Double(c.h) / c.scale)
-        } ?? CGRect(origin: .zero, size: canvas)
-        let out = Compositor.apply(settings, base: base, canvas: canvas, region: region, layers: layers,
-                                   subject: matte, encoded: false)
-        return compositeContext.createCGImage(out, from: base.extent, format: .RGBA8,
-                                              colorSpace: frame.image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
+        let image = CIImage(cgImage: cg)
+        compositeRenders[photo.path] = (date, image)
+        return image
     }
 
-    /// The composite for an export: the other photos rendered at the export's
-    /// size and colour profile, read the same way as the export itself, and
-    /// the subject found on the export.
-    fileprivate func compositeLayersForExport(longEdge: Int, profile: Int, engine: Engine) async throws -> [(URL, CompositeSettings.Layer)] {
-        var files: [(URL, CompositeSettings.Layer)] = []
-        for layer in composite.layers {
-            statusNote = "Rendering \(layer.url.lastPathComponent)…"
-            files.append((try await compositeRender(layer.url, maxEdge: longEdge, profile: profile, engine: engine), layer))
+    /// The sheet's preview of a composite.
+    func compositePreview(_ draft: CompositeSettings) async throws -> CGImage? {
+        guard let engine else { return nil }
+        let base = try await compositePreviewRender(draft.baseURL, engine: engine)
+        var layers: [(CIImage, CompositeSettings.Layer)] = []
+        for layer in draft.layers {
+            layers.append((try await compositePreviewRender(layer.url, engine: engine), layer))
+        }
+        var matte: CIImage?
+        if draft.needsSubject {
+            if let found = compositeMattes[draft.base] {
+                matte = found
+            } else if let cg = compositeContext.createCGImage(base, from: base.extent) {
+                matte = try await Task.detached { try Compositor.subjectMatte(in: cg) }.value
+                compositeMattes[draft.base] = matte
+            }
+        }
+        let size = base.extent.size
+        let out = Compositor.apply(draft, base: base, canvas: size, region: CGRect(origin: .zero, size: size),
+                                   layers: layers, subject: matte, encoded: false)
+        return compositeContext.createCGImage(out, from: base.extent, format: .RGBA8,
+                                              colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!)
+    }
+
+    /// Makes the composite at full size as a new 16-bit TIFF next to the base,
+    /// keeps its recipe and opens it. The photos it's made from are untouched.
+    func createComposite(_ draft: CompositeSettings) async {
+        guard let engine else { return }
+        compositeDraft = nil
+        let dest = Self.compositeName(for: draft.baseURL)
+        var files: [URL] = []
+        defer { for f in files { try? FileManager.default.removeItem(at: f) } }
+        do {
+            statusNote = "Rendering \(draft.baseURL.lastPathComponent)…"
+            let baseFile = try await compositeRender(draft.baseURL, maxEdge: 0, engine: engine)
+            files.append(baseFile)
+            guard let base = CIImage(contentsOf: baseFile) else { throw EngineError(message: "Couldn't read the base photo's render.") }
+            let long = Int(max(base.extent.width, base.extent.height))
+            var layers: [(URL, CompositeSettings.Layer)] = []
+            for layer in draft.layers {
+                statusNote = "Rendering \(layer.url.lastPathComponent)…"
+                let f = try await compositeRender(layer.url, maxEdge: long, engine: engine)
+                files.append(f)
+                layers.append((f, layer))
+            }
+            statusNote = "Making the composite…"
+            try await Task.detached(priority: .userInitiated) {
+                let read = layers.compactMap { f, l in CIImage(contentsOf: f).map { ($0, l) } }
+                var matte: CIImage?
+                if draft.needsSubject {
+                    // found on the base at up to 2048 px
+                    let e = base.extent
+                    let s = min(1, 2048 / max(e.width, e.height))
+                    let small = base.transformed(by: CGAffineTransform(scaleX: s, y: s))
+                    if let cg = CIContext().createCGImage(small, from: small.extent.integral) {
+                        matte = try Compositor.subjectMatte(in: cg)
+                    }
+                }
+                let size = base.extent.size
+                let out = Compositor.apply(draft, base: base, canvas: size, region: CGRect(origin: .zero, size: size),
+                                           layers: read, subject: matte, encoded: false)
+                // 16-bit, LZW compressed, with the base photo's metadata
+                guard let cg = CIContext().createCGImage(out, from: out.extent, format: .RGBA16,
+                                                         colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!),
+                      let file = CGImageDestinationCreateWithURL(dest as CFURL, UTType.tiff.identifier as CFString, 1, nil)
+                else { throw EngineError(message: "Couldn't write the composite.") }
+                var properties = base.properties
+                properties.removeValue(forKey: kCGImagePropertyOrientation as String)
+                var tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+                tiff[kCGImagePropertyTIFFCompression as String] = 5
+                tiff.removeValue(forKey: kCGImagePropertyTIFFOrientation as String)
+                properties[kCGImagePropertyTIFFDictionary as String] = tiff
+                CGImageDestinationAddImage(file, cg, properties as CFDictionary)
+                guard CGImageDestinationFinalize(file) else { throw EngineError(message: "Couldn't write the composite.") }
+            }.value
+        } catch {
+            statusNote = nil
+            errorMessage = "Couldn't make the composite: \(error.localizedDescription)"
+            return
         }
         statusNote = nil
-        return files
+        catalog.setComposite(draft, for: dest)
+        await open(dest)
     }
 
-    nonisolated static func applyComposite(_ settings: CompositeSettings, to image: CIImage,
-                                           layers: [(URL, CompositeSettings.Layer)], tagged: Bool,
-                                           space: CGColorSpace) throws -> CIImage {
-        let read: [(CIImage, CompositeSettings.Layer)] = layers.compactMap { file, layer in
-            let i = tagged ? CIImage(contentsOf: file, options: [.colorSpace: NSNull()]) : CIImage(contentsOf: file)
-            return i.map { ($0, layer) }
+    /// "DSC_0001 Composite.tif" next to the base, numbered if it's taken
+    nonisolated static func compositeName(for base: URL) -> URL {
+        let folder = base.deletingLastPathComponent()
+        let name = base.deletingPathExtension().lastPathComponent + " Composite"
+        var candidate = folder.appendingPathComponent(name + ".tif")
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(name) \(n).tif")
+            n += 1
         }
-        var matte: CIImage?
-        if settings.needsSubject {
-            // found on a picture of the export at up to 2048 px
-            let e = image.extent
-            let s = min(1, 2048 / max(e.width, e.height))
-            let small = image.transformed(by: CGAffineTransform(scaleX: s, y: s))
-            let context = tagged ? CIContext(options: [.workingColorSpace: NSNull()]) : CIContext()
-            let cg = context.createCGImage(small, from: small.extent.integral, format: .RGBA8, colorSpace: space)
-            if let cg { matte = try Compositor.subjectMatte(in: cg) }
-            if UserDefaults.standard.string(forKey: "TestComposite") != nil {
-                FileHandle.standardError.write("Darkslide composite export: picture \(cg.map { "\($0.width)x\($0.height)" } ?? "none"), subject \(matte?.extent.debugDescription ?? "none")\n".data(using: .utf8)!)
-            }
-        }
-        let extent = image.extent
-        return Compositor.apply(settings, base: image, canvas: extent.size, region: CGRect(origin: .zero, size: extent.size),
-                                layers: read, subject: matte, encoded: tagged)
+        return candidate
     }
 }

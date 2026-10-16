@@ -56,8 +56,9 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { model.choosingDenoise }, set: { model.choosingDenoise = $0 })) {
                 DenoiseSheet()
             }
-            .sheet(isPresented: Binding(get: { model.choosingCompositePhotos }, set: { model.choosingCompositePhotos = $0 })) {
-                CompositePhotosSheet()
+            .sheet(isPresented: Binding(get: { model.compositeDraft != nil },
+                                        set: { if !$0 { model.compositeDraft = nil } })) {
+                if let draft = model.compositeDraft { CompositeSheet(draft: draft) }
             }
             // in a view of its own: the render time changes with every frame,
             // and read here it rebuilt the whole window (sidebar and all) each time

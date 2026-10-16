@@ -81,8 +81,8 @@ struct ItemMenu: View {
             .disabled(model.copiedAdjustments == nil || targets == [model.copiedAdjustments?.source])
             if targets.count > 1 {
                 Divider()
-                Button("Composite \(targets.count) Photos") { Task { await model.composite(targets) } }
-                    .help("Opens the first and blends the others into it")
+                Button("New Composite from \(targets.count) Photos…") { model.newComposite(targets) }
+                    .help("Blends them into a new photo; the first is the base")
             }
         }
         let exports = (model?.catalog.exports(of: item.url) ?? []).sorted { $0.date > $1.date }

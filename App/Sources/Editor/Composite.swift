@@ -4,13 +4,14 @@ import Foundation
 import Vision
 
 /// A multiple exposure: other photos, each with its own edit, blended over
-/// this one with one blend mode, as a camera's multiple exposure mode or a
-/// layered blend in Photoshop. The blend can be kept to the subject (the
+/// a base photo with one blend mode, as a camera's multiple exposure mode or
+/// a layered blend in Photoshop, made into a new photo (a 16-bit TIFF) so the
+/// originals are left as they are. The blend can be kept to the subject (the
 /// silhouette double exposure) or the background, and the subject can be cut
 /// out onto a plain or gradient backdrop. Done by the app with Core Image on
 /// darktable's renders, after the edit: darktable's own composite module
 /// takes its photo in before that photo's tone edits, as 8-bit linear.
-/// Kept per photo in the catalog, as darktable has nothing to read it with.
+/// The catalog keeps the recipe against the new photo, for Edit Composite.
 struct CompositeSettings: Codable, Equatable {
     enum Blend: String, Codable, CaseIterable, Identifiable {
         case normal, screen, lighten, add, multiply, darken, overlay, softLight, difference
@@ -92,6 +93,8 @@ struct CompositeSettings: Codable, Equatable {
         var url: URL { URL(fileURLWithPath: path) }
     }
 
+    /// the photo the others blend into, which sets the size and shape
+    var base: String
     var blend = Blend.screen
     var layers: [Layer] = []
     var region = Region.everywhere
@@ -102,6 +105,7 @@ struct CompositeSettings: Codable, Equatable {
     /// the gradient's direction in degrees: 0 runs from top to bottom
     var angle = 0.0
 
+    var baseURL: URL { URL(fileURLWithPath: base) }
     var isActive: Bool { !layers.isEmpty || backdrop != .none }
     /// whether the subject has to be found
     var needsSubject: Bool { backdrop != .none || (!layers.isEmpty && region != .everywhere) }

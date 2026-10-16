@@ -143,7 +143,7 @@ struct LibrarySidebar: View {
         // the folder being shown, when it hasn't been added
         if let folder = model.library.lastFolder, !model.catalog.isInLibrary(folder) {
             Section("Current Folder") {
-                Label(folder.lastPathComponent, systemImage: "folder")
+                FolderLabel(url: folder, offline: model.library.isOffline(folder))
                     .tag(LibrarySource.folder(folder))
                     .contextMenu {
                         Button("Add to Library") { model.catalog.addFolders([folder]) }
@@ -155,6 +155,18 @@ struct LibrarySidebar: View {
 
         Section {
             ForEach(model.catalog.folders, id: \.self) { root in
+                if model.library.isOffline(root) {
+                    // nothing to list inside until it's back
+                    FolderLabel(url: root.standardizedFileURL, offline: true)
+                        .tag(LibrarySource.folder(root.standardizedFileURL))
+                        .help("\(root.path) is offline")
+                        .contextMenu {
+                            if model.library.canReconnect(root) {
+                                Button("Reconnect") { model.library.reconnect(root) }
+                            }
+                            Button("Remove from Library") { model.catalog.removeFolder(root) }
+                        }
+                } else {
                 OutlineGroup(FolderNode(url: root.standardizedFileURL), children: \.children) { node in
                     Label(node.url.lastPathComponent, systemImage: "folder")
                         .tag(LibrarySource.folder(node.url.standardizedFileURL))
@@ -165,6 +177,7 @@ struct LibrarySidebar: View {
                             }
                             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([node.url]) }
                         }
+                }
                 }
             }
         } header: {
@@ -187,5 +200,26 @@ struct LibrarySidebar: View {
         guard panel.runModal() == .OK else { return }
         model.catalog.addFolders(panel.urls)
         if let first = panel.urls.first { model.showSource(.folder(first.standardizedFileURL)) }
+    }
+}
+
+/// A folder in the sidebar, dimmed and marked when it's offline.
+struct FolderLabel: View {
+    let url: URL
+    let offline: Bool
+
+    var body: some View {
+        Label {
+            HStack {
+                Text(url.lastPathComponent)
+                if offline {
+                    Spacer()
+                    Text("Offline").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } icon: {
+            Image(systemName: offline ? "folder.badge.questionmark" : "folder")
+        }
+        .foregroundStyle(offline ? .secondary : .primary)
     }
 }

@@ -3,6 +3,7 @@ import CoreLocation
 import CoreImage
 import CryptoKit
 import ImageIO
+import NetFS
 import Observation
 import UniformTypeIdentifiers
 
@@ -108,7 +109,76 @@ final class Library {
 
     init(catalog: Catalog) {
         self.catalog = catalog
+        // a share or drive coming or going: which folders are reachable, and
+        // the folder showing rescanned if it's on it
+        let centre = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification, NSWorkspace.didRenameVolumeNotification] {
+            centre.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkFolders() }
+            }
+        }
+        checkFolders()
     }
+
+    // MARK: Offline folders
+
+    /// the library's folders (and the folder last shown) that can't be reached
+    /// now: on a network share that isn't connected, or a drive that's out
+    private(set) var offlineFolders: Set<URL> = []
+
+    /// whether a folder is in, or is, an offline one
+    func isOffline(_ folder: URL) -> Bool {
+        let path = folder.standardizedFileURL.path
+        return offlineFolders.contains { path == $0.path || path.hasPrefix($0.path + "/") }
+    }
+
+    /// Looks again at which folders are reachable. A folder that's come back
+    /// is listed again, and noted for reconnecting another time.
+    func checkFolders() {
+        let candidates = (catalog.folders + (lastFolder.map { [$0] } ?? [])).map(\.standardizedFileURL)
+        Task.detached(priority: .utility) {
+            let missing = Set(candidates.filter { !FileManager.default.fileExists(atPath: $0.path) })
+            await MainActor.run {
+                guard missing != self.offlineFolders else { return }
+                let back = self.offlineFolders.subtracting(missing)
+                self.offlineFolders = missing
+                if !back.isEmpty {
+                    FolderCache.shared.forget()
+                    self.catalog.noteRemountURLs()
+                }
+                if case .folder = self.source { self.rescan() }
+                else if self.source == .map || self.source == .edited || self.source == .exported { self.rescan() }
+            }
+        }
+    }
+
+    /// Mounts an offline folder's network share again, asking for a password
+    /// only if the keychain doesn't have one. The mount notification brings
+    /// its photos back.
+    func reconnect(_ folder: URL) {
+        guard let address = catalog.remountURL(for: folder) else { return }
+        reconnecting.insert(folder)
+        // as Finder's Connect to Server, without opening a Finder window
+        let open = NSMutableDictionary(dictionary: [kNAUIOptionKey: kNAUIOptionAllowUI])
+        var request: AsyncRequestID?
+        let started = NetFSMountURLAsync(address as CFURL, nil, nil, nil, open, nil, &request, .main) { [weak self] status, _, _ in
+            MainActor.assumeIsolated {
+                self?.reconnecting.remove(folder)
+                // cancelled at the password prompt, or failed: Finder can say why
+                if status != 0, status != Int32(ECANCELED) { NSWorkspace.shared.open(address) }
+                self?.checkFolders()
+            }
+        }
+        if started != 0 {
+            reconnecting.remove(folder)
+            NSWorkspace.shared.open(address)
+        }
+    }
+
+    /// offline folders being reconnected now
+    private(set) var reconnecting: Set<URL> = []
+
+    func canReconnect(_ folder: URL) -> Bool { catalog.remountURL(for: folder) != nil }
 
     /// Watches what's showing, so photos added to or removed from its folders
     /// appear and go without reopening it.
@@ -182,10 +252,15 @@ final class Library {
 
     /// the folder shown most recently, which stays in the sidebar and on the
     /// map, across launches too
+    /// One on a volume that's away (a network share or a drive) is kept, and shows as offline.
     private(set) var lastFolder: URL? = UserDefaults.standard.string(forKey: "LibraryLastFolder")
         .map { URL(fileURLWithPath: $0, isDirectory: true) }
-        .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } {
-        didSet { UserDefaults.standard.set(lastFolder?.path, forKey: "LibraryLastFolder") }
+        .flatMap { FileManager.default.fileExists(atPath: $0.path) || $0.path.hasPrefix("/Volumes/") ? $0 : nil } {
+        didSet {
+            // a test run with its own catalog (-CatalogPath) leaves the real setting alone
+            guard UserDefaults.standard.string(forKey: "CatalogPath") == nil else { return }
+            UserDefaults.standard.set(lastFolder?.path, forKey: "LibraryLastFolder")
+        }
     }
 
     /// whether the photos show on the map: the Map source, or another in map view

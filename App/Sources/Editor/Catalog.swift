@@ -31,6 +31,7 @@ final class Catalog {
     private struct Stored: Codable {
         var folders: [String]
         var records: [String: Record]
+        var remount: [String: String]?
     }
 
     // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone
@@ -44,6 +45,7 @@ final class Catalog {
               let stored = try? JSONDecoder().decode(Stored.self, from: data) else { return }
         folders = stored.folders.map { URL(fileURLWithPath: $0, isDirectory: true) }
         records = stored.records
+        remount = stored.remount ?? [:]
     }
 
     // MARK: Folders
@@ -52,7 +54,39 @@ final class Catalog {
         for url in urls where !folders.contains(where: { $0.standardizedFileURL == url.standardizedFileURL }) {
             folders.append(url)
         }
+        noteRemountURLs()
         scheduleSave()
+    }
+
+    /// For each folder on a network share, the share's address, as macOS
+    /// gives it for remounting (smb://server/share), so an offline folder
+    /// can be reconnected. Kept only in this catalog, on this Mac.
+    private var remount: [String: String] = [:]
+
+    /// notes the addresses of the folders that are online now
+    func noteRemountURLs() {
+        let folders = self.folders
+        Task.detached(priority: .utility) {
+            var found: [String: String] = [:]
+            for f in folders where FileManager.default.fileExists(atPath: f.path) {
+                if let url = (try? f.resourceValues(forKeys: [.volumeURLForRemountingKey]))?.volumeURLForRemounting {
+                    found[f.standardizedFileURL.path] = url.absoluteString
+                }
+            }
+            await MainActor.run {
+                let merged = self.remount.merging(found) { _, new in new }
+                guard merged != self.remount else { return }
+                self.remount = merged
+                self.scheduleSave()
+            }
+        }
+    }
+
+    /// the network share a folder (or a folder inside one) is on, if known
+    func remountURL(for folder: URL) -> URL? {
+        let path = folder.standardizedFileURL.path
+        let root = remount.keys.filter { path == $0 || path.hasPrefix($0 + "/") }.max { $0.count < $1.count }
+        return root.flatMap { remount[$0] }.flatMap(URL.init(string:))
     }
 
     func removeFolder(_ url: URL) {
@@ -148,7 +182,7 @@ final class Catalog {
 
     func save() {
         guard let file else { return }
-        let stored = Stored(folders: folders.map(\.path), records: records)
+        let stored = Stored(folders: folders.map(\.path), records: records, remount: remount)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(stored) { try? data.write(to: file, options: .atomic) }
     }

@@ -215,6 +215,8 @@ struct LibraryGrid: View {
             if model.library.items.isEmpty {
                 if model.library.isScanning {
                     ProgressView()
+                } else if case .folder(let folder) = model.library.source, model.library.isOffline(folder) {
+                    OfflineFolderView(folder: folder)
                 } else {
                     ContentUnavailableView("No Photos", systemImage: "photo.on.rectangle",
                                            description: Text(emptyText))
@@ -384,5 +386,33 @@ struct LibraryGrid: View {
         } else if bottom > scrollY + viewSize.height - 8 {
             position.scrollTo(y: bottom - viewSize.height + 12)
         }
+    }
+}
+
+/// A folder whose share or drive isn't connected: what's happened, and a way back.
+struct OfflineFolderView: View {
+    @Environment(EditorModel.self) private var model
+    let folder: URL
+
+    var body: some View {
+        let library = model.library
+        let network = library.canReconnect(folder)
+        ContentUnavailableView {
+            Label("\(folder.lastPathComponent) Is Offline", systemImage: network ? "network.slash" : "externaldrive.badge.xmark")
+        } description: {
+            Text(network
+                 ? "It's on a network share that isn't connected. Its photos and edits are safe there, and appear again when it's back."
+                 : "It's on a drive that isn't connected. Its photos and edits are safe there, and appear again when you connect it.")
+        } actions: {
+            if network {
+                if library.reconnecting.contains(folder) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Reconnect") { library.reconnect(folder) }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .help(folder.path)
     }
 }

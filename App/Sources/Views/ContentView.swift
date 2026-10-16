@@ -662,6 +662,7 @@ private struct WindowSubtitle: View {
         if let note = model.statusNote { return note }
         if model.isOpening { return "Opening…" }
         if model.showingLibrary {
+            if case .folder(let f) = model.library.source, model.library.isOffline(f) { return "Offline" }
             let n = model.library.items.count
             return "\(n) \(n == 1 ? "photo" : "photos")"
         }

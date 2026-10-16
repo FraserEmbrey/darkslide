@@ -17,7 +17,11 @@ struct InspectorView: View {
         @Bindable var model = model
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Picker("Modules", selection: $model.filter) {
+                // search covers every module, so All shows as chosen while
+                // searching; choosing a tab ends the search
+                Picker("Modules", selection: Binding(
+                    get: { model.search.isEmpty ? model.filter : .all },
+                    set: { model.search = ""; model.filter = $0 })) {
                     ForEach(EditorModel.Filter.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -36,7 +40,7 @@ struct InspectorView: View {
             .padding(.top, 10)
 
             HStack(spacing: 8) {
-                SearchField(text: $model.search, prompt: "Search modules")
+                SearchField(text: $model.search, prompt: "Search all modules")
                 AutoButton()
             }
             .padding(.horizontal, 12)

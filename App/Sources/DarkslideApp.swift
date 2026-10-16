@@ -127,6 +127,9 @@ struct AppCommands: Commands {
             if model.compositeRecipe != nil {
                 Button("Edit Composite…") { model.editComposite() }
             }
+            Button("Rescue Focus…") { model.rescueFocusPhoto = model.url }
+                .disabled(!model.canRescueFocus)
+                .help(RescueFocus.isAvailable ? "" : "The Rescue Focus model isn't installed")
             Button("Denoise to New DNG…") { model.choosingDenoise = true }
                 .disabled(!model.canDenoise)
                 .help(RawDenoise.isAvailable ? "" : "The denoise model isn't installed")

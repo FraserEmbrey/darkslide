@@ -1120,6 +1120,30 @@ final class EditorModel {
                     FileHandle.standardError.write("Darkslide composite test: preview \(previewMs) ms, made \(Int(Date().timeIntervalSince(started) * 1000) - previewMs) ms, open \(self.url?.lastPathComponent ?? "-"), recipe \(compositeRecipe != nil), size \(imageSize), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
+            // TestRescueFocus: launch argument (-TestRescueFocus /folder) for testing: the
+            // sheet's preview at the centre, before and after, then the whole photo rescued
+            if let folder = UserDefaults.standard.string(forKey: "TestRescueFocus"), !folder.isEmpty,
+               let photo = self.url, !Self.rescueTestRan {
+                Self.rescueTestRan = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    // TestRescueSheet: just show the sheet
+                    if UserDefaults.standard.bool(forKey: "TestRescueSheet") { rescueFocusPhoto = photo; return }
+                    var started = Date()
+                    if let pair = try? await rescueFocusPreview(photo, centre: CGPoint(x: 0.5, y: 0.5), amount: 1) {
+                        for (name, image) in [("before", pair.before), ("after", pair.after)] {
+                            if let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/\(name).png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                                CGImageDestinationAddImage(dest, image, nil)
+                                CGImageDestinationFinalize(dest)
+                            }
+                        }
+                    }
+                    let previewMs = Int(Date().timeIntervalSince(started) * 1000)
+                    started = Date()
+                    await createRescueFocus(photo, amount: 1)
+                    FileHandle.standardError.write("Darkslide rescue test: preview \(previewMs) ms, whole \(Int(Date().timeIntervalSince(started) * 1000)) ms, open \(self.url?.lastPathComponent ?? "-"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                }
+            }
             // TestToneCurve: launch argument (-TestToneCurve YES) for testing: shows the tone
             // curve card and lifts middle grey, logging the curve the engine reads back
             if UserDefaults.standard.bool(forKey: "TestToneCurve") {
@@ -2490,7 +2514,12 @@ final class EditorModel {
     /// New Composite's sheet: the photos and settings being put together,
     /// made into a new photo by createComposite (Composite.swift)
     var compositeDraft: CompositeSettings?
+    /// Rescue Focus's sheet, for this photo
+    var rescueFocusPhoto: URL?
+    /// the photo the sheet is for, rendered at full size, and its metadata
+    @ObservationIgnored var rescueFocusSource: (url: URL, image: CIImage)?
     static var compositeTestRan = false
+    static var rescueTestRan = false
     /// the photos' renders for the sheet's preview, by path, with their sidecars' dates
     @ObservationIgnored var compositeRenders: [String: (date: Date?, image: CIImage)] = [:]
     /// the base photo's subject for the preview, by path
@@ -4088,19 +4117,7 @@ extension EditorModel {
                 let size = base.extent.size
                 let out = Compositor.apply(draft, base: base, canvas: size, region: CGRect(origin: .zero, size: size),
                                            layers: read, subject: matte, encoded: false)
-                // 16-bit, LZW compressed, with the base photo's metadata
-                guard let cg = CIContext().createCGImage(out, from: out.extent, format: .RGBA16,
-                                                         colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!),
-                      let file = CGImageDestinationCreateWithURL(dest as CFURL, UTType.tiff.identifier as CFString, 1, nil)
-                else { throw EngineError(message: "Couldn't write the composite.") }
-                var properties = base.properties
-                properties.removeValue(forKey: kCGImagePropertyOrientation as String)
-                var tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
-                tiff[kCGImagePropertyTIFFCompression as String] = 5
-                tiff.removeValue(forKey: kCGImagePropertyTIFFOrientation as String)
-                properties[kCGImagePropertyTIFFDictionary as String] = tiff
-                CGImageDestinationAddImage(file, cg, properties as CFDictionary)
-                guard CGImageDestinationFinalize(file) else { throw EngineError(message: "Couldn't write the composite.") }
+                try Self.writeTIFF16(out, properties: base.properties, to: dest)
             }.value
         } catch {
             statusNote = nil
@@ -4112,10 +4129,33 @@ extension EditorModel {
         await open(dest)
     }
 
+    /// A new photo made here: a 16-bit Display P3 TIFF, LZW compressed, with
+    /// the metadata of the photo it came from.
+    nonisolated static func writeTIFF16(_ image: CIImage, properties: [String: Any], to dest: URL) throws {
+        guard let cg = CIContext().createCGImage(image, from: image.extent, format: .RGBA16,
+                                                 colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!),
+              let file = CGImageDestinationCreateWithURL(dest as CFURL, UTType.tiff.identifier as CFString, 1, nil)
+        else { throw EngineError(message: "Couldn't write \(dest.lastPathComponent).") }
+        // the pixels are upright already
+        var properties = properties
+        properties.removeValue(forKey: kCGImagePropertyOrientation as String)
+        var tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+        tiff[kCGImagePropertyTIFFCompression as String] = 5
+        tiff.removeValue(forKey: kCGImagePropertyTIFFOrientation as String)
+        properties[kCGImagePropertyTIFFDictionary as String] = tiff
+        CGImageDestinationAddImage(file, cg, properties as CFDictionary)
+        guard CGImageDestinationFinalize(file) else { throw EngineError(message: "Couldn't write \(dest.lastPathComponent).") }
+    }
+
     /// "DSC_0001 Composite.tif" next to the base, numbered if it's taken
     nonisolated static func compositeName(for base: URL) -> URL {
+        newPhotoName(for: base, suffix: "Composite")
+    }
+
+    /// "DSC_0001 <suffix>.tif" next to a photo, numbered if it's taken
+    nonisolated static func newPhotoName(for base: URL, suffix: String) -> URL {
         let folder = base.deletingLastPathComponent()
-        let name = base.deletingPathExtension().lastPathComponent + " Composite"
+        let name = base.deletingPathExtension().lastPathComponent + " " + suffix
         var candidate = folder.appendingPathComponent(name + ".tif")
         var n = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
@@ -4123,5 +4163,73 @@ extension EditorModel {
             n += 1
         }
         return candidate
+    }
+}
+
+// MARK: - Rescue Focus
+
+extension EditorModel {
+    var canRescueFocus: Bool { url != nil && RescueFocus.isAvailable }
+
+    /// the photo for Rescue Focus at full size with its saved edit, rendered once per sheet
+    func rescueFocusImage(_ photo: URL) async throws -> CIImage {
+        if let s = rescueFocusSource, s.url == photo { return s.image }
+        guard let engine else { throw EngineError(message: "The engine isn't running.") }
+        let file = try await compositeRender(photo, maxEdge: 0, engine: engine)
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let read = CIImage(contentsOf: file),
+              let cg = compositeContext.createCGImage(read, from: read.extent, format: .RGBA16,
+                                                      colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!)
+        else { throw EngineError(message: "Couldn't read the render of \(photo.lastPathComponent).") }
+        let image = CIImage(cgImage: cg).settingProperties(read.properties)
+        rescueFocusSource = (photo, image)
+        return image
+    }
+
+    /// A 512 px square of the photo at full size around `centre` (0 to 1 across
+    /// and down), before and after.
+    func rescueFocusPreview(_ photo: URL, centre: CGPoint, amount: Double) async throws -> (before: CGImage, after: CGImage) {
+        let image = try await rescueFocusImage(photo)
+        let e = image.extent
+        let side = min(512, e.width, e.height)
+        let x = min(max(e.minX + centre.x * e.width - side / 2, e.minX), e.maxX - side)
+        let y = min(max(e.maxY - centre.y * e.height - side / 2, e.minY), e.maxY - side)
+        let crop = image.cropped(to: CGRect(x: x, y: y, width: side, height: side).integral)
+        let space = CGColorSpace(name: CGColorSpace.displayP3)!
+        return try await Task.detached(priority: .userInitiated) {
+            let after = try RescueFocus.run(crop, amount: amount, space: space)
+            let context = CIContext()
+            guard let b = context.createCGImage(crop, from: crop.extent, format: .RGBA8, colorSpace: space),
+                  let a = context.createCGImage(after, from: after.extent, format: .RGBA8, colorSpace: space)
+            else { throw EngineError(message: "Couldn't show the preview.") }
+            return (b, a)
+        }.value
+    }
+
+    /// Rescues the whole photo into a new 16-bit TIFF next to it and opens that.
+    func createRescueFocus(_ photo: URL, amount: Double) async {
+        rescueFocusPhoto = nil
+        let dest = Self.newPhotoName(for: photo, suffix: "Focus")
+        do {
+            statusNote = "Rendering \(photo.lastPathComponent)…"
+            let image = try await rescueFocusImage(photo)
+            let progress: @Sendable (Double) -> Void = { p in
+                Task { @MainActor [weak self] in self?.statusNote = "Rescuing focus… \(Int(p * 100))%" }
+            }
+            let started = Date()
+            try await Task.detached(priority: .userInitiated) {
+                let out = try RescueFocus.run(image, amount: amount, space: CGColorSpace(name: CGColorSpace.displayP3)!,
+                                              progress: progress)
+                try Self.writeTIFF16(out, properties: image.properties, to: dest)
+            }.value
+            FileHandle.standardError.write("Darkslide rescued focus into \(dest.lastPathComponent) in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
+        } catch {
+            statusNote = nil
+            errorMessage = "Couldn't rescue the focus: \(error.localizedDescription)"
+            return
+        }
+        statusNote = nil
+        rescueFocusSource = nil
+        await open(dest)
     }
 }

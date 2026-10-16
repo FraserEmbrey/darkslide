@@ -56,6 +56,10 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { model.choosingDenoise }, set: { model.choosingDenoise = $0 })) {
                 DenoiseSheet()
             }
+            .sheet(isPresented: Binding(get: { model.rescueFocusPhoto != nil },
+                                        set: { if !$0 { model.rescueFocusPhoto = nil } })) {
+                if let photo = model.rescueFocusPhoto { RescueFocusSheet(photo: photo) }
+            }
             .sheet(isPresented: Binding(get: { model.compositeDraft != nil },
                                         set: { if !$0 { model.compositeDraft = nil } })) {
                 if let draft = model.compositeDraft { CompositeSheet(draft: draft) }

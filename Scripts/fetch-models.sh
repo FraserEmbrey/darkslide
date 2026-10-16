@@ -1,7 +1,9 @@
 #!/bin/bash
 # Fetches darktable's raw denoise model (RawNIND, GPL-3.0) from its
-# darktable-ai release and converts it to Core ML in Models/, which
-# build-app.sh compiles into the app. Without it, Denoise isn't offered.
+# darktable-ai release, and Restormer's defocus deblurring model (MIT) from
+# its GitHub release, and converts them to Core ML in Models/, which
+# build-app.sh compiles into the app. Without them, Denoise and Rescue Focus
+# aren't offered.
 # Needs uv; the conversion tools go in .build/model-venv.
 set -euo pipefail
 
@@ -16,6 +18,9 @@ if [ ! -x "$VENV/bin/python" ]; then
   uv venv -q --python 3.12 "$VENV"
   uv pip install -q --python "$VENV/bin/python" coremltools==9.0 torch==2.7.0 onnx onnx2torch onnxruntime
 fi
+# Restormer's architecture, for its conversion
+"$VENV/bin/python" -c "import spandrel_extra_arches" 2> /dev/null \
+  || uv pip install -q --python "$VENV/bin/python" spandrel==0.4.2 spandrel_extra_arches==0.2.0 einops
 
 mkdir -p "$WORK" "$ROOT/Models"
 archive="$WORK/$MODEL.dtmodel"
@@ -31,3 +36,13 @@ if [ -e "$out" ]; then trash "$out"; fi
 "$VENV/bin/python" -I "$ROOT/Scripts/models/convert.py" "$WORK/$MODEL/model_bayer.onnx" "$out" fp32
 cp "$WORK/$MODEL/config.json" "$ROOT/Models/RawDenoise-config.json"
 echo "converted $out"
+
+# Rescue Focus: Restormer, single-image defocus deblurring
+RESTORMER="$WORK/restormer_defocus.pth"
+if [ ! -f "$RESTORMER" ]; then
+  curl -fsSL -o "$RESTORMER" "https://github.com/swz30/Restormer/releases/download/v1.0/single_image_defocus_deblurring.pth"
+fi
+echo "7dce451f33f8f5e0faf7c4e3996e5dcc1bd425ecd1ada99b0f9750e490fd4c9e  $RESTORMER" | shasum -a 256 -c - > /dev/null
+out="$ROOT/Models/RescueFocus.mlpackage"
+if [ -e "$out" ]; then trash "$out"; fi
+"$VENV/bin/python" -I "$ROOT/Scripts/models/convert_restormer.py" "$RESTORMER" "$out"

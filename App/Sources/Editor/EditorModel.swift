@@ -1712,6 +1712,11 @@ final class EditorModel {
             try? await engine.enable(module: modules[denoise].key, on: true)
             modules[denoise].enabled = true
         }
+        // a NEF shot in the camera's HLG tone mode was meant as HDR, as NX Studio
+        // treats it: the edit gets an HLG export target, as choosing HDR would
+        if let url, !exportTarget.isHDR, await Task.detached(operation: { NikonHDRPreview.isHLG(url) }).value {
+            setOutputProfile(25)   // HLG P3
+        }
         // last, once exposure and the style are in: filmic's white and black from the photo
         if autoTuneForNewPhotos, modules.contains(where: { $0.op == "filmicrgb" && $0.enabled }) {
             await settleEdits()

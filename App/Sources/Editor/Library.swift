@@ -459,9 +459,20 @@ final class Library {
             return
         }
         Task.detached(priority: .utility) {
-            let image = Self.cachedRender(for: url) ?? Self.embeddedPreview(for: url)
+            var image = Self.cachedRender(for: url)
             let isRaw = Self.rawExtensions.contains(url.pathExtension.lowercased())
-            let hdr = isRaw ? AppleRawFallback.rawHasGainMap(url) : AppleRawFallback.isHDR(url)
+            var hdr = isRaw ? AppleRawFallback.rawHasGainMap(url) : AppleRawFallback.isHDR(url)
+            if image == nil {
+                image = Self.embeddedPreview(for: url)
+                // a NEF shot in the HLG tone mode has only a tiny preview macOS can
+                // read; its HDR preview, tone mapped, instead
+                if isRaw, Self.isTiny(image), let hlg = NikonHDRPreview.sdrPicture(in: url, maxPixels: Self.thumbnailPixels) {
+                    image = hlg
+                    hdr = true
+                }
+            } else if isRaw, url.pathExtension.lowercased() == "nef", NikonHDRPreview.isHLG(url) {
+                hdr = true
+            }
             await MainActor.run {
                 self.loading.remove(url)
                 if let image { self.thumbnails[url] = image }
@@ -494,7 +505,19 @@ final class Library {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: quick ? thumbnailPixels : maxPixels,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        let preview = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        // an HLG NEF's HDR preview, when macOS finds only a tiny one
+        if isTiny(preview), rawExtensions.contains(url.pathExtension.lowercased()),
+           let hlg = NikonHDRPreview.sdrPicture(in: url, maxPixels: quick ? thumbnailPixels : maxPixels) {
+            return hlg
+        }
+        return preview
+    }
+
+    /// missing, or too small to show at thumbnail size
+    nonisolated static func isTiny(_ image: CGImage?) -> Bool {
+        guard let image else { return true }
+        return max(image.width, image.height) < thumbnailPixels / 2
     }
 
     nonisolated private static func embeddedPreview(for url: URL) -> CGImage? {

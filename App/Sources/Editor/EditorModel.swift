@@ -1975,10 +1975,10 @@ final class EditorModel {
                     let elapsed = ContinuousClock.now - start
                     lastRenderMs = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
                     lastRenderWasDraft = draft
-                    // DumpFrame: launch argument (-DumpFrame /path/frame.png) for testing, writes each full frame
+                    // DumpFrame: launch argument (-DumpFrame /path/frame.png) for testing, writes each full frame as shown
                     if let path = UserDefaults.standard.string(forKey: "DumpFrame"), crop == nil, !draft,
                        let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil) {
-                        CGImageDestinationAddImage(dest, frame.image, nil)
+                        CGImageDestinationAddImage(dest, image ?? frame.image, nil)
                         CGImageDestinationFinalize(dest)
                     }
                     // LogRenderTimes: launch argument (-LogRenderTimes YES) for testing

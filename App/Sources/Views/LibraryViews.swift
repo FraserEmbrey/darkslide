@@ -79,6 +79,11 @@ struct ItemMenu: View {
                 model.pasteAdjustments(onto: targets)
             }
             .disabled(model.copiedAdjustments == nil || targets == [model.copiedAdjustments?.source])
+            if targets.count > 1 {
+                Divider()
+                Button("Composite \(targets.count) Photos") { Task { await model.composite(targets) } }
+                    .help("Opens the first and blends the others into it")
+            }
         }
         let exports = (model?.catalog.exports(of: item.url) ?? []).sorted { $0.date > $1.date }
         if !exports.isEmpty {

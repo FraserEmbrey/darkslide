@@ -32,6 +32,8 @@ struct InspectorPanel: Identifiable {
                        applies: { _ in true }, content: { AnyView(LookCard()) }),
         InspectorPanel(id: "local", title: "Local Adjustments", icon: "circle.lefthalf.filled", placement: .cards,
                        applies: { $0.url != nil }, content: { AnyView(LocalAdjustmentsCard()) }),
+        InspectorPanel(id: "composite", title: "Composite", icon: "square.on.square", placement: .cards,
+                       applies: { $0.url != nil }, content: { AnyView(CompositeCard()) }),
     ]
 
     /// the panels to show here now: placed here, applying, and not hidden by the workspace

@@ -122,6 +122,8 @@ struct AppCommands: Commands {
                 }
             }
             .disabled(model.decoderInUse == nil)
+            Button("Composite with Photos…") { model.choosingCompositePhotos = true }
+                .disabled(model.url == nil)
             Button("Denoise to New DNG…") { model.choosingDenoise = true }
                 .disabled(!model.canDenoise)
                 .help(RawDenoise.isAvailable ? "" : "The denoise model isn't installed")

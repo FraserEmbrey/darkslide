@@ -19,6 +19,8 @@ final class Catalog {
         /// AI denoise's amount (1 to 100) when it's on; not in the sidecar,
         /// as darktable has nothing to read it with
         var aiDenoise: Double?
+        /// other photos blended into this one, and its backdrop (Compositor)
+        var composite: CompositeSettings?
     }
 
     /// folders added to the library, in the order added
@@ -102,6 +104,14 @@ final class Catalog {
     func setAIDenoise(_ amount: Double?, for photo: URL) {
         guard records[photo.path]?.aiDenoise != amount else { return }
         records[photo.path, default: Record()].aiDenoise = amount
+        scheduleSave()
+    }
+
+    func composite(of photo: URL) -> CompositeSettings? { records[photo.path]?.composite }
+
+    func setComposite(_ settings: CompositeSettings?, for photo: URL) {
+        guard records[photo.path]?.composite != settings else { return }
+        records[photo.path, default: Record()].composite = settings
         scheduleSave()
     }
 

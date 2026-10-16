@@ -16,6 +16,9 @@ final class Catalog {
     struct Record: Codable {
         var edited: Date?    // last saved here, or first seen with a sidecar
         var exports: [Export] = []
+        /// AI denoise's amount (1 to 100) when it's on; not in the sidecar,
+        /// as darktable has nothing to read it with
+        var aiDenoise: Double?
     }
 
     /// folders added to the library, in the order added
@@ -91,6 +94,14 @@ final class Catalog {
 
     func recordExport(_ photo: URL, file: URL, format: String) {
         records[photo.path, default: Record()].exports.append(Export(file: file.path, format: format, date: .now))
+        scheduleSave()
+    }
+
+    func aiDenoise(of photo: URL) -> Double? { records[photo.path]?.aiDenoise }
+
+    func setAIDenoise(_ amount: Double?, for photo: URL) {
+        guard records[photo.path]?.aiDenoise != amount else { return }
+        records[photo.path, default: Record()].aiDenoise = amount
         scheduleSave()
     }
 

@@ -101,6 +101,14 @@ typedef struct helper_t
   // turns collection off outside darktable's preview pipe, so it's turned
   // back on before each render
   dt_iop_module_t *histogram_module;
+  // AI raw denoise, applied to the open raw in place (see _cmd_denoise)
+  struct
+  {
+    void *orig;             // the raw as decoded, a copy
+    uint16_t *den;          // the denoised raw at full strength
+    size_t n, bpp;          // pixels, bytes per pixel (2: uint16, 4: float)
+    float amount;           // 0 to 1; 0 is the original
+  } dn;
 } helper_t;
 
 static helper_t H = { 0 };
@@ -360,10 +368,38 @@ static void _close_view(view_t *v)
   v->loaded = FALSE;
 }
 
+// the open raw's data as the denoise amount has it, blended from the copies
+static void _dn_write(void *dst)
+{
+  if(!H.dn.orig || !dst) return;
+  const float a = (H.dn.den && H.dn.amount > 0.0f) ? MIN(H.dn.amount, 1.0f) : 0.0f;
+  if(a == 0.0f) { memcpy(dst, H.dn.orig, H.dn.n * H.dn.bpp); return; }
+  const uint16_t *d = H.dn.den;
+  if(H.dn.bpp == 2)
+  {
+    const uint16_t *o = H.dn.orig;
+    uint16_t *out = dst;
+    for(size_t i = 0; i < H.dn.n; i++)
+      out[i] = (uint16_t)CLAMP(o[i] + a * ((float)d[i] - o[i]) + 0.5f, 0.0f, 65535.0f);
+  }
+  else
+  {
+    const float *o = H.dn.orig;
+    float *out = dst;
+    for(size_t i = 0; i < H.dn.n; i++) out[i] = o[i] + a * ((float)d[i] - o[i]);
+  }
+}
+
+// the darktable cache keeps the decoded raw after it's closed, so it goes
+// back as it was decoded, and the copies with it
 static void _close_image(void)
 {
+  if(H.dn.orig && H.edit.loaded) memcpy(H.edit.buf.buf, H.dn.orig, H.dn.n * H.dn.bpp);
   _close_view(&H.edit);
   _close_view(&H.before);
+  g_free(H.dn.orig);
+  g_free(H.dn.den);
+  memset(&H.dn, 0, sizeof(H.dn));
 }
 
 // the export profile chosen in colorout; the app uses it to show HDR output
@@ -421,7 +457,12 @@ static const char *_load_view(view_t *v, const dt_imgid_t imgid)
 
   dt_ioppr_resync_modules_order(&v->dev);
   _set_output_mode(H.hdr);
-  dt_dev_pixelpipe_set_input(&v->pipe, &v->dev, (float *)v->buf.buf,
+  // with AI denoise on, the edit's raw is the denoised one (the cache may
+  // have dropped and decoded it again while it wasn't held), and the before
+  // view keeps the original for comparison
+  if(v == &H.edit) _dn_write(v->buf.buf);
+  void *input = (v == &H.before && H.dn.orig) ? H.dn.orig : v->buf.buf;
+  dt_dev_pixelpipe_set_input(&v->pipe, &v->dev, (float *)input,
                              v->buf.width, v->buf.height, v->buf.iscale);
   dt_dev_pixelpipe_create_nodes(&v->pipe, &v->dev);
   dt_dev_pixelpipe_synch_all(&v->pipe, &v->dev);
@@ -2517,13 +2558,15 @@ static void _cmd_raw_mosaic(JsonObject *o)
   const size_t n = (size_t)w * h;
   float *f = g_try_malloc(n * sizeof(float));
   if(!f) { dt_image_cache_read_release(img); return _error("out of memory"); }
+  // the raw as decoded, even with AI denoise on
+  const void *raw = H.dn.orig ? H.dn.orig : H.edit.buf.buf;
   if(img->buf_dsc.datatype == TYPE_UINT16)
   {
-    const uint16_t *src = (const uint16_t *)H.edit.buf.buf;
+    const uint16_t *src = (const uint16_t *)raw;
     for(size_t i = 0; i < n; i++) f[i] = src[i];
   }
   else if(img->buf_dsc.datatype == TYPE_FLOAT)
-    memcpy(f, H.edit.buf.buf, n * sizeof(float));
+    memcpy(f, raw, n * sizeof(float));
   else
   {
     g_free(f);
@@ -2567,6 +2610,59 @@ static void _cmd_raw_mosaic(JsonObject *o)
 // {"cmd":"write_dng","mosaic":"/tmp/d","path":"/x-Denoised.dng"}: writes the
 // uint16 mosaic (the open photo's size) as a Bayer DNG, with the original's
 // Exif and embedded preview, then gives it the open photo's whole edit, as it
+// AI raw denoise in place: {"mosaic": uint16 file of the open raw's size,
+// denoised at full strength (sent once), "amount": 0 to 1}. The open raw's
+// data in darktable's cache becomes the blend, so the preview, exports and
+// anything else reading the raw get it; the before view keeps the original.
+// Closing the photo puts the original back. Amount 0 is the original.
+static void _cmd_denoise(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  const dt_image_t *img = dt_image_cache_get(H.imgid, 'r');
+  if(!img) return _error("no image");
+  const size_t bpp = img->buf_dsc.datatype == TYPE_UINT16 ? 2 : img->buf_dsc.datatype == TYPE_FLOAT ? 4 : 0;
+  const gboolean single = img->buf_dsc.channels == 1;
+  dt_image_cache_read_release(img);
+  if(!bpp || !single) return _error("AI denoise works on raw sensor data only");
+  const size_t n = (size_t)H.edit.buf.width * H.edit.buf.height;
+
+  const char *mosaic = json_object_get_string_member_with_default(o, "mosaic", NULL);
+  if(mosaic)
+  {
+    gchar *data = NULL;
+    gsize len = 0;
+    if(!g_file_get_contents(mosaic, &data, &len, NULL) || len != n * sizeof(uint16_t))
+    {
+      g_free(data);
+      return _error("the denoised raw is the wrong size");
+    }
+    g_free(H.dn.den);
+    H.dn.den = (uint16_t *)data;
+  }
+  if(!H.dn.orig)
+  {
+    H.dn.orig = g_try_malloc(n * bpp);
+    if(!H.dn.orig) return _error("out of memory");
+    memcpy(H.dn.orig, H.edit.buf.buf, n * bpp);
+    H.dn.n = n;
+    H.dn.bpp = bpp;
+  }
+  H.dn.amount = CLAMP(json_object_get_double_member_with_default(o, "amount", 1.0), 0.0, 1.0);
+  if(H.dn.amount > 0.0f && !H.dn.den) return _error("no denoised raw");
+  _dn_write(H.edit.buf.buf);
+
+  dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+  H.edit.dirty = TRUE;
+  if(H.before.loaded)
+  {
+    dt_dev_pixelpipe_set_input(&H.before.pipe, &H.before.dev, (float *)H.dn.orig,
+                               H.before.buf.width, H.before.buf.height, H.before.buf.iscale);
+    dt_dev_pixelpipe_cache_flush(&H.before.pipe);
+    H.before.dirty = TRUE;
+  }
+  _ok_done(_ok());
+}
+
 // is now, in its own sidecar. The original's sidecar is left alone.
 static void _cmd_write_dng(JsonObject *o)
 {
@@ -2691,105 +2787,6 @@ typedef struct
   int preserve_colors;
 } rgbcurve_params_t;
 
-// Sets one channel's curve: {"cmd":"set_curve","module":"rgbcurve:0","channel":0,
-// "nodes":[[x,y],...]}. Nodes are on the middle-grey-compensated scale
-// (middle grey at 0.5, as darktable's "compensate middle gray"), which this
-// switches on; channel 0 alone is the linked RGB curve.
-static void _cmd_set_curve(JsonObject *o)
-{
-  if(!H.edit.loaded) return _error("no image open");
-  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
-  if(!_is_curve(m)) return _error("not a curve this app can edit");
-  const int ch = CLAMP((int)json_object_get_int_member_with_default(o, "channel", 0), 0, 2);
-  JsonArray *nodes = json_object_has_member(o, "nodes") ? json_object_get_array_member(o, "nodes") : NULL;
-  const int n = nodes ? MIN((int)json_array_get_length(nodes), RGBCURVE_MAXNODES) : 0;
-  if(n < 2) return _error("a curve needs at least two points");
-  // the nodes come in the compensated scale: convert any others on first use
-  p->compensate_middle_grey = TRUE;
-  for(int i = 0; i < n; i++)
-  {
-    JsonArray *pt = json_array_get_array_element(nodes, i);
-    p->curve_nodes[ch][i].x = CLAMP((float)json_array_get_double_element(pt, 0), 0.0f, 1.0f);
-    p->curve_nodes[ch][i].y = CLAMP((float)json_array_get_double_element(pt, 1), 0.0f, 1.0f);
-  }
-  p->curve_num_nodes[ch] = n;
-  if(json_object_has_member(o, "linked"))
-    p->curve_autoscale = json_object_get_boolean_member(o, "linked") ? 0 : 1;
-  m->histogram_middle_grey = TRUE;
-  _commit(m, TRUE);
-  _ok_done(_ok());
-}
-
-// The curve's nodes and the histogram of its input, on the same scale:
-// {"cmd":"curve","module":"rgbcurve:0"}. The histogram comes from the last
-// render; asking turns its collection on (a render after this fills it).
-static void _cmd_curve(JsonObject *o)
-{
-  if(!H.edit.loaded) return _error("no image open");
-  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
-  if(!_is_curve(m)) return _error("not a curve this app can edit");
-  const gboolean tone = !strcmp(m->op, "tonecurve");
-  const rgbcurve_params_t *p = (const rgbcurve_params_t *)m->params;
-  dt_dev_pixelpipe_iop_t *piece = _edit_piece(m);
-  // collect the input histogram headless, on the compensated scale, from
-  // the next render on (see _cmd_render); the module must run again for it
-  if(H.histogram_module != m)
-  {
-    H.histogram_module = m;
-    dt_dev_pixelpipe_cache_invalidate_later(&H.edit.pipe, m->iop_order, "curve histogram: ");
-    H.edit.dirty = TRUE;
-  }
-  JsonBuilder *b = _ok();
-  json_builder_set_member_name(b, "enabled");
-  json_builder_add_boolean_value(b, m->enabled);
-  json_builder_set_member_name(b, "compensated");
-  json_builder_add_boolean_value(b, tone || p->compensate_middle_grey);
-  json_builder_set_member_name(b, "linked");
-  json_builder_add_boolean_value(b, tone || p->curve_autoscale == 0);
-  json_builder_set_member_name(b, "nodes");
-  json_builder_begin_array(b);
-  const gboolean lin = tone && _tonecurve_linear(t);
-  for(int ch = 0; ch < (tone ? 1 : 3); ch++)
-  {
-    json_builder_begin_array(b);
-    const int count = tone ? t->tonecurve_nodes[ch] : p->curve_num_nodes[ch];
-    for(int i = 0; i < CLAMP(count, 0, RGBCURVE_MAXNODES); i++)
-    {
-      json_builder_begin_array(b);
-      json_builder_add_double_value(b, lin ? _lightness(node.x) : node.x);
-      json_builder_add_double_value(b, lin ? _lightness(node.y) : node.y);
-      json_builder_end_array(b);
-    }
-    json_builder_end_array(b);
-  }
-  json_builder_end_array(b);
-  // histogram: bins of red, green and blue (4 values a bin in darktable's
-  // buffer); the tone curve's input is Lab, whose lightness is the first
-  const gboolean has = piece && piece->histogram && piece->histogram_stats.bins_count > 0;
-  json_builder_set_member_name(b, "histogram");
-  json_builder_begin_array(b);
-  if(has)
-    for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
-      json_builder_add_int_value(b, tone ? (gint64)piece->histogram[4 * i]
-                                         : (gint64)piece->histogram[4 * i] + piece->histogram[4 * i + 1] + piece->histogram[4 * i + 2]);
-  json_builder_end_array(b);
-  // and each channel's, for the red, green and blue curves
-  json_builder_set_member_name(b, "channels");
-  json_builder_begin_array(b);
-  for(int c = 0; c < (tone ? 0 : 3); c++)
-  {
-    json_builder_begin_array(b);
-    if(has)
-      for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
-        json_builder_add_int_value(b, (gint64)piece->histogram[4 * i + c]);
-    json_builder_end_array(b);
-  }
-  json_builder_end_array(b);
-  _ok_done(b);
-}
-
-static void _cmd_save(void)
-{
 // tonecurve's params, as in iop/tonecurve.c (private there). Its first curve
 // is the one the app edits: on lightness (L/100) in the Lab modes, on linear
 // values in the RGB and XYZ ones.
@@ -2829,21 +2826,19 @@ static gboolean _tonecurve_linear(const tonecurve_params_t *p)
   return p->tonecurve_autoscale_ab >= 2;
 }
 
+// Sets one channel's curve: {"cmd":"set_curve","module":"rgbcurve:0","channel":0,
+// "nodes":[[x,y],...]}. Nodes are on the middle-grey-compensated scale
+// (middle grey at 0.5, as darktable's "compensate middle gray"), which this
+// switches on; channel 0 alone is the linked RGB curve.
+static void _cmd_set_curve(JsonObject *o)
+{
   if(!H.edit.loaded) return _error("no image open");
-  dt_dev_write_history(&H.edit.dev);
-  // "on import" means always: "after edit" skips the write when darktable's
-  // own altered-history check (history hashes the GUI keeps) sees no change.
-  // A save here is always deliberate.
-  dt_conf_set_string("write_sidecar_files", "on import");
-  const gboolean failed = dt_image_write_sidecar_file(H.imgid);
-  dt_conf_set_string("write_sidecar_files", "never");
-  if(failed) return _error("could not write the XMP sidecar");
-  _ok_done(_ok());
-}
-
-// ------------------------------------------------------------------ main
-
-int main(int argc, char *argv[])
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!_is_curve(m)) return _error("not a curve this app can edit");
+  const int ch = CLAMP((int)json_object_get_int_member_with_default(o, "channel", 0), 0, 2);
+  JsonArray *nodes = json_object_has_member(o, "nodes") ? json_object_get_array_member(o, "nodes") : NULL;
+  const int n = nodes ? MIN((int)json_array_get_length(nodes), RGBCURVE_MAXNODES) : 0;
+  if(n < 2) return _error("a curve needs at least two points");
   if(!strcmp(m->op, "tonecurve"))
   {
     // its lightness curve only (a and b are colour curves)
@@ -2862,6 +2857,109 @@ int main(int argc, char *argv[])
     return _ok_done(_ok());
   }
   rgbcurve_params_t *p = (rgbcurve_params_t *)m->params;
+  // the nodes come in the compensated scale: convert any others on first use
+  p->compensate_middle_grey = TRUE;
+  for(int i = 0; i < n; i++)
+  {
+    JsonArray *pt = json_array_get_array_element(nodes, i);
+    p->curve_nodes[ch][i].x = CLAMP((float)json_array_get_double_element(pt, 0), 0.0f, 1.0f);
+    p->curve_nodes[ch][i].y = CLAMP((float)json_array_get_double_element(pt, 1), 0.0f, 1.0f);
+  }
+  p->curve_num_nodes[ch] = n;
+  if(json_object_has_member(o, "linked"))
+    p->curve_autoscale = json_object_get_boolean_member(o, "linked") ? 0 : 1;
+  m->histogram_middle_grey = TRUE;
+  _commit(m, TRUE);
+  _ok_done(_ok());
+}
+
+// The curve's nodes and the histogram of its input, on the same scale:
+// {"cmd":"curve","module":"rgbcurve:0"}. The histogram comes from the last
+// render; asking turns its collection on (a render after this fills it).
+static void _cmd_curve(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  if(!_is_curve(m)) return _error("not a curve this app can edit");
+  const gboolean tone = !strcmp(m->op, "tonecurve");
+  const rgbcurve_params_t *p = (const rgbcurve_params_t *)m->params;
+  const tonecurve_params_t *t = (const tonecurve_params_t *)m->params;
+  dt_dev_pixelpipe_iop_t *piece = _edit_piece(m);
+  // collect the input histogram headless, on the compensated scale, from
+  // the next render on (see _cmd_render); the module must run again for it
+  if(H.histogram_module != m)
+  {
+    H.histogram_module = m;
+    dt_dev_pixelpipe_cache_invalidate_later(&H.edit.pipe, m->iop_order, "curve histogram: ");
+    H.edit.dirty = TRUE;
+  }
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "enabled");
+  json_builder_add_boolean_value(b, m->enabled);
+  json_builder_set_member_name(b, "compensated");
+  json_builder_add_boolean_value(b, tone || p->compensate_middle_grey);
+  json_builder_set_member_name(b, "linked");
+  json_builder_add_boolean_value(b, tone || p->curve_autoscale == 0);
+  json_builder_set_member_name(b, "nodes");
+  json_builder_begin_array(b);
+  const gboolean lin = tone && _tonecurve_linear(t);
+  for(int ch = 0; ch < (tone ? 1 : 3); ch++)
+  {
+    json_builder_begin_array(b);
+    const int count = tone ? t->tonecurve_nodes[ch] : p->curve_num_nodes[ch];
+    for(int i = 0; i < CLAMP(count, 0, RGBCURVE_MAXNODES); i++)
+    {
+      const rgbcurve_node_t node = tone ? t->tonecurve[ch][i] : p->curve_nodes[ch][i];
+      json_builder_begin_array(b);
+      json_builder_add_double_value(b, lin ? _lightness(node.x) : node.x);
+      json_builder_add_double_value(b, lin ? _lightness(node.y) : node.y);
+      json_builder_end_array(b);
+    }
+    json_builder_end_array(b);
+  }
+  json_builder_end_array(b);
+  // histogram: bins of red, green and blue (4 values a bin in darktable's
+  // buffer); the tone curve's input is Lab, whose lightness is the first
+  const gboolean has = piece && piece->histogram && piece->histogram_stats.bins_count > 0;
+  json_builder_set_member_name(b, "histogram");
+  json_builder_begin_array(b);
+  if(has)
+    for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
+      json_builder_add_int_value(b, tone ? (gint64)piece->histogram[4 * i]
+                                         : (gint64)piece->histogram[4 * i] + piece->histogram[4 * i + 1] + piece->histogram[4 * i + 2]);
+  json_builder_end_array(b);
+  // and each channel's, for the red, green and blue curves
+  json_builder_set_member_name(b, "channels");
+  json_builder_begin_array(b);
+  for(int c = 0; c < (tone ? 0 : 3); c++)
+  {
+    json_builder_begin_array(b);
+    if(has)
+      for(uint32_t i = 0; i < piece->histogram_stats.bins_count; i++)
+        json_builder_add_int_value(b, (gint64)piece->histogram[4 * i + c]);
+    json_builder_end_array(b);
+  }
+  json_builder_end_array(b);
+  _ok_done(b);
+}
+
+static void _cmd_save(void)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_dev_write_history(&H.edit.dev);
+  // "on import" means always: "after edit" skips the write when darktable's
+  // own altered-history check (history hashes the GUI keeps) sees no change.
+  // A save here is always deliberate.
+  dt_conf_set_string("write_sidecar_files", "on import");
+  const gboolean failed = dt_image_write_sidecar_file(H.imgid);
+  dt_conf_set_string("write_sidecar_files", "never");
+  if(failed) return _error("could not write the XMP sidecar");
+  _ok_done(_ok());
+}
+
+// ------------------------------------------------------------------ main
+
+int main(int argc, char *argv[])
 {
   const char *frame = NULL, *config = NULL, *cache = NULL;
   // default tone mapper for unedited photos. darktable registers its
@@ -2888,7 +2986,6 @@ int main(int argc, char *argv[])
 
   // keep the protocol channel private; everything else printed goes to stderr
   H.out = fdopen(dup(STDOUT_FILENO), "w");
-  const tonecurve_params_t *t = (const tonecurve_params_t *)m->params;
   dup2(STDERR_FILENO, STDOUT_FILENO);
 
   H.frame_path = frame;
@@ -2912,7 +3009,6 @@ int main(int argc, char *argv[])
   if(dt_init(base + MAX(argc - extra, 0), dt_argv, FALSE, TRUE, NULL))
   {
     fprintf(stderr, "darktable failed to initialise\n");
-      const rgbcurve_node_t node = tone ? t->tonecurve[ch][i] : p->curve_nodes[ch][i];
     return 1;
   }
   // sidecars only on Save: darktable would otherwise write one whenever the
@@ -2977,6 +3073,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "to_output")) _cmd_to_output(o);
     else if(!strcmp(cmd, "raw_mosaic")) _cmd_raw_mosaic(o);
     else if(!strcmp(cmd, "write_dng")) _cmd_write_dng(o);
+    else if(!strcmp(cmd, "denoise")) _cmd_denoise(o);
     else if(!strcmp(cmd, "rename_instance")) _cmd_rename_instance(o);
     else if(!strcmp(cmd, "presets")) _cmd_presets();
     else if(!strcmp(cmd, "look")) _cmd_look(o);

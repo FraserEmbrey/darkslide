@@ -389,6 +389,14 @@ struct ModuleCard: View {
             } else if showsContent, module.op == "demosaic" {
                 DemosaicControls(module: module)
                     .transition(.opacity)
+            } else if showsContent, module.op == "denoiseprofile", model.canAIDenoise {
+                VStack(alignment: .leading, spacing: 14) {
+                    AIDenoiseControls()
+                    Divider()
+                    Text("Profiled").font(.subheadline.weight(.semibold))
+                    LayoutControls(module: module, sections: Presentation.layouts[module.op] ?? [])
+                }
+                .transition(.opacity)
             } else if showsContent, let layout = Presentation.layouts[module.op] {
                 LayoutControls(module: module, sections: layout)
                     .transition(.opacity)
@@ -814,6 +822,52 @@ struct ToneEqualizerMacros: View {
 /// Demosaicing, laid out for the photo's sensor as darktable's interface does:
 /// only the methods that apply, with a plain description of each, and only
 /// the settings the chosen method uses.
+/// AI denoise, at the top of the Denoise card: the RawNIND model on the raw
+/// before demosaicing, as Lightroom's Denoise, but in place, so its amount
+/// can change and it can be switched off to compare.
+struct AIDenoiseControls: View {
+    @Environment(EditorModel.self) private var model
+    @State private var amount = EditorModel.denoiseAmount
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("AI Denoise").font(.subheadline.weight(.semibold))
+                Spacer()
+                if model.isDenoising { ProgressView().controlSize(.small) }
+                Toggle("AI Denoise", isOn: Binding(
+                    get: { model.aiDenoise != nil },
+                    set: { on in Task { await model.setAIDenoise(on ? amount : nil) } }))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                    .disabled(model.isDenoising)
+                    .help("Switch off and on to compare")
+            }
+            HStack {
+                Text("Amount")
+                Slider(value: $amount, in: 5...100, step: 5) { editing in
+                    guard !editing else { return }
+                    EditorModel.denoiseAmount = amount
+                    if model.aiDenoise != nil { Task { await model.setAIDenoise(amount) } }
+                }
+                Text("\(Int(amount))").monospacedDigit().frame(width: 28, alignment: .trailing)
+            }
+            .disabled(model.isDenoising)
+            Text(model.aiDenoise == nil
+                 ? "Takes the noise out of the raw before it's turned into a picture, keeping detail. The first time takes a few seconds."
+                 : model.modules.contains(where: { $0.op == "denoiseprofile" && $0.enabled })
+                 ? "Profiled denoise is on as well, which is rarely needed. Compare with Original (⇧⌘B) shows the photo without AI denoise."
+                 : "Profiled denoise is off, as the noise has gone. Compare with Original (⇧⌘B) shows the photo without it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { if let a = model.aiDenoise { amount = a } }
+        .onChange(of: model.aiDenoise) { _, a in if let a { amount = a } }
+    }
+}
+
 struct DemosaicControls: View {
     @Environment(EditorModel.self) private var model
     let module: EngineModule

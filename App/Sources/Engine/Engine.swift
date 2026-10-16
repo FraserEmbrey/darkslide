@@ -431,6 +431,16 @@ actor Engine {
         _ = try await request(["cmd": "write_dng", "mosaic": mosaic.path, "path": path.path])
     }
 
+    /// AI raw denoise on the open raw, in place (see RawDenoise): `mosaic`,
+    /// a uint16 file of the raw denoised at full strength, is sent once;
+    /// `amount` (0 to 1) blends it with the original. Closing the photo puts
+    /// the original back, and the before view always shows it.
+    func setDenoise(mosaic: URL?, amount: Double) async throws {
+        var command: [String: Any] = ["cmd": "denoise", "amount": amount]
+        if let mosaic { command["mosaic"] = mosaic.path }
+        _ = try await request(command)
+    }
+
     struct InstanceReply: Decodable {
         let added: String
         let modules: [EngineModule]

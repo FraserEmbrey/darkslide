@@ -1,3 +1,4 @@
+import CryptoKit
 import AppKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
@@ -1070,7 +1071,6 @@ final class EditorModel {
                     FileHandle.standardError.write("Darkslide channel test: instances \(modules.filter { $0.op == "rgbcurve" }.map { "\($0.key) '\($0.instanceName)' \($0.enabled)" }), shown \(curveInfoKey ?? "-")\n".data(using: .utf8)!)
                 }
             }
-            // TestHueCurves: launch argument (-TestHueCurves YES) for testing: shows the hue
             // TestToneCurve: launch argument (-TestToneCurve YES) for testing: shows the tone
             // curve card and lifts middle grey, logging the curve the engine reads back
             if UserDefaults.standard.bool(forKey: "TestToneCurve") {
@@ -1089,6 +1089,7 @@ final class EditorModel {
                     FileHandle.standardError.write("Darkslide tone curve test: after \(info?.nodes ?? []), enabled \(modules.first { $0.key == m.key }?.enabled ?? false), histogram \(info?.histogram.reduce(0, +) ?? 0)\n".data(using: .utf8)!)
                 }
             }
+            // TestHueCurves: launch argument (-TestHueCurves YES) for testing: shows the hue
             // curves card and lifts blue's saturation and shifts green's hue
             if UserDefaults.standard.bool(forKey: "TestHueCurves") {
                 Task { @MainActor in
@@ -1344,6 +1345,21 @@ final class EditorModel {
                     FileHandle.standardError.write("Darkslide denoise test: open \(self.url?.lastPathComponent ?? "-"), noise reduction \(modules.first { $0.op == "denoiseprofile" }?.enabled == true ? "on" : "off"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
+            // TestAIDenoise: launch argument (-TestAIDenoise /folder) for testing: AI denoise
+            // at 100 then 50 then off, exporting a 2000 px JPEG at each into the folder
+            if let folder = UserDefaults.standard.string(forKey: "TestAIDenoise"), !folder.isEmpty {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    var t = ExportSettings(); t.format = .jpeg; t.longEdge = 2000
+                    for amount in [100.0, 50, 0] {
+                        let started = Date()
+                        await setAIDenoise(amount)
+                        let ms = Int(Date().timeIntervalSince(started) * 1000)
+                        await export(t, to: URL(fileURLWithPath: folder + "/ai\(Int(amount)).jpg"), remember: false)
+                        FileHandle.standardError.write("Darkslide AI denoise test: \(Int(amount)) in \(ms) ms, on \(aiDenoise.map { "\($0)" } ?? "off"), profiled \(modules.first { $0.op == "denoiseprofile" }?.enabled == true ? "on" : "off"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    }
+                }
+            }
             // TestHEIF: launch argument (-TestHEIF /folder) for testing: exports this photo as
             // HEIC, 8-bit sRGB and 10-bit HLG P3, into the folder
             if let folder = UserDefaults.standard.string(forKey: "TestHEIF"), !folder.isEmpty {
@@ -1468,6 +1484,9 @@ final class EditorModel {
             await loadPresets()
             await loadLook()
             if !reply.hadSidecar { await applyNewPhotoDefaults() }
+            aiDenoise = nil
+            denoiseSent = false
+            if let amount = catalog.aiDenoise(of: url) { await setAIDenoise(amount, restoring: true) }
             requestRender()
         } catch {
             errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
@@ -2417,6 +2436,90 @@ final class EditorModel {
     var canDenoise: Bool {
         url != nil && !showingLibrary && !isDenoising && sensor == "bayer" && decodedTIFF == nil
             && photosAsset == nil && RawDenoise.isAvailable && url.map(Library.isRaw) == true
+    }
+
+    /// AI denoise's amount (1 to 100) on the open photo, or nil when it's off.
+    /// It works on the raw in place (Engine.setDenoise), so the edit carries
+    /// on as before and the amount can change at any time. The catalog keeps
+    /// it per photo.
+    private(set) var aiDenoise: Double?
+    /// whether the engine has the open raw's denoised data
+    private var denoiseSent = false
+    /// photos whose profiled denoise AI denoise turned off, to turn it back on with it
+    private var profiledTurnedOff: Set<String> = []
+
+    /// a Bayer raw that darktable decodes, with the model installed
+    var canAIDenoise: Bool {
+        url != nil && sensor == "bayer" && decodedTIFF == nil && photosAsset == nil
+            && RawDenoise.isAvailable && url.map(Library.isRaw) == true
+    }
+
+    /// Turns AI denoise on at `amount` (1 to 100), changes its amount, or
+    /// turns it off (nil or 0). The model runs once per raw; its result is
+    /// cached, so after that only the blend and the render are redone. On, it
+    /// turns profiled denoise off, as there's no noise left for it.
+    func setAIDenoise(_ amount: Double?, restoring: Bool = false) async {
+        guard canAIDenoise, !isDenoising, let engine, let url else { return }
+        let on = (amount ?? 0) > 0
+        do {
+            if on && !denoiseSent {
+                isDenoising = true
+                defer { isDenoising = false; statusNote = nil }
+                statusNote = "Denoising…"
+                let file = try await denoisedMosaic(for: url, engine: engine)
+                guard self.url == url else { return }
+                try await engine.setDenoise(mosaic: file, amount: amount! / 100)
+                denoiseSent = true
+            } else if on || denoiseSent {
+                try await engine.setDenoise(mosaic: nil, amount: on ? amount! / 100 : 0)
+            }
+        } catch {
+            errorMessage = "Couldn't denoise: \(error.localizedDescription)"
+            return
+        }
+        aiDenoise = on ? amount : nil
+        catalog.setAIDenoise(aiDenoise, for: url)
+        if !restoring {
+            let profiled = modules.first { $0.op == "denoiseprofile" }
+            if on, let profiled, profiled.enabled {
+                setEnabled(false, module: profiled.key)
+                profiledTurnedOff.insert(url.path)
+            } else if !on, let profiled, !profiled.enabled, profiledTurnedOff.remove(url.path) != nil {
+                setEnabled(true, module: profiled.key)
+            }
+        }
+        beforeKey = ""
+        requestRender()
+    }
+
+    /// The raw denoised at full strength, as uint16 sensor values: from the
+    /// cache, keyed to the file's path, size and date, or from the model.
+    private func denoisedMosaic(for url: URL, engine: Engine) async throws -> URL {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let stamp = "\(url.path)|\((attributes?[.size] as? Int) ?? 0)|\((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"
+        let digest = SHA256.hash(data: Data(stamp.utf8)).map { String(format: "%02x", $0) }.joined().prefix(32)
+        let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Darkslide/denoised", isDirectory: true)
+        let file = folder.appendingPathComponent("\(digest).u16")
+        if FileManager.default.fileExists(atPath: file.path) { return file }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let mosaicIn = FileManager.default.temporaryDirectory.appendingPathComponent("darkslide-mosaic-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: mosaicIn) }
+        let started = Date()
+        let layout = try await engine.rawMosaic(to: mosaicIn)
+        let progress: @Sendable (Double) -> Void = { p in
+            Task { @MainActor [weak self] in
+                if self?.isDenoising == true { self?.statusNote = "Denoising… \(Int(p * 100))%" }
+            }
+        }
+        try await Task.detached(priority: .userInitiated) {
+            let data = try Data(contentsOf: mosaicIn)
+            let mosaic = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            let out = try RawDenoise.run(mosaic, layout: layout, progress: progress)
+            try out.withUnsafeBytes { try Data($0).write(to: file, options: .atomic) }
+        }.value
+        FileHandle.standardError.write("Darkslide AI denoise of \(url.lastPathComponent) in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
+        return file
     }
 
     /// the last amount chosen, 0 to 100, remembered between photos

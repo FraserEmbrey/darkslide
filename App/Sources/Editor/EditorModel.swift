@@ -1143,7 +1143,11 @@ final class EditorModel {
                     // TestRescueSheet: just show the sheet
                     if UserDefaults.standard.bool(forKey: "TestRescueSheet") { rescueFocusPhoto = photo; return }
                     var started = Date()
-                    if let pair = try? await rescueFocusPreview(photo, centre: CGPoint(x: 0.5, y: 0.5), amount: 1) {
+                    // TestRescueWhole: the whole photo rather than the subject
+                    let centre = CGPoint(x: 0.5, y: 0.5)
+                    let mask = UserDefaults.standard.bool(forKey: "TestRescueWhole") ? nil : try? await rescueFocusMatte(photo, centre: centre)
+                    FileHandle.standardError.write("Darkslide rescue test: subject \(mask == nil ? "none" : "found") in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
+                    if let pair = try? await rescueFocusPreview(photo, centre: centre, amount: 1, mask: mask) {
                         for (name, image) in [("before", pair.before), ("after", pair.after)] {
                             if let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/\(name).png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
                                 CGImageDestinationAddImage(dest, image, nil)
@@ -1153,7 +1157,7 @@ final class EditorModel {
                     }
                     let previewMs = Int(Date().timeIntervalSince(started) * 1000)
                     started = Date()
-                    await createRescueFocus(photo, amount: 1)
+                    await createRescueFocus(photo, amount: 1, mask: mask)
                     FileHandle.standardError.write("Darkslide rescue test: preview \(previewMs) ms, whole \(Int(Date().timeIntervalSince(started) * 1000)) ms, open \(self.url?.lastPathComponent ?? "-"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
@@ -2542,6 +2546,8 @@ final class EditorModel {
     var rescueFocusPhoto: URL?
     /// the photo the sheet is for, rendered at full size, and its metadata
     @ObservationIgnored var rescueFocusSource: (url: URL, image: CIImage)?
+    /// the subjects Vision found in it, nil inside when none
+    @ObservationIgnored var rescueFocusSubjects: (url: URL, subjects: RescueFocus.Subjects?)?
     static var compositeTestRan = false
     static var rescueTestRan = false
     /// the photos' renders for the sheet's preview, by path, with their sidecars' dates
@@ -4210,18 +4216,40 @@ extension EditorModel {
         return image
     }
 
+    /// The matte of the subject at `centre` (0 to 1 across and down), or of
+    /// all of them when it isn't on one, over the whole photo; nil when
+    /// Vision finds no subject.
+    func rescueFocusMatte(_ photo: URL, centre: CGPoint) async throws -> CIImage? {
+        let image = try await rescueFocusImage(photo)
+        let subjects: RescueFocus.Subjects?
+        if let found = rescueFocusSubjects, found.url == photo {
+            subjects = found.subjects
+        } else {
+            // Vision works at a few megapixels; the matte is soft and scales up
+            let s = min(1, 2048 / max(image.extent.width, image.extent.height))
+            let small = image.transformed(by: CGAffineTransform(scaleX: s, y: s))
+            guard let cg = compositeContext.createCGImage(small, from: small.extent.integral) else { return nil }
+            subjects = try await Task.detached(priority: .userInitiated) { try RescueFocus.Subjects.find(in: cg) }.value
+            rescueFocusSubjects = (photo, subjects)
+        }
+        guard let subjects else { return nil }
+        let extent = image.extent
+        return try await Task.detached(priority: .userInitiated) { try subjects.matte(at: centre, over: extent) }.value
+    }
+
     /// A 512 px square of the photo at full size around `centre` (0 to 1 across
-    /// and down), before and after.
-    func rescueFocusPreview(_ photo: URL, centre: CGPoint, amount: Double) async throws -> (before: CGImage, after: CGImage) {
+    /// and down), before and after, the rescue kept to `mask` if there is one.
+    func rescueFocusPreview(_ photo: URL, centre: CGPoint, amount: Double, mask: CIImage? = nil) async throws -> (before: CGImage, after: CGImage) {
         let image = try await rescueFocusImage(photo)
         let e = image.extent
         let side = min(512, e.width, e.height)
         let x = min(max(e.minX + centre.x * e.width - side / 2, e.minX), e.maxX - side)
         let y = min(max(e.maxY - centre.y * e.height - side / 2, e.minY), e.maxY - side)
         let crop = image.cropped(to: CGRect(x: x, y: y, width: side, height: side).integral)
+        let cropMask = mask?.cropped(to: crop.extent)
         let space = CGColorSpace(name: CGColorSpace.displayP3)!
         return try await Task.detached(priority: .userInitiated) {
-            let after = try RescueFocus.run(crop, amount: amount, space: space)
+            let after = try RescueFocus.run(crop, amount: amount, space: space, mask: cropMask)
             let context = CIContext()
             guard let b = context.createCGImage(crop, from: crop.extent, format: .RGBA8, colorSpace: space),
                   let a = context.createCGImage(after, from: after.extent, format: .RGBA8, colorSpace: space)
@@ -4231,7 +4259,7 @@ extension EditorModel {
     }
 
     /// Rescues the whole photo into a new 16-bit TIFF next to it and opens that.
-    func createRescueFocus(_ photo: URL, amount: Double) async {
+    func createRescueFocus(_ photo: URL, amount: Double, mask: CIImage? = nil) async {
         rescueFocusPhoto = nil
         let dest = Self.newPhotoName(for: photo, suffix: "Focus")
         do {
@@ -4243,7 +4271,7 @@ extension EditorModel {
             let started = Date()
             try await Task.detached(priority: .userInitiated) {
                 let out = try RescueFocus.run(image, amount: amount, space: CGColorSpace(name: CGColorSpace.displayP3)!,
-                                              progress: progress)
+                                              mask: mask, progress: progress)
                 try Self.writeTIFF16(out, properties: image.properties, to: dest)
             }.value
             FileHandle.standardError.write("Darkslide rescued focus into \(dest.lastPathComponent) in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
@@ -4254,6 +4282,7 @@ extension EditorModel {
         }
         statusNote = nil
         rescueFocusSource = nil
+        rescueFocusSubjects = nil
         await open(dest)
     }
 }

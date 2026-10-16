@@ -16,8 +16,14 @@ struct RescueFocusSheet: View {
     @State private var pair: (before: CGImage, after: CGImage)?
     @State private var working = false
     @State private var failure: String?
+    /// kept to the subject, as the model would otherwise sharpen bokeh too
+    @State private var subjectOnly = true
+    @State private var matte: CIImage?
+    /// the overview with what's left alone dimmed
+    @State private var shaded: CGImage?
+    @State private var noSubject = false
 
-    private struct Request: Equatable { let centre: CGPoint; let amount: Double }
+    private struct Request: Equatable { let centre: CGPoint; let amount: Double; let subjectOnly: Bool }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -25,10 +31,22 @@ struct RescueFocusSheet: View {
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 12) {
                     overviewPicker
-                    Text("Click where focus matters, such as the eyes, to see it at full size.")
+                    Text(subjectOnly
+                         ? "Click where focus matters, such as the eyes, to see it at full size. Clicking a person keeps the rescue to them; the dimmed parts are left as they are."
+                         : "Click where focus matters, such as the eyes, to see it at full size.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Picker("Rescue", selection: $subjectOnly) {
+                        Text("Subject").tag(true)
+                        Text("Whole Photo").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    if subjectOnly, noSubject {
+                        Text("No subject found, so the whole photo is rescued.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text("Amount")
@@ -79,9 +97,9 @@ struct RescueFocusSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Create") {
-                    let a = settled
+                    let a = settled, mask = subjectOnly ? matte : nil
                     dismiss()
-                    Task { await model.createRescueFocus(photo, amount: a / 100) }
+                    Task { await model.createRescueFocus(photo, amount: a / 100, mask: mask) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(overview == nil || settled == 0)
@@ -89,6 +107,9 @@ struct RescueFocusSheet: View {
         }
         .padding(20)
         .task {
+            // rendered afresh, in case the edit changed since last time
+            model.rescueFocusSource = nil
+            model.rescueFocusSubjects = nil
             do {
                 let image = try await model.rescueFocusImage(photo)
                 let s = 380 / max(image.extent.width, image.extent.height)
@@ -101,7 +122,7 @@ struct RescueFocusSheet: View {
             await refresh()
         }
         // after that, again when the square moves or the amount settles
-        .task(id: Request(centre: centre, amount: settled)) {
+        .task(id: Request(centre: centre, amount: settled, subjectOnly: subjectOnly)) {
             guard overview != nil else { return }
             await refresh()
         }
@@ -111,11 +132,36 @@ struct RescueFocusSheet: View {
         working = true
         defer { working = false }
         do {
-            pair = try await model.rescueFocusPreview(photo, centre: centre, amount: settled / 100)
+            if subjectOnly {
+                matte = try await model.rescueFocusMatte(photo, centre: centre)
+                noSubject = matte == nil
+            } else {
+                matte = nil
+            }
+            shaded = shade()
+            pair = try await model.rescueFocusPreview(photo, centre: centre, amount: settled / 100,
+                                                      mask: subjectOnly ? matte : nil)
             failure = nil
         } catch {
             failure = error.localizedDescription
         }
+    }
+
+    /// the overview with everything outside the matte dimmed
+    private func shade() -> CGImage? {
+        guard let overview, let matte else { return nil }
+        let picture = CIImage(cgImage: overview)
+        let e = picture.extent, m = matte.extent
+        let mask = matte
+            .transformed(by: CGAffineTransform(translationX: -m.minX, y: -m.minY))
+            .transformed(by: CGAffineTransform(scaleX: e.width / m.width, y: e.height / m.height))
+        let dim = picture.applyingFilter("CIColorMatrix", parameters: [
+            // linear values: about a third as bright on screen
+            "inputRVector": CIVector(x: 0.1, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 0.1, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: 0.1, w: 0),
+        ])
+        let out = picture.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: dim, kCIInputMaskImageKey: mask])
+        return CIContext().createCGImage(out, from: e, format: .RGBA8, colorSpace: overview.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
     /// the whole photo, with the square shown on the right marked; click to move it
@@ -127,7 +173,7 @@ struct RescueFocusSheet: View {
             // the square's share of the photo, from its full size
             let full = model.rescueFocusSource?.image.extent.size ?? CGSize(width: 512, height: 512)
             let side = 512 / max(full.width, full.height) * max(size.width, size.height)
-            Image(decorative: overview, scale: 1)
+            Image(decorative: subjectOnly ? shaded ?? overview : overview, scale: 1)
                 .resizable()
                 .frame(width: size.width, height: size.height)
                 .overlay(alignment: .topLeading) {

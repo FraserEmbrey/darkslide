@@ -210,6 +210,11 @@ enum Compositor {
         try handler.perform([request])
         guard let result = request.results?.first, !result.allInstances.isEmpty else { return nil }
         let buffer = try result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
+        return matteImage(buffer)
+    }
+
+    /// Vision's one-channel float mask as a grey picture, white inside
+    static func matteImage(_ buffer: CVPixelBuffer) -> CIImage {
         // one float channel; copied, as Vision reuses its buffers
         let matte = CIImage(cvPixelBuffer: buffer)
         let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)

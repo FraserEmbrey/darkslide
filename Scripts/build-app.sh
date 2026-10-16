@@ -27,8 +27,8 @@ xcrun actool "$ROOT/Design/AppIcon.icon" --compile "$APP/Contents/Resources" --p
   --output-partial-info-plist "$ROOT/.build/icon-partial.plist" > /dev/null
 
 # Core ML models, when Scripts/fetch-models.sh has made them: raw denoise
-# and Rescue Focus
-for model in RawDenoise RescueFocus; do
+# and Rescue Focus (defocus and motion)
+for model in RawDenoise RescueFocus RescueMotion; do
   if [ -d "$ROOT/Models/$model.mlpackage" ]; then
     mkdir -p "$APP/Contents/Resources/Models"
     xcrun coremlcompiler compile "$ROOT/Models/$model.mlpackage" "$APP/Contents/Resources/Models" > /dev/null

@@ -18,12 +18,13 @@ struct RescueFocusSheet: View {
     @State private var failure: String?
     /// kept to the subject, as the model would otherwise sharpen bokeh too
     @State private var subjectOnly = true
+    @State private var kind = RescueFocus.Kind.focus
     @State private var matte: CIImage?
     /// the overview with what's left alone dimmed
     @State private var shaded: CGImage?
     @State private var noSubject = false
 
-    private struct Request: Equatable { let centre: CGPoint; let amount: Double; let subjectOnly: Bool }
+    private struct Request: Equatable { let centre: CGPoint; let amount: Double; let subjectOnly: Bool; let kind: RescueFocus.Kind }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -31,6 +32,12 @@ struct RescueFocusSheet: View {
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 12) {
                     overviewPicker
+                    if RescueFocus.kinds.count > 1 {
+                        Picker("Blur", selection: $kind) {
+                            ForEach(RescueFocus.kinds) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                    }
                     Text(subjectOnly
                          ? "Click where focus matters, such as the eyes, to see it at full size. Clicking a person keeps the rescue to them; the dimmed parts are left as they are."
                          : "Click where focus matters, such as the eyes, to see it at full size.")
@@ -57,7 +64,9 @@ struct RescueFocusSheet: View {
                             if !editing { settled = amount }
                         }
                     }
-                    Text("For focus that clearly missed. A model trained on real out-of-focus photos restores the detail the blur spread out; detail that's gone entirely comes back smooth rather than invented. For a slightly soft lens, sharpening does better. Makes a new photo next to this one; the original isn't changed. A 24 MP photo takes about two minutes.")
+                    Text(kind == .focus
+                         ? "For focus that clearly missed. A model trained on real out-of-focus photos restores the detail the blur spread out; detail that's gone entirely comes back smooth rather than invented. For a slightly soft lens, sharpening does better. Makes a new photo next to this one; the original isn't changed. A 24 MP photo takes up to two minutes."
+                         : "For clear camera shake, where edges are smeared or doubled. A model trained on motion blur pulls them back together; it helps most on strong shake and little on slight. A moving subject in a still frame is beyond it. Makes a new photo next to this one; the original isn't changed. A 24 MP photo takes up to two minutes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -97,9 +106,9 @@ struct RescueFocusSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Create") {
-                    let a = settled, mask = subjectOnly ? matte : nil
+                    let a = settled, mask = subjectOnly ? matte : nil, k = kind
                     dismiss()
-                    Task { await model.createRescueFocus(photo, amount: a / 100, mask: mask) }
+                    Task { await model.createRescueFocus(photo, kind: k, amount: a / 100, mask: mask) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(overview == nil || settled == 0)
@@ -122,7 +131,7 @@ struct RescueFocusSheet: View {
             await refresh()
         }
         // after that, again when the square moves or the amount settles
-        .task(id: Request(centre: centre, amount: settled, subjectOnly: subjectOnly)) {
+        .task(id: Request(centre: centre, amount: settled, subjectOnly: subjectOnly, kind: kind)) {
             guard overview != nil else { return }
             await refresh()
         }
@@ -139,7 +148,7 @@ struct RescueFocusSheet: View {
                 matte = nil
             }
             shaded = shade()
-            pair = try await model.rescueFocusPreview(photo, centre: centre, amount: settled / 100,
+            pair = try await model.rescueFocusPreview(photo, kind: kind, centre: centre, amount: settled / 100,
                                                       mask: subjectOnly ? matte : nil)
             failure = nil
         } catch {

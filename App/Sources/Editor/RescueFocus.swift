@@ -14,23 +14,36 @@ import Vision
 /// back smoothed rather than invented. Tiles overlap by 48 px and are
 /// cross-faded. The model is converted by Scripts/fetch-models.sh; without
 /// it, Rescue Focus isn't offered.
+///
+/// For camera shake, the same network trained on GoPro's motion blur. On
+/// RealBlur's real shaken photos it gained 0.6 dB on average, up to 3 dB on
+/// the worst shake, and lost up to 1 dB on a few: worth it for clear shake,
+/// not for slight.
 enum RescueFocus {
+    enum Kind: String, CaseIterable, Identifiable {
+        case focus, shake
+        var id: String { rawValue }
+        var title: String { self == .focus ? "Missed Focus" : "Camera Shake" }
+        fileprivate var resource: String { self == .focus ? "RescueFocus" : "RescueMotion" }
+        var modelURL: URL? {
+            Bundle.main.url(forResource: resource, withExtension: "mlmodelc", subdirectory: "Models")
+        }
+    }
+
     struct Failure: LocalizedError {
         let message: String
         var errorDescription: String? { message }
     }
 
-    static var modelURL: URL? {
-        Bundle.main.url(forResource: "RescueFocus", withExtension: "mlmodelc", subdirectory: "Models")
-    }
-
-    static var isAvailable: Bool { modelURL != nil }
+    static var isAvailable: Bool { Kind.focus.modelURL != nil }
+    /// the kinds of blur whose models are installed
+    static var kinds: [Kind] { Kind.allCases.filter { $0.modelURL != nil } }
 
     private static let tile = 512
     private static let margin = 48
 
-    private static func model() throws -> MLModel {
-        guard let modelURL else { throw Failure(message: "The Rescue Focus model isn't installed.") }
+    private static func model(_ kind: Kind) throws -> MLModel {
+        guard let modelURL = kind.modelURL else { throw Failure(message: "The Rescue Focus model isn't installed.") }
         let config = MLModelConfiguration()
         // the GPU: five times quicker than the Neural Engine for this model
         config.computeUnits = .cpuAndGPU
@@ -82,9 +95,9 @@ enum RescueFocus {
     /// on encoded photos, and come back tagged with it. With a `mask` (a grey
     /// picture over the image, white where to rescue) the rest is left as it
     /// was, and tiles wholly outside it aren't run.
-    static func run(_ image: CIImage, amount: Double, space: CGColorSpace, mask: CIImage? = nil,
+    static func run(_ image: CIImage, kind: Kind = .focus, amount: Double, space: CGColorSpace, mask: CIImage? = nil,
                     progress: @Sendable (Double) -> Void = { _ in }) throws -> CIImage {
-        let model = try model()
+        let model = try model(kind)
         let extent = image.extent.integral
         let W = Int(extent.width), H = Int(extent.height)
         guard W >= 16, H >= 16 else { throw Failure(message: "The photo is too small.") }

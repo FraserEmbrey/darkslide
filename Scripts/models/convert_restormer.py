@@ -1,5 +1,5 @@
-"""Convert Restormer's single-image defocus deblurring model (Zamir et al.,
-CVPR 2022; MIT licence) to Core ML, for Rescue Focus: 512 px tiles, half
+"""Convert a Restormer deblurring model (Zamir et al., CVPR 2022; MIT
+licence), defocus or motion, to Core ML, for Rescue Focus: 512 px tiles, half
 precision, on the GPU. Core ML's converter can't follow the einops reshapes
 in spandrel's copy of the architecture, so the layer norm and attention are
 redone with plain tensor ops (the same maths; checked against the original)
@@ -9,7 +9,7 @@ import sys, numpy as np, torch, coremltools as ct, spandrel, spandrel_extra_arch
 spandrel_extra_arches.install(ignore_duplicates=True)
 from spandrel_extra_arches.architectures.Restormer.__arch import restormer_arch as R
 
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, kind = sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "single-image defocus"
 TILE = 512
 
 
@@ -59,7 +59,7 @@ assert np.abs(patched - ref).max() < 1e-4, "the rewritten layers differ from the
 model = ct.convert(traced, inputs=[ct.TensorType(name="input", shape=x.shape)], outputs=[ct.TensorType(name="output")],
                    convert_to="mlprogram", compute_precision=ct.precision.FLOAT16,
                    minimum_deployment_target=ct.target.macOS15)
-model.short_description = "Restormer single-image defocus deblurring (Zamir et al., CVPR 2022, MIT licence)"
+model.short_description = f"Restormer {kind} deblurring (Zamir et al., CVPR 2022, MIT licence)"
 model.save(dst)
 out = model.predict({"input": x.numpy()})["output"]
 print(f"converted {dst}: max difference from PyTorch {float(np.abs(out - ref).max()):.4f}")

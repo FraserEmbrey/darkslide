@@ -1147,7 +1147,9 @@ final class EditorModel {
                     let centre = CGPoint(x: 0.5, y: 0.5)
                     let mask = UserDefaults.standard.bool(forKey: "TestRescueWhole") ? nil : try? await rescueFocusMatte(photo, centre: centre)
                     FileHandle.standardError.write("Darkslide rescue test: subject \(mask == nil ? "none" : "found") in \(Int(Date().timeIntervalSince(started) * 1000)) ms\n".data(using: .utf8)!)
-                    if let pair = try? await rescueFocusPreview(photo, centre: centre, amount: 1, mask: mask) {
+                    // TestRescueShake: the camera shake model
+                    let kind: RescueFocus.Kind = UserDefaults.standard.bool(forKey: "TestRescueShake") ? .shake : .focus
+                    if let pair = try? await rescueFocusPreview(photo, kind: kind, centre: centre, amount: 1, mask: mask) {
                         for (name, image) in [("before", pair.before), ("after", pair.after)] {
                             if let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/\(name).png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
                                 CGImageDestinationAddImage(dest, image, nil)
@@ -1157,7 +1159,7 @@ final class EditorModel {
                     }
                     let previewMs = Int(Date().timeIntervalSince(started) * 1000)
                     started = Date()
-                    await createRescueFocus(photo, amount: 1, mask: mask)
+                    await createRescueFocus(photo, kind: kind, amount: 1, mask: mask)
                     FileHandle.standardError.write("Darkslide rescue test: preview \(previewMs) ms, whole \(Int(Date().timeIntervalSince(started) * 1000)) ms, open \(self.url?.lastPathComponent ?? "-"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
@@ -4239,7 +4241,8 @@ extension EditorModel {
 
     /// A 512 px square of the photo at full size around `centre` (0 to 1 across
     /// and down), before and after, the rescue kept to `mask` if there is one.
-    func rescueFocusPreview(_ photo: URL, centre: CGPoint, amount: Double, mask: CIImage? = nil) async throws -> (before: CGImage, after: CGImage) {
+    func rescueFocusPreview(_ photo: URL, kind: RescueFocus.Kind = .focus, centre: CGPoint, amount: Double,
+                            mask: CIImage? = nil) async throws -> (before: CGImage, after: CGImage) {
         let image = try await rescueFocusImage(photo)
         let e = image.extent
         let side = min(512, e.width, e.height)
@@ -4249,7 +4252,7 @@ extension EditorModel {
         let cropMask = mask?.cropped(to: crop.extent)
         let space = CGColorSpace(name: CGColorSpace.displayP3)!
         return try await Task.detached(priority: .userInitiated) {
-            let after = try RescueFocus.run(crop, amount: amount, space: space, mask: cropMask)
+            let after = try RescueFocus.run(crop, kind: kind, amount: amount, space: space, mask: cropMask)
             let context = CIContext()
             guard let b = context.createCGImage(crop, from: crop.extent, format: .RGBA8, colorSpace: space),
                   let a = context.createCGImage(after, from: after.extent, format: .RGBA8, colorSpace: space)
@@ -4259,9 +4262,9 @@ extension EditorModel {
     }
 
     /// Rescues the whole photo into a new 16-bit TIFF next to it and opens that.
-    func createRescueFocus(_ photo: URL, amount: Double, mask: CIImage? = nil) async {
+    func createRescueFocus(_ photo: URL, kind: RescueFocus.Kind = .focus, amount: Double, mask: CIImage? = nil) async {
         rescueFocusPhoto = nil
-        let dest = Self.newPhotoName(for: photo, suffix: "Focus")
+        let dest = Self.newPhotoName(for: photo, suffix: kind == .focus ? "Focus" : "Deblur")
         do {
             statusNote = "Rendering \(photo.lastPathComponent)…"
             let image = try await rescueFocusImage(photo)
@@ -4270,7 +4273,7 @@ extension EditorModel {
             }
             let started = Date()
             try await Task.detached(priority: .userInitiated) {
-                let out = try RescueFocus.run(image, amount: amount, space: CGColorSpace(name: CGColorSpace.displayP3)!,
+                let out = try RescueFocus.run(image, kind: kind, amount: amount, space: CGColorSpace(name: CGColorSpace.displayP3)!,
                                               mask: mask, progress: progress)
                 try Self.writeTIFF16(out, properties: image.properties, to: dest)
             }.value

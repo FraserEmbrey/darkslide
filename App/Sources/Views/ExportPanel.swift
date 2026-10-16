@@ -96,7 +96,7 @@ struct ExportOptionsView: View {
     var body: some View {
         let s = options.settings
         let target = options.effectiveTarget
-        let size = model.exportSize(longEdge: s.longEdge)
+        let size = model.exportSize(longEdge: s.longEdge, enlarge: s.enlargement)
         VStack(spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
@@ -128,9 +128,22 @@ struct ExportOptionsView: View {
                 }
                 GridRow {
                     label("Size:")
-                    Picker("Size", selection: $options.settings.longEdge) {
+                    // enlargements as negative tags: -2 is 2×
+                    Picker("Size", selection: Binding(
+                        get: { options.settings.enlargement.map { -$0 } ?? options.settings.longEdge },
+                        set: { v in
+                            options.settings.enlarge = v < 0 ? -v : nil
+                            options.settings.longEdge = max(v, 0)
+                        })) {
                         ForEach(ExportSettings.sizes, id: \.self) { e in
                             Text(e == 0 ? "Original Size" : "Long edge \(e) px").tag(e)
+                        }
+                        if Upscaler.isAvailable {
+                            Section("Enlarged") {
+                                ForEach(Upscaler.factors, id: \.self) { f in
+                                    Text("\(f)× Original Size").tag(-f)
+                                }
+                            }
                         }
                     }
                     .labelsHidden()
@@ -257,6 +270,12 @@ struct ExportOptionsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                if s.enlargement != nil {
+                    Text("Enlarged with Apple's super resolution, which sharpens edges without inventing detail. Slow on large photos.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
                 if model.exportTarget.isHDR && !s.format.isGainMap {
                     Text("Standard brightness only: highlights brighter than white are brought within it.")
                         .font(.caption)

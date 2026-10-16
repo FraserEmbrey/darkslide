@@ -143,6 +143,15 @@ struct ExportSettings: Codable, Equatable {
     var bitDepth = 8
     /// 0 is the original size, otherwise the long edge in pixels
     var longEdge = 0
+    /// 2 or 4 to enlarge the original size on export (Upscaler); the long
+    /// edge doesn't apply then. Optional so older saved settings still load.
+    var enlarge: Int?
+
+    /// the enlargement, when it's one this Mac can do
+    var enlargement: Int? {
+        guard let enlarge, Upscaler.factors.contains(enlarge), Upscaler.isAvailable else { return nil }
+        return enlarge
+    }
 
     static let sizes = [0, 1080, 2048, 3000, 4096, 6000]
     static let key = "ExportSettings2"

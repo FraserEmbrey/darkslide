@@ -786,6 +786,8 @@ final class EditorModel {
                 // -TestExportEdge 0 for the original size
                 t.longEdge = UserDefaults.standard.object(forKey: "TestExportEdge") != nil ? UserDefaults.standard.integer(forKey: "TestExportEdge") : 3000
                 if let depth = Int(UserDefaults.standard.string(forKey: "TestExportDepth") ?? "") { t.bitDepth = depth }
+                // -TestExportEnlarge 2: enlarged on export
+                if let f = Int(UserDefaults.standard.string(forKey: "TestExportEnlarge") ?? "") { t.enlarge = f }
                 if let p = ExportProfile(rawValue: UserDefaults.standard.integer(forKey: "TestExportProfile")) { t.profile = p }
                 // -TestExportLift 2: exposure raised first, for highlights above white
                 let lift = UserDefaults.standard.double(forKey: "TestExportLift")
@@ -2018,10 +2020,10 @@ final class EditorModel {
     /// the edit's export profile, as the HDR card describes it
     var exportTarget: HDRTarget { HDRTarget(darktableProfile: outputProfileType ?? 1) }
 
-    /// pixel size of an export at the given long edge (0 = original)
-    func exportSize(longEdge: Int) -> CGSize {
+    /// pixel size of an export at the given long edge (0 = original), or enlarged
+    func exportSize(longEdge: Int, enlarge: Int? = nil) -> CGSize {
         let long = max(imageSize.width, imageSize.height)
-        let scale = longEdge > 0 ? min(1, Double(longEdge) / long) : 1
+        let scale = enlarge.map(Double.init) ?? (longEdge > 0 ? min(1, Double(longEdge) / long) : 1)
         return CGSize(width: (imageSize.width * scale).rounded(), height: (imageSize.height * scale).rounded())
     }
 
@@ -2045,8 +2047,9 @@ final class EditorModel {
                 try await exportGainMap(settings, to: url, engine: engine)
                 lastExport = url
                 FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
-            } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings) {
-                // HEIF, anything with a frame or watermark, and an HDR source made SDR, through Core Image
+            } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings)
+                        || settings.enlargement != nil {
+                // HEIF, anything with a frame or watermark, an HDR source made SDR, and enlargements, through Core Image
                 try await exportThroughCoreImage(settings, to: url, engine: engine)
                 lastExport = url
             } else {
@@ -2096,12 +2099,16 @@ final class EditorModel {
         let extras = ExportExtras.load()
         // smaller by the frame's share, so the framed picture is the size chosen;
         // an HDR source to be tone mapped comes out linear and unclipped
+        let enlarge = settings.enlargement
+        let maxEdge = enlarge != nil ? 0 : extras.any ? extras.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge
         let tiff = try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: float ? 32 : 16,
-                                           maxEdge: extras.any ? extras.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge,
+                                           maxEdge: maxEdge,
                                            profile: toneMap ? 4 : profile,
                                            sdrFromHDR: !toneMap && exportsSDRRendition(settings))
         defer { try? FileManager.default.removeItem(at: tiff) }
         let quality = Double(settings.quality) / 100
+        let progress = enlargeProgress()
+        defer { statusNote = nil }
         try await Task.detached(priority: .userInitiated) {
             let tagged = toneMap ? nil : Self.colourSpace(forDarktableProfile: profile)
             // the values as darktable encoded them, or through its ICC profile
@@ -2119,6 +2126,11 @@ final class EditorModel {
                     throw EngineError(message: "Couldn't read darktable's export.")
                 }
                 (image, space) = (read, s)
+            }
+            if let enlarge {
+                // in the export's encoding, or gamma-encoded Rec.2020 for the tone mapped one
+                let encoding = toneMap ? CGColorSpace(name: CGColorSpace.itur_2020) : tagged != nil ? nil : space
+                image = try await Upscaler.enlarge(image, by: enlarge, space: encoding, progress: progress)
             }
             if extras.any { image = extras.composite(image, white: tagged != nil ? Self.whiteLevel(forDarktableProfile: profile) : 1) }
             let context = tagged != nil ? CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()]) : CIContext()
@@ -2143,6 +2155,15 @@ final class EditorModel {
             }
         }.value
         FileHandle.standardError.write("Develop exported \(url.path)\n".data(using: .utf8)!)
+    }
+
+    /// the status line's progress while an export is enlarged
+    private func enlargeProgress() -> @Sendable (Double) -> Void {
+        { p in
+            Task { @MainActor [weak self] in
+                if self?.isExporting == true { self?.statusNote = "Enlarging… \(Int(p * 100))%" }
+            }
+        }
     }
 
     /// An HDR image (SDR white at 1, linear Rec.2020) brought within SDR
@@ -2207,17 +2228,20 @@ final class EditorModel {
         if settings.profile != .fromEdit { setOutputProfile(settings.profile.rawValue) }
         // smaller by the frame's share, if there is one, so the framed picture is the size chosen
         let extrasForSize = ExportExtras.load()
-        let size = exportSize(longEdge: extrasForSize.any ? extrasForSize.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge)
+        let enlarge = settings.enlargement
+        let size = exportSize(longEdge: enlarge != nil ? 0 : extrasForSize.any ? extrasForSize.photoLongEdge(for: settings.longEdge, photo: imageSize) : settings.longEdge)
         let maxPixels = Int(max(size.width, size.height))
+        let progress = enlargeProgress()
+        defer { statusNote = nil }
 
         let hdrFrame = try await engine.render(maxPixels: maxPixels, hdr: true, displayHeadroom: 16, wantOverlay: false,
                                                hdrLimit: hdrLimit)
-        let hdr = CIImage(cgImage: hdrFrame.image)
+        var hdr = CIImage(cgImage: hdrFrame.image)
         if UserDefaults.standard.string(forKey: "TestExport") != nil {
             FileHandle.standardError.write("Develop gain map test: target \(target.name), HDR frame peak \(hdrFrame.analysis?.peak ?? -1), isHDR \(hdrFrame.isHDR)\n".data(using: .utf8)!)
         }
 
-        let sdr: CIImage
+        var sdr: CIImage
         switch settings.sdrBase {
         case .darktable:
             let sdrFrame = try await engine.render(maxPixels: maxPixels, hdr: false, displayHeadroom: 1, wantOverlay: false,
@@ -2230,6 +2254,14 @@ final class EditorModel {
             toneMap.targetHeadroom = 1
             guard let out = toneMap.outputImage else { throw EngineError(message: "Couldn't make the SDR base image.") }
             sdr = out
+        }
+        if let enlarge {
+            // the SDR picture through the scaler, and the HDR one made from it
+            // with the brightening between them enlarged smoothly: the scaler's
+            // sharpening, in an HDR encoding, came out about 3% brighter
+            let big = try await Upscaler.enlarge(sdr, by: enlarge, space: CGColorSpace(name: CGColorSpace.displayP3), progress: progress)
+            hdr = Upscaler.carryHDR(from: hdr, sdr: sdr, onto: big)
+            sdr = big
         }
 
         // the frame and watermark on both, so the gain map between them is the photo's

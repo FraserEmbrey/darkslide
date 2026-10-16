@@ -2238,6 +2238,8 @@ static void _cmd_toneequal_fit(void)
 }
 
 // --------------------------------------------------------------- export
+static dt_imgid_t _import_path(const char *path);
+
 // The same path as darktable-cli: write the edit to the library, then
 // darktable's "disk" storage and a format module (jpeg, png, tiff, webp, jxl,
 // heif). Format settings are read from darktable's config keys, so they are
@@ -2255,6 +2257,11 @@ static void _cmd_export(JsonObject *o)
   // a dt_colorspaces_color_profile_type_t, or -1 for the edit's own output profile
   const int icc = json_object_get_int_member_with_default(o, "icc", -1);
   if(!path) return _error("no output path");
+  // "source": another photo, exported with its own edit (the app composites
+  // photos into the open one); otherwise the open photo
+  const char *source = json_object_get_string_member_with_default(o, "source", NULL);
+  const dt_imgid_t imgid = source ? _import_path(source) : H.imgid;
+  if(!dt_is_valid_imgid(imgid)) return _error("darktable could not import this file");
 
   static const char *formats[] = { "jpeg", "png", "tiff", "webp", "jxl", "heif" };
   gboolean known = FALSE;
@@ -2280,7 +2287,7 @@ static void _cmd_export(JsonObject *o)
   // history items that are taken back afterwards, as darktable's export reads
   // the history.
   const int keep_end = H.edit.dev.history_end;
-  const gboolean sdr_rendition = icc >= 0 && json_object_get_boolean_member_with_default(o, "sdrFromHDR", FALSE);
+  const gboolean sdr_rendition = !source && icc >= 0 && json_object_get_boolean_member_with_default(o, "sdrFromHDR", FALSE);
   // darktable folds a change into the last history item when it's the same
   // module's, so that item is kept as it was, to put back afterwards
   dt_dev_history_item_t *top = sdr_rendition && keep_end > 0 ? g_list_nth_data(H.edit.dev.history, keep_end - 1) : NULL;
@@ -2330,7 +2337,7 @@ static void _cmd_export(JsonObject *o)
   fdata->style[0] = '\0';
   fdata->style_append = 1;
 
-  GList *ids = g_list_append(NULL, GINT_TO_POINTER(H.imgid));
+  GList *ids = g_list_append(NULL, GINT_TO_POINTER(imgid));
   if(storage->initialize_store)
   {
     storage->initialize_store(storage, sdata, &format, &fdata, &ids, TRUE, FALSE);
@@ -2339,7 +2346,7 @@ static void _cmd_export(JsonObject *o)
   }
   dt_export_metadata_t metadata = { .flags = dt_lib_export_metadata_default_flags(), .list = NULL };
   const double t0 = dt_get_wtime();
-  const int failed = storage->store(storage, sdata, H.imgid, format, fdata, 1, 1, TRUE, FALSE, FALSE, 1.0,
+  const int failed = storage->store(storage, sdata, imgid, format, fdata, 1, 1, TRUE, FALSE, FALSE, 1.0,
                                     FALSE, icc >= 0 ? (dt_colorspaces_color_profile_type_t)icc : DT_COLORSPACE_NONE,
                                     NULL, DT_INTENT_LAST, &metadata);
   gchar *file = g_strdup_printf("%s.%s", path, format->extension(fdata));

@@ -535,8 +535,9 @@ static void _cmd_open(JsonObject *o)
   json_builder_add_int_value(b, H.edit.pipe.processed_width);
   json_builder_set_member_name(b, "height");
   json_builder_add_int_value(b, H.edit.pipe.processed_height);
+  // darktable prints a file without a camera (a PNG, say) as "(null) (null)"
   json_builder_set_member_name(b, "camera");
-  json_builder_add_string_value(b, img->camera_makermodel);
+  json_builder_add_string_value(b, strstr(img->camera_makermodel, "(null)") ? "" : img->camera_makermodel);
   json_builder_set_member_name(b, "maker");
   json_builder_add_string_value(b, img->camera_maker);
   json_builder_set_member_name(b, "model");

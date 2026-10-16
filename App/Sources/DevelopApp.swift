@@ -116,7 +116,7 @@ struct AppCommands: Commands {
                 }
             }
             .disabled(model.decoderInUse == nil)
-            Button("Denoise to New DNG") { Task { await model.denoiseToDNG() } }
+            Button("Denoise to New DNG…") { model.choosingDenoise = true }
                 .disabled(!model.canDenoise)
                 .help(RawDenoise.isAvailable ? "" : "The denoise model isn't installed")
             Button("Reset All Edits…") { model.confirmingReset = true }

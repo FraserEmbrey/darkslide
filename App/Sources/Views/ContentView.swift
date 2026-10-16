@@ -53,6 +53,9 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { model.choosingAdjustmentsToCopy }, set: { model.choosingAdjustmentsToCopy = $0 })) {
                 CopyAdjustmentsSheet()
             }
+            .sheet(isPresented: Binding(get: { model.choosingDenoise }, set: { model.choosingDenoise = $0 })) {
+                DenoiseSheet()
+            }
             // in a view of its own: the render time changes with every frame,
             // and read here it rebuilt the whole window (sidebar and all) each time
             .background(WindowSubtitle())

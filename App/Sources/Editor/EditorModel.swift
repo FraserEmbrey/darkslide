@@ -164,6 +164,8 @@ final class EditorModel {
     /// adjustments copied for pasting onto other photos
     var copiedAdjustments: CopiedAdjustments?
     var choosingAdjustmentsToCopy = false
+    /// Image › Denoise to New DNG… is asking for the amount
+    var choosingDenoise = false
     /// the Photos asset open, when the photo came from Photos (its original
     /// is edited from a cache file)
     private(set) var photosAsset: String?
@@ -1318,7 +1320,7 @@ final class EditorModel {
             if UserDefaults.standard.bool(forKey: "TestDenoise"), url.pathExtension.lowercased() != "dng" {
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(4))
-                    await denoiseToDNG()
+                    await denoiseToDNG(amount: Self.denoiseAmount)
                     FileHandle.standardError.write("Develop denoise test: open \(self.url?.lastPathComponent ?? "-"), noise reduction \(modules.first { $0.op == "denoiseprofile" }?.enabled == true ? "on" : "off"), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                 }
             }
@@ -2367,11 +2369,18 @@ final class EditorModel {
             && photosAsset == nil && RawDenoise.isAvailable && url.map(Library.isRaw) == true
     }
 
+    /// the last amount chosen, 0 to 100, remembered between photos
+    static var denoiseAmount: Double {
+        get { UserDefaults.standard.object(forKey: "DenoiseAmount") == nil ? 100 : UserDefaults.standard.double(forKey: "DenoiseAmount") }
+        set { UserDefaults.standard.set(newValue, forKey: "DenoiseAmount") }
+    }
+
     /// Image › Denoise to New DNG: as Lightroom's Denoise, a new raw next to
     /// the original with the noise taken out before demosaicing (RawDenoise),
-    /// carrying the edit as it is now, then opened. darktable's own noise
-    /// reduction is turned off in it, as the noise is gone.
-    func denoiseToDNG() async {
+    /// carrying the edit as it is now, then opened. `amount` (0 to 100) blends
+    /// the denoised sensor values with the original ones. darktable's own
+    /// noise reduction is turned off in it, as the noise is gone.
+    func denoiseToDNG(amount: Double) async {
         guard canDenoise, let engine, let url else { return }
         isDenoising = true
         defer { isDenoising = false; statusNote = nil }
@@ -2396,7 +2405,7 @@ final class EditorModel {
             try await Task.detached(priority: .userInitiated) {
                 let data = try Data(contentsOf: mosaicIn)
                 let mosaic = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-                let out = try RawDenoise.run(mosaic, layout: layout, progress: progress)
+                let out = try RawDenoise.run(mosaic, layout: layout, strength: Float(amount / 100), progress: progress)
                 try out.withUnsafeBytes { try Data($0).write(to: mosaicOut) }
             }.value
             statusNote = "Writing the DNG…"

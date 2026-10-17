@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Observation
+import Vision
 
 /// Culling a folder: each photo measured (CullAnalysis), bursts found, the
 /// frame of each burst to keep suggested, and the big previews loaded ahead
@@ -17,11 +18,15 @@ final class Culling {
     /// photos measured of those asked for, while measuring
     private(set) var progress: (done: Int, total: Int)?
     private var job: Task<Void, Never>?
+    /// feature prints unarchived for grouping, kept so regrouping as photos
+    /// are measured stays quick
+    @ObservationIgnored private var prints: [URL: VNFeaturePrintObservation] = [:]
     private var asked: [URL] = []
 
-    /// Measures the photos not yet measured (or changed since), then groups
-    /// them. Asking again for the same photos does nothing.
-    func analyse(_ photos: [URL]) {
+    /// Measures the photos not yet measured (or changed since), from `from`
+    /// on (where you're looking) and then the rest, grouping them into
+    /// bursts as it goes. Asking again for the same photos does nothing.
+    func analyse(_ photos: [URL], from: URL? = nil) {
         let files = photos.filter { PhotosLibrary.assetID($0) == nil }
         guard files != asked else { return }
         asked = files
@@ -46,6 +51,10 @@ final class Culling {
             }
             regroup()
             guard !todo.isEmpty else { progress = nil; return }
+            // where you're looking first, so its bursts are ready soonest
+            if let from, let i = todo.firstIndex(where: { $0.1 == from }) {
+                todo = Array(todo[i...] + todo[..<i])
+            }
             progress = (0, todo.count)
             // a few at a time: each decodes a full-size JPEG
             let measured = await withTaskGroup(of: (URL, URL, CullFacts?).self) { group in
@@ -66,6 +75,8 @@ final class Culling {
                         facts.merge(batch) { $1 }
                         batch = [:]
                         progress = (done, todo.count)
+                        // bursts as they're measured, not only at the end
+                        regroup()
                     }
                     if next < todo.count { add() }
                 }
@@ -86,12 +97,9 @@ final class Culling {
     }
 
     private func regroup() {
-        // in the order taken; the file name breaks ties (and orders photos without a time)
-        let ordered = asked.sorted {
-            let a = facts[$0]?.time ?? 0, b = facts[$1]?.time ?? 0
-            return a != b ? a < b : $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
-        }
-        runs = CullAnalysis.bursts(ordered, facts: facts)
+        // the folder's order, as the arrows go: one camera's file numbers
+        // are the order taken, and photos not measured yet keep their place
+        runs = CullAnalysis.bursts(asked, facts: facts, prints: &prints)
         var index: [URL: Int] = [:]
         var best: [Int: URL] = [:]
         for (i, run) in runs.enumerated() {

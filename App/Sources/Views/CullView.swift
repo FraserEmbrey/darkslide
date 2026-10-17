@@ -48,13 +48,24 @@ struct CullView: View {
         .focusEffectDisabled()
         .onAppear {
             focused = true
-            if current == nil || !library.contains(current!) { library.selection = library.items.first?.url }
-            culling.analyse(library.allPhotos)
+            // the photo you were on, as the grid does
+            if current == nil || !library.contains(current!) { library.selection = model.libraryURL ?? library.items.first?.url }
+            culling.analyse(library.allPhotos, from: current)
+            // LogCull: launch argument (-LogCull YES) for testing
+            if UserDefaults.standard.bool(forKey: "LogCull") {
+                let shown = current
+                FileHandle.standardError.write("Darkslide cull: starts on \(shown?.lastPathComponent ?? "-")\n".data(using: .utf8)!)
+                Task {
+                    try? await Task.sleep(for: .seconds(6))
+                    let measured = culling.facts.keys.map(\.lastPathComponent).sorted()
+                    FileHandle.standardError.write("Darkslide cull: after 6 s, \(culling.progress.map { "\($0.done) of \($0.total)" } ?? "done"); this photo measured \(shown.map { culling.facts[$0] != nil } ?? false); measured from \(measured.first ?? "-") to \(measured.last ?? "-"); \(culling.burstCount) bursts so far; first run starts \(culling.runs.first?.first?.lastPathComponent ?? "-")\n".data(using: .utf8)!)
+                }
+            }
             // TestCull: launch argument (-TestCull YES) for testing: once measured, logs the
             // bursts, keeps the first burst's suggested frame and checks its sidecars
             if UserDefaults.standard.bool(forKey: "TestCull") { Task { await test() } }
         }
-        .onChange(of: library.allPhotos) { _, photos in culling.analyse(photos) }
+        .onChange(of: library.allPhotos) { _, photos in culling.analyse(photos, from: current) }
         .task(id: current) { await load() }
         .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow], phases: [.down, .repeat]) { press in
             switch press.key {
@@ -253,6 +264,21 @@ struct CullView: View {
         if let url = current {
             let facts = culling.facts[url]
             VStack {
+                // not measured yet: no burst or suggestion for it so far
+                if facts == nil, let p = culling.progress {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Measuring photos: \(p.done) of \(p.total)").font(.callout.weight(.semibold))
+                            Text("Bursts, sharpness and suggestions for this photo appear once it's measured. Rating works now.")
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(.white)
+                }
                 HStack(alignment: .top) {
                     chip {
                         Text(url.lastPathComponent).font(.callout.weight(.semibold))

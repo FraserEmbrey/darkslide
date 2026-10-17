@@ -387,8 +387,13 @@ enum CullAnalysis {
 
     /// Photos in order, split into bursts. A photo on its own is a run of one.
     static func bursts(_ photos: [URL], facts: [URL: CullFacts]) -> [[URL]] {
-        var runs: [[URL]] = []
         var prints: [URL: VNFeaturePrintObservation] = [:]
+        return bursts(photos, facts: facts, prints: &prints)
+    }
+
+    /// `prints`: feature prints already unarchived, kept between calls
+    static func bursts(_ photos: [URL], facts: [URL: CullFacts], prints: inout [URL: VNFeaturePrintObservation]) -> [[URL]] {
+        var runs: [[URL]] = []
         func print(_ u: URL) -> VNFeaturePrintObservation? {
             if let p = prints[u] { return p }
             guard let d = facts[u]?.print,

@@ -89,6 +89,8 @@ final class EditorModel {
 
     // Library (see the Library extension at the end)
     let library = Library(catalog: Catalog())
+    /// culling the library's photos: measurements, bursts, big previews
+    let culling = Culling()
     var catalog: Catalog { library.catalog }
     /// the grid of the folder's photos, instead of the photo being edited
     var showingLibrary = false
@@ -1788,6 +1790,9 @@ final class EditorModel {
     /// automatic exposure, filmic's auto-tune and the tone equalizer's fit.
     var canAuto: Bool { url != nil }
     var confirmingReset = false
+    /// ratings waiting to be written to sidecars, in order
+    @ObservationIgnored var ratingQueue: [(URL, Int)] = []
+    @ObservationIgnored var writingRatings = false
 
     func autoAll() async {
         recordUndoStep(label: "Auto")
@@ -3182,7 +3187,7 @@ extension EditorModel {
     /// View › as Grid or as Map: the sidebar's Map has no grid, so asking
     /// for one goes back to the folder last shown
     func showLibrary(as mode: Library.ViewMode) {
-        if mode == .grid, library.source == .map, let folder = library.lastFolder { library.show(folder: folder) }
+        if mode != .map, library.source == .map, let folder = library.lastFolder { library.show(folder: folder) }
         library.viewMode = mode
         if !showingLibrary { Task { await showLibrary() } }
     }
@@ -3250,6 +3255,7 @@ extension EditorModel {
             try await engine.setInfo(path: photo.path, title: title, caption: caption, addKeyword: addKeyword,
                                      removeKeyword: removeKeyword, rating: rating)
             // metadata, not an edit: the photo doesn't join Edited for it
+            if let rating { library.noteRating(rating, for: [photo]) }
             infoRevision += 1
         } catch {
             errorMessage = "Couldn't save to \(photo.lastPathComponent)'s sidecar: \(error.localizedDescription)"
@@ -4287,5 +4293,81 @@ extension EditorModel {
         rescueFocusSource = nil
         rescueFocusSubjects = nil
         await open(dest)
+    }
+}
+
+// MARK: - Rating and culling
+
+extension EditorModel {
+    /// Rates photos: 1 to 5 stars, 0 none, -1 rejected. Shown at once; the
+    /// sidecars are written one after another behind, through darktable, so
+    /// darktable and Lightroom see them.
+    func setRating(_ value: Int, for photos: [URL]) {
+        let files = photos.filter { PhotosLibrary.assetID($0) == nil }
+        guard !files.isEmpty else { return }
+        library.noteRating(value, for: files)
+        ratingQueue.append(contentsOf: files.map { ($0, value) })
+        guard !writingRatings else { return }
+        writingRatings = true
+        Task {
+            defer { writingRatings = false }
+            while !ratingQueue.isEmpty {
+                let (photo, rating) = ratingQueue.removeFirst()
+                // a later rating of the same photo wins; skip this one
+                if ratingQueue.contains(where: { $0.0 == photo }) { continue }
+                do {
+                    try await engine?.setInfo(path: photo.path, rating: rating)
+                    infoRevision += 1
+                } catch {
+                    errorMessage = "Couldn't save the rating to \(photo.lastPathComponent)'s sidecar: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Keeps one frame of a burst: it gets a star if it had none, and the
+    /// burst's unrated frames are rejected. Rated frames are left as they are.
+    func keepOnly(_ photo: URL) {
+        let others = (culling.burst(of: photo) ?? []).filter { $0 != photo && library.rating(of: $0) == 0 }
+        if library.rating(of: photo) <= 0 { setRating(1, for: [photo]) }
+        if !others.isEmpty { setRating(-1, for: others) }
+    }
+
+    /// Every burst left unrated keeps its suggested frame, the rest rejected.
+    /// Returns how many bursts it decided.
+    @discardableResult
+    func keepSuggestedInEveryBurst() -> Int {
+        var keep: [URL] = [], reject: [URL] = []
+        for (i, run) in culling.runs.enumerated() where run.count > 1 {
+            guard run.allSatisfy({ library.rating(of: $0) == 0 }), let best = culling.suggested(in: i) else { continue }
+            keep.append(best)
+            reject += run.filter { $0 != best }
+        }
+        setRating(1, for: keep)
+        setRating(-1, for: reject)
+        return keep.count
+    }
+
+    /// the rejected photos showing, and the space they take
+    var rejectedPhotos: (photos: [URL], bytes: Int64) {
+        let photos = library.items.map(\.url).filter { library.rating(of: $0) < 0 && PhotosLibrary.assetID($0) == nil }
+        let bytes = photos.reduce(Int64(0)) { sum, u in
+            sum + Int64((try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int) ?? 0)
+        }
+        return (photos, bytes)
+    }
+
+    /// Moves the rejected photos, and their sidecars, to the Bin, where they
+    /// can be put back from.
+    func moveRejectedToBin() async {
+        let photos = rejectedPhotos.photos
+        guard !photos.isEmpty else { return }
+        let sidecars = photos.map { Sidecar.url(for: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+        do {
+            _ = try await NSWorkspace.shared.recycle(photos + sidecars)
+        } catch {
+            errorMessage = "Couldn't move the rejected photos to the Bin: \(error.localizedDescription)"
+        }
+        library.rescan()
     }
 }

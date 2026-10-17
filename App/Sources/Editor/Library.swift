@@ -60,7 +60,71 @@ enum LibrarySource: Hashable {
 @Observable
 final class Library {
     private(set) var source: LibrarySource?
+    /// what's showing: the source's photos, less any the rating filter hides
     private(set) var items: [LibraryItem] = []
+    /// all of the source's photos
+    private var allItems: [LibraryItem] = [] { didSet { applyFilter() } }
+    /// every photo of the source, whatever the filter
+    var allPhotos: [URL] { allItems.map(\.url) }
+
+    // MARK: Ratings
+
+    /// each photo's rating: 1 to 5 stars, 0 none, -1 rejected; read from the
+    /// sidecars (or the camera's own) after a scan
+    private(set) var ratings: [URL: Int] = [:]
+
+    enum RatingFilter: String, CaseIterable, Identifiable {
+        case all, unrated, picked, rejected
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .all: "All"
+            case .unrated: "Unrated"
+            case .picked: "Rated"
+            case .rejected: "Rejected"
+            }
+        }
+        func shows(_ rating: Int) -> Bool {
+            switch self {
+            case .all: true
+            case .unrated: rating == 0
+            case .picked: rating > 0
+            case .rejected: rating < 0
+            }
+        }
+    }
+
+    var ratingFilter = RatingFilter.all { didSet { if ratingFilter != oldValue { applyFilter() } } }
+
+    func rating(of url: URL) -> Int { ratings[url] ?? 0 }
+
+    /// shown at once; the sidecar is written by the caller
+    func noteRating(_ value: Int, for urls: [URL]) {
+        var updated = ratings
+        for u in urls { updated[u] = value }
+        ratings = updated
+    }
+
+    /// Photos the filter would hide stay while they're the current photo, so
+    /// rating one doesn't pull it from under you; they go on the next change.
+    private func applyFilter() {
+        guard ratingFilter != .all else { items = allItems; return }
+        items = allItems.filter { ratingFilter.shows(ratings[$0.url] ?? 0) || $0.url == selection }
+    }
+
+    /// Reads every photo's rating, off the main thread.
+    private func loadRatings(_ urls: [URL], generation: Int) {
+        let files = urls.filter { PhotosLibrary.assetID($0) == nil }
+        Task.detached(priority: .utility) {
+            var found: [URL: Int] = [:]
+            for u in files { found[u] = Sidecar.rating(of: u) }
+            await MainActor.run {
+                guard generation == self.scanGeneration else { return }
+                self.ratings = found
+                self.applyFilter()
+            }
+        }
+    }
     /// tells a Photos source when Photos changes
     private var photosObserver: PhotosLibrary.Observer?
     private(set) var thumbnails: [URL: CGImage] = [:]
@@ -75,8 +139,8 @@ final class Library {
         }
     }
 
-    /// the grid of thumbnails, or the photos on a map
-    enum ViewMode: String { case grid, map }
+    /// the grid of thumbnails, the photos on a map, or one at a time for culling
+    enum ViewMode: String { case grid, map, cull }
     var viewMode = ViewMode(rawValue: UserDefaults.standard.string(forKey: "LibraryViewMode") ?? "") ?? .grid {
         didSet {
             UserDefaults.standard.set(viewMode.rawValue, forKey: "LibraryViewMode")
@@ -210,7 +274,11 @@ final class Library {
     /// the current photo in the grid, map or strip (the metadata window shows
     /// it, arrows move it); setting it selects that photo alone
     var selection: URL? {
-        didSet { if !extending { selected = selection.map { [$0] } ?? [] } }
+        didSet {
+            if !extending { selected = selection.map { [$0] } ?? [] }
+            // a photo the filter hides goes once you move off it
+            if ratingFilter != .all, selection != oldValue { applyFilter() }
+        }
     }
     /// every selected photo: ⌘-click adds or removes one, ⇧-click a range
     private(set) var selected: Set<URL> = []
@@ -272,7 +340,8 @@ final class Library {
         guard source != self.source else { return }
         self.source = source
         if case .folder(let url) = source { lastFolder = url }
-        items = []
+        allItems = []
+        ratings = [:]
         rescan()
     }
 
@@ -295,7 +364,7 @@ final class Library {
                 let found = PhotosLibrary.assets(in: album).map { LibraryItem(url: $0.url, title: $0.title, hasEdit: $0.edited) }
                 await MainActor.run {
                     guard generation == self.scanGeneration else { return }
-                    self.items = found
+                    self.allItems = found
                     self.isScanning = false
                     if let sel = self.selection, !self.items.contains(where: { $0.url == sel }) { self.selection = nil }
                     if self.showsMap { self.loadLocations() }
@@ -340,7 +409,8 @@ final class Library {
             }
             await MainActor.run {
                 guard generation == self.scanGeneration else { return }
-                self.items = found.map(\.0)
+                self.allItems = found.map(\.0)
+                self.loadRatings(found.map(\.0.url), generation: generation)
                 self.isScanning = false
                 if watching { self.watchSource() }
                 if let sel = self.selection, !self.items.contains(where: { $0.url == sel }) { self.selection = nil }
@@ -395,7 +465,7 @@ final class Library {
     }
 
     func noteEdited(_ url: URL) {
-        if let i = index(of: url) { items[i].hasEdit = true }
+        if let i = allItems.firstIndex(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) { allItems[i].hasEdit = true }
     }
 
     /// Reads the GPS position of every photo not yet checked: the sidecar's
@@ -476,7 +546,7 @@ final class Library {
         locations[url] = coordinate
         locationsChecked.insert(url)
         // a file has a sidecar now; a Photos photo was placed in Photos
-        if PhotosLibrary.assetID(url) == nil, let i = index(of: url) { items[i].hasEdit = true }
+        if PhotosLibrary.assetID(url) == nil { noteEdited(url) }
     }
 
     /// a file's location: its sidecar's, else its EXIF GPS

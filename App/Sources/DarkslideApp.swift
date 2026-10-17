@@ -164,7 +164,7 @@ struct AppCommands: Commands {
         CommandGroup(before: .toolbar) {
             // the library's view; from the editor, these open the library
             Toggle("as Grid", isOn: Binding(
-                get: { model.showingLibrary && !model.library.showsMap },
+                get: { model.showingLibrary && !model.library.showsMap && model.library.viewMode == .grid },
                 set: { _ in model.showLibrary(as: .grid) }))
                 .keyboardShortcut("1", modifiers: [.command, .option])
                 .disabled(model.library.source == nil && model.library.lastFolder == nil)
@@ -172,6 +172,11 @@ struct AppCommands: Commands {
                 get: { model.showingLibrary && model.library.showsMap },
                 set: { _ in model.showLibrary(as: .map) }))
                 .keyboardShortcut("2", modifiers: [.command, .option])
+                .disabled(model.library.source == nil && model.library.lastFolder == nil)
+            Toggle("to Cull", isOn: Binding(
+                get: { model.showingLibrary && !model.library.showsMap && model.library.viewMode == .cull },
+                set: { _ in model.showLibrary(as: .cull) }))
+                .keyboardShortcut("3", modifiers: [.command, .option])
                 .disabled(model.library.source == nil && model.library.lastFolder == nil)
             Divider()
             Button(filmstripVisible ? "Hide Filmstrip" : "Show Filmstrip") { filmstripVisible.toggle() }

@@ -26,7 +26,11 @@ struct ContentView: View {
     private var editor: some View {
         Group {
             if model.showingLibrary {
-                LibraryGrid()
+                if model.library.viewMode == .cull, !model.library.showsMap, model.library.source?.isPhotos != true {
+                    CullView()
+                } else {
+                    LibraryGrid()
+                }
             } else {
                 VStack(spacing: 0) {
                     CanvasView()
@@ -116,13 +120,14 @@ struct ContentView: View {
         // never empty: AppKit throws laying out a toolbar item with no view
         ToolbarItem(id: "libraryView") {
             Picker("View", selection: Binding(
-                get: { model.library.showsMap ? Library.ViewMode.map : .grid },
+                get: { model.library.showsMap ? Library.ViewMode.map : model.library.viewMode },
                 set: { model.showLibrary(as: $0) })) {
                 Label("Grid", systemImage: "square.grid.2x2").tag(Library.ViewMode.grid)
+                Label("Cull", systemImage: "rectangle.stack").tag(Library.ViewMode.cull)
                 Label("Map", systemImage: "map").tag(Library.ViewMode.map)
             }
             .pickerStyle(.segmented)
-            .help("Show these photos as a grid or on a map (⌥⌘1, ⌥⌘2)")
+            .help("Show these photos as a grid, one at a time to cull, or on a map (⌥⌘1, ⌥⌘3, ⌥⌘2)")
         }
         .hidden(!model.showingLibrary)
     }

@@ -44,6 +44,19 @@ struct ItemBadges: View {
                     .foregroundStyle(.white)
                     .help("Holds HDR: a gain map, HLG or PQ")
             }
+            if let rating = model?.library.rating(of: item.url), rating != 0 {
+                if rating < 0 {
+                    badge("xmark", tint: .red, help: "Rejected")
+                } else {
+                    Text(String(repeating: "★", count: rating))
+                        .font(.system(size: 8))
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4))
+                        .foregroundStyle(.yellow)
+                        .help("\(rating) \(rating == 1 ? "star" : "stars")")
+                }
+            }
             if item.hasEdit { badge("slider.horizontal.3", help: "Edited") }
             if !exports.isEmpty {
                 let stale = model?.catalog.modifiedSinceExport(item.url) ?? false
@@ -265,6 +278,12 @@ struct LibraryGrid: View {
             if case .folder = model.library.source {
                 @Bindable var library = model.library
                 HStack {
+                    Picker("Show", selection: $library.ratingFilter) {
+                        ForEach(Library.RatingFilter.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .fixedSize()
                     Spacer()
                     Toggle("Include Subfolders", isOn: $library.includeSubfolders)
                         .toggleStyle(.switch)
@@ -318,6 +337,7 @@ struct LibraryGrid: View {
             Thumbnail(item: item)
                 .frame(height: 140)
                 .frame(maxWidth: .infinity)
+                .opacity(model.library.rating(of: item.url) < 0 ? 0.4 : 1)
                 .overlay(alignment: .bottomTrailing) { ItemBadges(item: item).padding(4) }
                 .padding(8)
                 .background(selected ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.04),

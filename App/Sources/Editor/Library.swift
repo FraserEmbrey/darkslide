@@ -15,7 +15,7 @@ struct LibraryItem: Identifiable, Hashable {
     var title: String? = nil
     var name: String { title ?? url.lastPathComponent }
     var folderName: String { PhotosLibrary.assetID(url) != nil ? "Photos" : url.deletingLastPathComponent().lastPathComponent }
-    /// has an XMP sidecar, so it's been edited (here or in darktable)
+    /// its XMP sidecar holds an edit (here or in darktable), not only a rating
     var hasEdit: Bool
 }
 
@@ -333,7 +333,9 @@ final class Library {
             }
             let found = urls.map { url -> (LibraryItem, Date?) in
                 let xmp = url.path + ".xmp"
-                let date = (try? fm.attributesOfItem(atPath: xmp)[.modificationDate]) as? Date
+                // a sidecar that only rates or tags the photo isn't an edit
+                let date = ((try? fm.attributesOfItem(atPath: xmp)[.modificationDate]) as? Date)
+                    .flatMap { Sidecar.hasEdit(url) ? $0 : nil }
                 return (LibraryItem(url: url, hasEdit: date != nil), date)
             }
             await MainActor.run {

@@ -3249,7 +3249,7 @@ extension EditorModel {
         do {
             try await engine.setInfo(path: photo.path, title: title, caption: caption, addKeyword: addKeyword,
                                      removeKeyword: removeKeyword, rating: rating)
-            library.noteEdited(photo)
+            // metadata, not an edit: the photo doesn't join Edited for it
             infoRevision += 1
         } catch {
             errorMessage = "Couldn't save to \(photo.lastPathComponent)'s sidecar: \(error.localizedDescription)"

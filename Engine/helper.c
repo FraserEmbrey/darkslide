@@ -484,6 +484,25 @@ static const char *_load(const dt_imgid_t imgid)
 static void _sync_hdr_white(void);
 static JsonArray *_sdr_render_overrides(JsonArray *ov);
 
+// whether a sidecar holds darktable history, not only a rating or tags
+static gboolean _sidecar_has_history(const char *xmp)
+{
+  gchar *text = NULL;
+  if(!g_file_get_contents(xmp, &text, NULL, NULL)) return FALSE;
+  gboolean found = FALSE;
+  const char *end = strstr(text, "darktable:history_end=\"");
+  if(end)
+    found = atoi(end + strlen("darktable:history_end=\"")) > 0;
+  else
+  {
+    // older sidecars: any history item
+    const char *history = strstr(text, "<darktable:history>");
+    found = history && strstr(history, "<rdf:li");
+  }
+  g_free(text);
+  return found;
+}
+
 static void _cmd_open(JsonObject *o)
 {
   const char *path = json_object_get_string_member_with_default(o, "path", NULL);
@@ -494,6 +513,9 @@ static void _cmd_open(JsonObject *o)
   // an existing sidecar (from this app or from darktable) is read on import
   gchar *xmp = g_strconcat(path, ".xmp", NULL);
   const gboolean had_sidecar = g_file_test(xmp, G_FILE_TEST_IS_REGULAR);
+  // a sidecar that only rates or tags the photo isn't an edit: the app still
+  // gives such a photo its new-photo defaults
+  const gboolean had_edit = had_sidecar && _sidecar_has_history(xmp);
   g_free(xmp);
 
   gchar *dir = g_path_get_dirname(path);
@@ -550,7 +572,7 @@ static void _cmd_open(JsonObject *o)
                                    : img->buf_dsc.filters == 9u ? "xtrans"
                                    : img->buf_dsc.filters ? "bayer" : "linear");
   json_builder_set_member_name(b, "hadSidecar");
-  json_builder_add_boolean_value(b, had_sidecar);
+  json_builder_add_boolean_value(b, had_edit);
   _add_modules(b);
   _ok_done(b);
 }

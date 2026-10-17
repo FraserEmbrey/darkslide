@@ -56,7 +56,10 @@ enum ExportPanel {
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let folder = panel.url else { return }
             options.settings.save()
-            Task { await model.exportPhotos(photos, settings: options.settings, to: folder, autoAdjust: options.autoAdjust) }
+            Task {
+                await model.exportPhotos(photos, settings: options.settings, to: folder, autoAdjust: options.autoAdjust,
+                                         toPhotos: options.addToPhotos)
+            }
         }
     }
 }
@@ -90,6 +93,10 @@ final class ExportOptions {
     /// exporting several: unedited raws get Auto first
     var autoAdjust = UserDefaults.standard.object(forKey: "BatchExportAuto") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoAdjust, forKey: "BatchExportAuto") }
+    }
+    /// exporting several: the files go into Photos too
+    var addToPhotos = UserDefaults.standard.bool(forKey: "BatchExportToPhotos") {
+        didSet { UserDefaults.standard.set(addToPhotos, forKey: "BatchExportToPhotos") }
     }
 
     init(model: EditorModel, batch: Int? = nil) {
@@ -327,6 +334,8 @@ struct ExportOptionsView: View {
             if options.batch != nil {
                 Toggle("Auto-adjust raws that haven't been edited", isOn: $options.autoAdjust)
                     .help("Applies Auto (camera style, exposure, tone mapping) to each raw without an edit before exporting it; the edit is saved with the photo")
+                Toggle("Add to Apple Photos", isOn: $options.addToPhotos)
+                    .help("Adds each exported file to Photos, in an album named after the photos' folder; the files stay in the export folder too")
             }
         }
         .padding(.vertical, 16)

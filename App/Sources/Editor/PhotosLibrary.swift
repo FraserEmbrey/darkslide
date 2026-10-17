@@ -67,6 +67,34 @@ enum PhotosLibrary {
         return s == .authorized || s == .limited
     }
 
+    /// Adds files to Photos as new photos (copied in, the files left where
+    /// they are), into the album with this name, made if there isn't one.
+    /// HDR files keep their gain maps, so Photos shows them in HDR.
+    static func importFiles(_ files: [URL], album: String?) async throws {
+        guard await authorise() else {
+            throw NSError(domain: "Darkslide", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "Darkslide isn't allowed to add to Photos. Allow it in System Settings › Privacy & Security › Photos."])
+        }
+        let existing: PHAssetCollection? = album.flatMap { name in
+            let o = PHFetchOptions()
+            o.predicate = NSPredicate(format: "localizedTitle == %@", name)
+            return PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: o).firstObject
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            let options = PHAssetResourceCreationOptions()
+            options.shouldMoveFile = false
+            let placeholders = files.compactMap { file -> PHObjectPlaceholder? in
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: .photo, fileURL: file, options: options)
+                return request.placeholderForCreatedAsset
+            }
+            guard let album else { return }
+            let change = existing.flatMap { PHAssetCollectionChangeRequest(for: $0) }
+                ?? PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: album)
+            change.addAssets(placeholders as NSArray)
+        }
+    }
+
     // MARK: collections
 
     /// Favourites, then the user's albums, by name. Counts are Photos'

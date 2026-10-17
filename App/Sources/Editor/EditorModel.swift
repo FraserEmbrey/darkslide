@@ -4405,13 +4405,14 @@ extension EditorModel {
     /// a photo only made HDR for the export keeps its sidecar as it was.
     /// The subtitle shows the progress; File › Stop Exporting stops after the
     /// photo in hand.
-    func exportPhotos(_ photos: [URL], settings: ExportSettings, to folder: URL, autoAdjust: Bool) async {
+    func exportPhotos(_ photos: [URL], settings: ExportSettings, to folder: URL, autoAdjust: Bool, toPhotos: Bool = false) async {
         guard batchExport == nil, !photos.isEmpty else { return }
         let fromLibrary = showingLibrary
         batchExport = (0, photos.count)
         stopBatchExport = false
         var failed: [String] = []
         var done = 0
+        var written: [URL] = []
         for (i, photo) in photos.enumerated() {
             if stopBatchExport { break }
             statusNote = "Exporting \(i + 1) of \(photos.count): \(photo.lastPathComponent)…"
@@ -4433,18 +4434,31 @@ extension EditorModel {
                 errorMessage = nil
             } else {
                 done += 1
+                if let file = lastExport { written.append(file) }
             }
             batchExport = (i + 1, photos.count)
+        }
+        // into Photos, in an album named after the photos' folder
+        var photosError: String?
+        if toPhotos, !written.isEmpty {
+            statusNote = "Adding \(written.count) photos to Photos…"
+            do {
+                try await PhotosLibrary.importFiles(written, album: photos[0].deletingLastPathComponent().lastPathComponent)
+            } catch {
+                photosError = "Couldn't add them to Photos: \(error.localizedDescription)"
+            }
         }
         let stopped = stopBatchExport
         stopBatchExport = false
         batchExport = nil
         statusNote = nil
         if fromLibrary { await showLibrary() }
-        if !failed.isEmpty {
-            errorMessage = "Exported \(done) of \(photos.count). Couldn't export \(failed.joined(separator: ", "))."
+        if !failed.isEmpty || photosError != nil {
+            errorMessage = (failed.isEmpty ? "Exported \(done) photos." : "Exported \(done) of \(photos.count). Couldn't export \(failed.joined(separator: ", ")).")
+                + (photosError.map { " " + $0 } ?? "")
         } else {
-            statusNote = stopped ? "Stopped after \(done) of \(photos.count)" : "Exported \(done) photos to \(folder.lastPathComponent)"
+            statusNote = stopped ? "Stopped after \(done) of \(photos.count)"
+                : "Exported \(done) photos to \(folder.lastPathComponent)" + (toPhotos ? " and Photos" : "")
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(6))
                 if statusNote?.hasPrefix("Exported") == true || statusNote?.hasPrefix("Stopped") == true { statusNote = nil }

@@ -74,7 +74,7 @@ final class Library {
     private(set) var ratings: [URL: Int] = [:]
 
     enum RatingFilter: String, CaseIterable, Identifiable {
-        case all, notRejected, unrated, picked, rejected
+        case all, notRejected, unrated, picked, best, rejected
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -82,6 +82,7 @@ final class Library {
             case .notRejected: "Hide Rejected"
             case .unrated: "Unrated"
             case .picked: "Rated"
+            case .best: "★★★ and Up"
             case .rejected: "Rejected"
             }
         }
@@ -91,6 +92,7 @@ final class Library {
             case .notRejected: rating >= 0
             case .unrated: rating == 0
             case .picked: rating > 0
+            case .best: rating >= 3
             case .rejected: rating < 0
             }
         }

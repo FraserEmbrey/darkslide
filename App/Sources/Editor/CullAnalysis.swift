@@ -377,12 +377,15 @@ enum CullAnalysis {
         return (try? pa.computeDistance(&d, to: pb)) != nil ? d : nil
     }
 
-    /// a burst: frames this close together in time, and this alike
+    /// A burst: frames close together in time, and alike. Close means within
+    /// a second and a half of a photo on its own; within a burst, within
+    /// four times its own pace (half a second at least), so the next
+    /// press of the shutter starts a new one: high-speed frames come every
+    /// hundredth of a second, a second apart is another burst.
     static let burstGap = 1.5
     static let burstDistance: Float = 0.6
 
-    /// Photos in order, split into bursts: runs taken close together that
-    /// look alike. A photo on its own is a run of one.
+    /// Photos in order, split into bursts. A photo on its own is a run of one.
     static func bursts(_ photos: [URL], facts: [URL: CullFacts]) -> [[URL]] {
         var runs: [[URL]] = []
         var prints: [URL: VNFeaturePrintObservation] = [:]
@@ -393,9 +396,15 @@ enum CullAnalysis {
             prints[u] = p
             return p
         }
+        func limit(_ run: [URL]) -> Double {
+            let times = run.compactMap { facts[$0]?.time }
+            guard times.count >= 2 else { return burstGap }
+            let steps = zip(times.dropFirst(), times).map { $0 - $1 }.sorted()
+            return min(burstGap, max(0.5, 4 * steps[steps.count / 2]))
+        }
         for u in photos {
-            if let last = runs.last?.last, let t0 = facts[last]?.time, let t1 = facts[u]?.time,
-               abs(t1 - t0) <= burstGap {
+            if let run = runs.last, let last = run.last, let t0 = facts[last]?.time, let t1 = facts[u]?.time,
+               abs(t1 - t0) <= limit(run) {
                 var d: Float = 0
                 if let a = print(last), let b = print(u), (try? a.computeDistance(&d, to: b)) != nil, d <= burstDistance {
                     runs[runs.count - 1].append(u)

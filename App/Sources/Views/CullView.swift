@@ -70,7 +70,15 @@ struct CullView: View {
             return .handled
         }
         .onKeyPress(.space) { toggleZoom(); return .handled }
-        .onKeyPress(phases: .down) { press in key(press.characters.lowercased()) ? .handled : .ignored }
+        .onKeyPress(phases: .down) { press in
+            // ⇧X: the whole burst
+            if press.characters.lowercased() == "x", press.modifiers.contains(.shift), let current, let burst = culling.burst(of: current) {
+                model.setRating(-1, for: burst)
+                if autoAdvance { jumpRun(1, fromEnd: true) }
+                return .handled
+            }
+            return key(press.characters.lowercased()) ? .handled : .ignored
+        }
         .confirmationDialog(binTitle, isPresented: $confirmingBin) {
             Button("Move to Bin", role: .destructive) { Task { await model.moveRejectedToBin() } }
         } message: {
@@ -347,7 +355,7 @@ struct CullView: View {
     }
 
     private var keyHints: some View {
-        Text("1–5 rate · X reject · 0 clear · P keep this frame, reject the burst's other unrated frames · ← → photo · ↑ ↓ burst · Z or Space 100% · ↩ edit")
+        Text("1–5 rate · X reject · ⇧X reject the burst · 0 clear · P keep this frame, reject the burst's other unrated frames · ← → photo · ↑ ↓ burst · Z or Space 100% · ↩ edit")
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -403,6 +411,9 @@ struct BurstBar: View {
                 Spacer()
                 Text("Bars: softest to sharpest where the camera focused · ★ suggested")
                     .foregroundStyle(.secondary)
+                Button("Reject Burst") { model.setRating(-1, for: burst) }
+                    .controlSize(.small)
+                    .help("Reject every frame of this burst (⇧X)")
             }
             .font(.caption)
             GeometryReader { geo in

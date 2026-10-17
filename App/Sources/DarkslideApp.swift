@@ -250,7 +250,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Lightroom-style single keys: G for the library, C for crop, ← and → for
     /// the previous and next photo. Not while typing in a text field, where they
     /// belong to the text.
+    /// the model, for quitting: ratings still being written finish first
+    private weak var model: EditorModel?
+
     func installKeys(model: EditorModel) {
+        self.model = model
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // ⌘A in the library selects every photo (in a text field it's the text's)
@@ -281,6 +285,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Quitting waits for ratings still going into sidecars, so none are lost.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, model.writingRatings else { return .terminateNow }
+        model.statusNote = "Saving ratings…"
+        Task { @MainActor in
+            while model.writingRatings { try? await Task.sleep(for: .milliseconds(100)) }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // needed when launched as a bare SwiftPM executable during development

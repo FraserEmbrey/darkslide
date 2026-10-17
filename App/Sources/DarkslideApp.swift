@@ -178,6 +178,10 @@ struct AppCommands: Commands {
                 set: { _ in model.showLibrary(as: .cull) }))
                 .keyboardShortcut("3", modifiers: [.command, .option])
                 .disabled(model.library.source == nil && model.library.lastFolder == nil)
+            Toggle("Hide Rejected Photos", isOn: Binding(
+                get: { model.library.ratingFilter == .notRejected },
+                set: { model.library.ratingFilter = $0 ? .notRejected : .all }))
+                .keyboardShortcut("r", modifiers: [.command, .option])
             Divider()
             Button(filmstripVisible ? "Hide Filmstrip" : "Show Filmstrip") { filmstripVisible.toggle() }
                 .keyboardShortcut("f", modifiers: [.command, .option])

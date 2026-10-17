@@ -74,11 +74,12 @@ final class Library {
     private(set) var ratings: [URL: Int] = [:]
 
     enum RatingFilter: String, CaseIterable, Identifiable {
-        case all, unrated, picked, rejected
+        case all, notRejected, unrated, picked, rejected
         var id: String { rawValue }
         var title: String {
             switch self {
             case .all: "All"
+            case .notRejected: "Hide Rejected"
             case .unrated: "Unrated"
             case .picked: "Rated"
             case .rejected: "Rejected"
@@ -87,6 +88,7 @@ final class Library {
         func shows(_ rating: Int) -> Bool {
             switch self {
             case .all: true
+            case .notRejected: rating >= 0
             case .unrated: rating == 0
             case .picked: rating > 0
             case .rejected: rating < 0
@@ -94,7 +96,14 @@ final class Library {
         }
     }
 
-    var ratingFilter = RatingFilter.all { didSet { if ratingFilter != oldValue { applyFilter() } } }
+    /// kept across launches, so rejects stay hidden while editing
+    var ratingFilter = RatingFilter(rawValue: UserDefaults.standard.string(forKey: "LibraryRatingFilter") ?? "") ?? .all {
+        didSet {
+            guard ratingFilter != oldValue else { return }
+            UserDefaults.standard.set(ratingFilter.rawValue, forKey: "LibraryRatingFilter")
+            applyFilter()
+        }
+    }
 
     func rating(of url: URL) -> Int { ratings[url] ?? 0 }
 

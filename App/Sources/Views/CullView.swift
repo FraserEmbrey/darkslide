@@ -273,6 +273,10 @@ struct CullView: View {
                     if facts?.eyesClosed == true {
                         chip { Label("Eyes may be closed", systemImage: "eye.slash").foregroundStyle(.orange) }
                     }
+                    if facts?.focusOnSubject == false {
+                        chip { Label("Focus off the subject", systemImage: "person.crop.rectangle.badge.xmark").foregroundStyle(.orange) }
+                            .help("The camera's AF area wasn't on any of the people in the frame, so it likely focused on the background")
+                    }
                     if facts?.inFocus == false {
                         chip { Label("Camera didn't confirm focus", systemImage: "scope").foregroundStyle(.orange) }
                     }
@@ -316,7 +320,7 @@ struct CullView: View {
             }
             Spacer()
             Toggle("Show Measured Area", isOn: $showArea)
-                .help("Outline where each photo's sharpness was measured: the camera's AF area, else the main face")
+                .help("Outline where each photo's sharpness was measured: the person the camera focused on (else the most prominent person), else the AF area")
             Toggle("Auto-advance", isOn: $autoAdvance)
                 .help("Move on after rating a photo")
             Menu("Actions") {

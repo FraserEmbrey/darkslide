@@ -55,9 +55,9 @@ final class Culling {
                 func add() {
                     let (folder, photo) = todo[next]
                     next += 1
-                    group.addTask { await Task.detached(priority: .utility) { (folder, photo, CullAnalysis.analyse(photo)) }.value }
+                    group.addTask { (folder, photo, await CullAnalysis.analyseOffPool(photo)) }
                 }
-                for _ in 0..<min(6, todo.count) { add() }
+                for _ in 0..<min(4, todo.count) { add() }
                 while let (folder, photo, f) = await group.next() {
                     if Task.isCancelled { group.cancelAll(); break }
                     done += 1

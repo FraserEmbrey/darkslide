@@ -22,9 +22,13 @@ struct CullFacts: Codable, Sendable, Equatable {
     var faceQuality: Float?
     /// the eyes of the main face look shut; nil with no face big enough to tell
     var eyesClosed: Bool?
-    /// detail where it matters (the face, else the AF area, else the centre):
+    /// detail where it matters (on the person the camera focused on, else
+    /// the most prominent person, else the AF area, the face or the middle):
     /// only comparable between frames of one scene
     var sharpness: Double = 0
+    /// whether the camera's AF area was on a person; nil with no one in the
+    /// frame. Off a person, the camera likely focused on the background.
+    var focusOnSubject: Bool?
     /// where that was measured, 0 to 1 across and down the photo as shown
     var subject: CGRect?
     /// the camera's own verdict: it found focus (Nikon's Expeed 7 bodies)
@@ -38,6 +42,17 @@ enum CullAnalysis {
     private static let visionPixels = 1024
     /// the most of the subject measured for sharpness, in full-size pixels
     private static let detailPixels = 1024
+
+    private static let personLock = NSLock()
+
+    /// Measures a photo on a dispatch thread, not a Swift task's: Vision
+    /// waits on its own queues, and a task's thread blocked there isn't
+    /// replaced, so a few at once could stall every task in the app.
+    static func analyseOffPool(_ url: URL) async -> CullFacts? {
+        await withCheckedContinuation { done in
+            DispatchQueue.global(qos: .utility).async { done.resume(returning: analyse(url)) }
+        }
+    }
 
     // MARK: Measuring
 
@@ -58,8 +73,11 @@ enum CullAnalysis {
         let aesthetics = VNCalculateImageAestheticsScoresRequest()
         let faces = VNDetectFaceCaptureQualityRequest()
         let print = VNGenerateImageFeaturePrintRequest()
+        let people = VNGeneratePersonInstanceMaskRequest()
         let handler = VNImageRequestHandler(cgImage: small)
         try? handler.perform([aesthetics, faces, print])
+        // one at a time: several at once deadlocked inside Vision
+        personLock.withLock { try? handler.perform([people]) }
 
         if let a = aesthetics.results?.first {
             facts.aesthetic = a.overallScore
@@ -72,19 +90,41 @@ enum CullAnalysis {
         facts.faces = found.count
         facts.faceQuality = found.compactMap(\.faceCaptureQuality).max()
 
-        // Where to measure: the camera's AF area, which follows the subject
-        // from frame to frame, so a burst is measured in the same place; else
-        // the biggest face; else the middle. (Vision's boxes are 0 to 1 from
-        // the bottom left.)
+        // Vision's boxes are 0 to 1 from the bottom left; these are from the top left
         let face = found.max { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }
         let faceBox = face.map { b in CGRect(x: b.boundingBox.minX, y: 1 - b.boundingBox.maxY,
                                             width: b.boundingBox.width, height: b.boundingBox.height) }
-        let region = focus?.box.map { oriented($0, orientation) } ?? faceBox ?? CGRect(x: 0.35, y: 0.35, width: 0.3, height: 0.3)
         if let faceBox { facts.eyesClosed = eyesClosed(in: full, face: faceBox) }
-        // big enough to judge: at least a tenth of the short side; widened
-        // while it's too plain to tell (a dark shirt, a wall)
+        let af = focus?.box.map { oriented($0, orientation) }
         let w = Double(full.width), h = Double(full.height)
         let bounds = CGRect(x: 0, y: 0, width: w, height: h)
+
+        // Where to measure. A person: the one the camera's AF area is on, else
+        // the most prominent, with the background masked out, so a sharp
+        // background behind a soft subject doesn't count as sharp.
+        if let person = Person.find(people.results?.first, af: af) {
+            facts.focusOnSubject = person.underAF
+            var r = CGRect(x: person.box.minX * w, y: person.box.minY * h, width: person.box.width * w, height: person.box.height * h)
+            // a tall figure: the part where focus matters, around the AF area
+            // on them, else their head and shoulders
+            let centre = person.underAF ? CGPoint(x: af!.midX * w, y: af!.midY * h)
+                : CGPoint(x: r.midX, y: r.minY + min(r.height, r.width * 1.5) * 0.3)
+            let side = Double(detailPixels)
+            if r.width > side { r = CGRect(x: min(max(centre.x - side / 2, r.minX), r.maxX - side), y: r.minY, width: side, height: r.height) }
+            if r.height > side { r = CGRect(x: r.minX, y: min(max(centre.y - side / 2, r.minY), r.maxY - side), width: r.width, height: side) }
+            r = r.intersection(bounds).integral
+            if let crop = full.cropping(to: r) {
+                let box = CGRect(x: r.minX / w, y: r.minY / h, width: r.width / w, height: r.height / h)
+                facts.sharpness = detail(crop) { x, y in person.contains(CGPoint(x: box.minX + x * box.width, y: box.minY + y * box.height)) }.ratio
+                facts.subject = box
+                return facts
+            }
+        }
+
+        // No one: the camera's AF area, else the biggest face, else the middle;
+        // at least a tenth of the short side, widened while it's too plain to
+        // tell (a dark shirt, a wall)
+        let region = af ?? faceBox ?? CGRect(x: 0.35, y: 0.35, width: 0.3, height: 0.3)
         let minSide = 0.1 * min(w, h)
         var r = CGRect(x: region.minX * w, y: region.minY * h, width: region.width * w, height: region.height * h)
         r = r.insetBy(dx: min(0, (r.width - minSide) / 2), dy: min(0, (r.height - minSide) / 2))
@@ -168,33 +208,118 @@ enum CullAnalysis {
     /// also rises with how busy the patch is. On RealBlur's real shake it put
     /// a sharp patch above a blurred one of another scene 90% of the time,
     /// the energy alone 82%. Halved first, so sensor noise counts for less.
-    private static func detail(_ image: CGImage) -> (ratio: Double, energy: Double) {
+    private static func detail(_ image: CGImage, inside: ((Double, Double) -> Bool)? = nil) -> (ratio: Double, energy: Double) {
         let w = max(8, image.width / 2), h = max(8, image.height / 2)
-        let fine = laplacianVariance(image, w, h), coarse = laplacianVariance(image, w / 2, h / 2)
+        let fine = laplacianVariance(image, w, h, inside: inside), coarse = laplacianVariance(image, w / 2, h / 2, inside: inside)
         return (fine / (coarse + 1), fine)
     }
 
     /// below this Laplacian energy a patch is too plain to judge
     private static let plainEnergy = 40.0
 
-    private static func laplacianVariance(_ image: CGImage, _ w: Int, _ h: Int) -> Double {
+    /// `inside`: where to count, 0 to 1 across and down the patch; a pixel
+    /// counts when it and the pixels a few away on each side are inside, so
+    /// the outline (where the mask is rough) doesn't
+    private static func laplacianVariance(_ image: CGImage, _ w: Int, _ h: Int, inside: ((Double, Double) -> Bool)? = nil) -> Double {
         var px = [UInt8](repeating: 0, count: w * h)
         guard let c = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
                                 space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
         else { return 0 }
         c.interpolationQuality = .medium
         c.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        var sum = 0.0, sum2 = 0.0
+        var mask: [Bool]?
+        if let inside {
+            var m = [Bool](repeating: false, count: w * h)
+            for y in 0..<h { for x in 0..<w { m[y * w + x] = inside((Double(x) + 0.5) / Double(w), (Double(y) + 0.5) / Double(h)) } }
+            // shrunk by about 3% of the patch
+            let k = max(1, max(w, h) / 32)
+            var eroded = m
+            for y in 0..<h {
+                for x in 0..<w where m[y * w + x] {
+                    if x < k || y < k || x >= w - k || y >= h - k
+                        || !m[y * w + x - k] || !m[y * w + x + k] || !m[(y - k) * w + x] || !m[(y + k) * w + x] {
+                        eroded[y * w + x] = false
+                    }
+                }
+            }
+            // too little of the person left to judge: the whole patch
+            if eroded.lazy.filter({ $0 }).count >= w * h / 20 { mask = eroded }
+        }
+        var sum = 0.0, sum2 = 0.0, n = 0.0
         for y in 1..<(h - 1) {
             for x in 1..<(w - 1) {
                 let i = y * w + x
+                if let mask, !mask[i] { continue }
                 let l = Double(px[i - 1]) + Double(px[i + 1]) + Double(px[i - w]) + Double(px[i + w]) - 4 * Double(px[i])
                 sum += l
                 sum2 += l * l
+                n += 1
             }
         }
-        let n = Double((w - 2) * (h - 2))
+        guard n > 0 else { return 0 }
         return sum2 / n - (sum / n) * (sum / n)
+    }
+
+    /// One person Vision found: their outline, to measure only them.
+    private struct Person {
+        let labels: [UInt8]
+        let width: Int, height: Int
+        let label: UInt8
+        /// 0 to 1 from the top left
+        let box: CGRect
+        let underAF: Bool
+
+        func contains(_ p: CGPoint) -> Bool {
+            let x = min(max(Int(p.x * Double(width)), 0), width - 1), y = min(max(Int(p.y * Double(height)), 0), height - 1)
+            return labels[y * width + x] == label
+        }
+
+        /// The person the AF area is most on, else the biggest (the
+        /// subject, most likely); nil with no one in the frame, or only
+        /// specks (people far off in the background).
+        static func find(_ o: VNInstanceMaskObservation?, af: CGRect?) -> Person? {
+            guard let o, !o.allInstances.isEmpty else { return nil }
+            let buffer = o.instanceMask
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+            guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+            let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer), row = CVPixelBufferGetBytesPerRow(buffer)
+            var labels = [UInt8](repeating: 0, count: w * h)
+            var area: [UInt8: Int] = [:]
+            var extent: [UInt8: (Int, Int, Int, Int)] = [:]
+            for y in 0..<h {
+                let r = base.advanced(by: y * row).assumingMemoryBound(to: UInt8.self)
+                for x in 0..<w {
+                    let l = r[x]
+                    labels[y * w + x] = l
+                    guard l > 0 else { continue }
+                    area[l, default: 0] += 1
+                    let e = extent[l] ?? (x, y, x, y)
+                    extent[l] = (min(e.0, x), min(e.1, y), max(e.2, x), max(e.3, y))
+                }
+            }
+            // people big enough to be the subject: a fiftieth of the frame
+            let candidates = area.filter { $0.value >= w * h / 50 }
+            guard !candidates.isEmpty else { return nil }
+            var chosen: UInt8?
+            var underAF = false
+            if let af {
+                // the person covering most of the AF area
+                var under: [UInt8: Int] = [:]
+                let x0 = Int(af.minX * Double(w)), x1 = max(x0 + 1, Int(af.maxX * Double(w)))
+                let y0 = Int(af.minY * Double(h)), y1 = max(y0 + 1, Int(af.maxY * Double(h)))
+                for y in max(0, y0)..<min(h, y1) { for x in max(0, x0)..<min(w, x1) where labels[y * w + x] > 0 { under[labels[y * w + x], default: 0] += 1 } }
+                if let best = under.max(by: { $0.value < $1.value }), area[best.key] != nil {
+                    chosen = best.key
+                    underAF = true
+                }
+            }
+            if chosen == nil { chosen = candidates.max { $0.value < $1.value }?.key }
+            guard let label = chosen, let e = extent[label] else { return nil }
+            let box = CGRect(x: Double(e.0) / Double(w), y: Double(e.1) / Double(h),
+                             width: Double(e.2 - e.0 + 1) / Double(w), height: Double(e.3 - e.1 + 1) / Double(h))
+            return Person(labels: labels, width: w, height: h, label: label, box: box, underAF: underAF)
+        }
     }
 
     /// Both eyes much flatter than open eyes are: height over width of each
@@ -296,6 +421,7 @@ enum CullAnalysis {
         if let q = f.faceQuality { s += 0.3 * Double(q) }
         if f.eyesClosed == true { s -= 0.6 }
         if f.inFocus == false { s -= 0.3 }
+        if f.focusOnSubject == false { s -= 0.2 }
         if let a = f.aesthetic { s += 0.1 * Double(a) }
         return s
     }
@@ -310,7 +436,7 @@ enum CullAnalysis {
     }
 
     /// bump when what's measured changes, so old stores are measured afresh
-    static let version = 1
+    static let version = 2
 
     static func storeURL(for folder: URL) -> URL? {
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }

@@ -87,9 +87,20 @@ struct AppCommands: Commands {
             Button("Save Edits") { Task { await model.save() } }
                 .keyboardShortcut("s")
                 .disabled(model.url == nil || !model.hasUnsavedChanges)
-            Button("Export…") { ExportPanel.present(model: model) }
-                .keyboardShortcut("e")
-                .disabled(model.url == nil)
+            // several photos selected in the library: all of them
+            let several = model.showingLibrary ? model.library.selectedInOrder.filter { PhotosLibrary.assetID($0) == nil } : []
+            if several.count > 1 {
+                Button("Export \(several.count) Photos…") { ExportPanel.presentBatch(model: model, photos: several) }
+                    .keyboardShortcut("e")
+                    .disabled(model.batchExport != nil)
+            } else {
+                Button("Export…") { ExportPanel.present(model: model) }
+                    .keyboardShortcut("e")
+                    .disabled(model.url == nil || model.batchExport != nil)
+            }
+            if model.batchExport != nil {
+                Button("Stop Exporting") { model.stopBatchExport = true }
+            }
             Button("Save to Photos") { model.saveToPhotos() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
                 .disabled(model.photosAsset == nil || model.isSavingToPhotos)

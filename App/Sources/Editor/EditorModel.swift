@@ -1050,6 +1050,18 @@ final class EditorModel {
                     await showLibrary()
                     // -StartMap YES: the sidebar's Map
                     if UserDefaults.standard.bool(forKey: "StartMap") { showSource(.map) }
+                    // -TestBatchExport /folder: the photos showing, as HDR HEIC with Auto, into the folder
+                    if let out = UserDefaults.standard.string(forKey: "TestBatchExport"), !Self.batchTestRan {
+                        Self.batchTestRan = true
+                        try? await Task.sleep(for: .seconds(2))
+                        var s = ExportSettings.load()
+                        s.format = .heifGainMap
+                        s.longEdge = 0
+                        s.enlarge = nil
+                        let started = Date()
+                        await exportPhotos(library.items.map(\.url), settings: s, to: URL(fileURLWithPath: out), autoAdjust: true)
+                        FileHandle.standardError.write("Darkslide batch test: \(Int(Date().timeIntervalSince(started))) s, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    }
                 }
             }
             // StartCropping: launch argument (-StartCropping YES, optionally -StartStraighten 3) for testing
@@ -2157,6 +2169,9 @@ final class EditorModel {
     // MARK: Export
 
     private(set) var isExporting = false
+    /// exporting several photos: how many are done of how many
+    var batchExport: (done: Int, total: Int)?
+    @ObservationIgnored var stopBatchExport = false
     private(set) var lastExport: URL? {
         didSet { if lastExport != nil { showExportDone = true } }
     }
@@ -2175,7 +2190,13 @@ final class EditorModel {
     func export(_ settings: ExportSettings, to url: URL, remember: Bool = true) async {
         guard let engine else { return }
         isExporting = true
-        defer { isExporting = false }
+        // in the subtitle while it runs, unless a batch is showing its own
+        let note = batchExport == nil
+        if note { statusNote = "Exporting \(url.lastPathComponent)…" }
+        defer {
+            isExporting = false
+            if note { statusNote = nil }
+        }
         if remember { settings.save() }
         // a gain map is made from the edit's own HDR and SDR renderings
         var settings = settings
@@ -2557,6 +2578,7 @@ final class EditorModel {
     @ObservationIgnored var rescueFocusSubjects: (url: URL, subjects: RescueFocus.Subjects?)?
     static var compositeTestRan = false
     static var rescueTestRan = false
+    static var batchTestRan = false
     /// the photos' renders for the sheet's preview, by path, with their sidecars' dates
     @ObservationIgnored var compositeRenders: [String: (date: Date?, image: CIImage)] = [:]
     /// the base photo's subject for the preview, by path
@@ -4369,5 +4391,75 @@ extension EditorModel {
             errorMessage = "Couldn't move the rejected photos to the Bin: \(error.localizedDescription)"
         }
         library.rescan()
+    }
+}
+
+// MARK: - Exporting several
+
+extension EditorModel {
+    /// Exports photos into a folder one after another, each with its own
+    /// edit: opened in turn, as the export renders the open photo. With
+    /// `autoAdjust`, a raw without an edit gets Auto first; for an HDR format
+    /// an SDR edit is made HDR (HLG P3). Auto's edit is saved with the photo
+    /// as it's left, like any other, so it looks the same when opened again;
+    /// a photo only made HDR for the export keeps its sidecar as it was.
+    /// The subtitle shows the progress; File › Stop Exporting stops after the
+    /// photo in hand.
+    func exportPhotos(_ photos: [URL], settings: ExportSettings, to folder: URL, autoAdjust: Bool) async {
+        guard batchExport == nil, !photos.isEmpty else { return }
+        let fromLibrary = showingLibrary
+        batchExport = (0, photos.count)
+        stopBatchExport = false
+        var failed: [String] = []
+        var done = 0
+        for (i, photo) in photos.enumerated() {
+            if stopBatchExport { break }
+            statusNote = "Exporting \(i + 1) of \(photos.count): \(photo.lastPathComponent)…"
+            await open(photo)
+            guard url?.standardizedFileURL == photo.standardizedFileURL else { failed.append(photo.lastPathComponent); continue }
+            if settings.format.isGainMap, !exportTarget.isHDR {
+                setOutputProfile(25)   // HLG P3
+                await settleEdits()
+            }
+            if autoAdjust, Library.isRaw(photo), !openedWithEdit, canAuto {
+                await autoAll()
+                await settleEdits()
+            }
+            errorMessage = nil
+            await export(settings, to: Self.freeName(folder.appendingPathComponent(
+                photo.deletingPathExtension().lastPathComponent + "." + settings.format.fileExtension)), remember: false)
+            if errorMessage != nil {
+                failed.append(photo.lastPathComponent)
+                errorMessage = nil
+            } else {
+                done += 1
+            }
+            batchExport = (i + 1, photos.count)
+        }
+        let stopped = stopBatchExport
+        stopBatchExport = false
+        batchExport = nil
+        statusNote = nil
+        if fromLibrary { await showLibrary() }
+        if !failed.isEmpty {
+            errorMessage = "Exported \(done) of \(photos.count). Couldn't export \(failed.joined(separator: ", "))."
+        } else {
+            statusNote = stopped ? "Stopped after \(done) of \(photos.count)" : "Exported \(done) photos to \(folder.lastPathComponent)"
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(6))
+                if statusNote?.hasPrefix("Exported") == true || statusNote?.hasPrefix("Stopped") == true { statusNote = nil }
+            }
+        }
+        FileHandle.standardError.write("Darkslide exported \(done) of \(photos.count) to \(folder.path)\n".data(using: .utf8)!)
+    }
+
+    /// the name, or "name 2", "name 3" and so on if it's taken
+    static func freeName(_ url: URL) -> URL {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return url }
+        let base = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension, dir = url.deletingLastPathComponent()
+        var n = 2
+        while fm.fileExists(atPath: dir.appendingPathComponent("\(base) \(n).\(ext)").path) { n += 1 }
+        return dir.appendingPathComponent("\(base) \(n).\(ext)")
     }
 }

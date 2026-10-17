@@ -32,6 +32,33 @@ enum ExportPanel {
             Task { await model.export(options.settings, to: url) }
         }
     }
+
+    /// File › Export Photos: several photos into a folder, each with its own
+    /// edit, the options as for one.
+    static func presentBatch(model: EditorModel, photos: [URL]) {
+        guard photos.count > 1,
+              let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey })
+        else { return }
+        let options = ExportOptions(model: model, batch: photos.count)
+        let panel = NSOpenPanel()
+        panel.title = "Export \(photos.count) Photos"
+        panel.prompt = "Export"
+        panel.message = "Choose a folder for the \(photos.count) photos."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.directoryURL = model.lastExport?.deletingLastPathComponent() ?? photos[0].deletingLastPathComponent()
+        let host = NSHostingView(rootView: ExportOptionsView(options: options).environment(model))
+        host.sizingOptions = [.intrinsicContentSize]
+        host.frame.size = host.fittingSize
+        panel.accessoryView = host
+        panel.isAccessoryViewDisclosed = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let folder = panel.url else { return }
+            options.settings.save()
+            Task { await model.exportPhotos(photos, settings: options.settings, to: folder, autoAdjust: options.autoAdjust) }
+        }
+    }
 }
 
 @MainActor
@@ -58,12 +85,22 @@ final class ExportOptions {
     }
     weak var panel: NSSavePanel?
     let model: EditorModel
+    /// how many photos, exporting several at once
+    let batch: Int?
+    /// exporting several: unedited raws get Auto first
+    var autoAdjust = UserDefaults.standard.object(forKey: "BatchExportAuto") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoAdjust, forKey: "BatchExportAuto") }
+    }
 
-    init(model: EditorModel) {
+    init(model: EditorModel, batch: Int? = nil) {
         self.model = model
+        self.batch = batch
         var s = ExportSettings.load()
-        // an HDR edit starts on the HDR kind of the last format, an SDR one on the SDR kind
-        if model.exportTarget.isHDR {
+        // an HDR edit starts on the HDR kind of the last format, an SDR one on
+        // the SDR kind; several photos keep the last format, as each is made
+        // HDR for an HDR one
+        if batch != nil {
+        } else if model.exportTarget.isHDR {
             if s.format == .jpeg { s.format = .jpegGainMap } else if s.format == .heif { s.format = .heifGainMap }
         } else {
             if s.format == .jpegGainMap { s.format = .jpeg } else if s.format == .heifGainMap { s.format = .heif }
@@ -104,7 +141,7 @@ struct ExportOptionsView: View {
                     Picker("Format", selection: $options.settings.format) {
                         Section("HDR") {
                             ForEach(ExportFormat.hdrFormats) { f in
-                                Text(f.title).tag(f).selectionDisabled(!model.exportTarget.isHDR)
+                                Text(f.title).tag(f).selectionDisabled(options.batch == nil && !model.exportTarget.isHDR)
                             }
                         }
                         Section("SDR") {
@@ -113,7 +150,7 @@ struct ExportOptionsView: View {
                     }
                     .labelsHidden()
                     .fixedSize()
-                    .help(model.exportTarget.isHDR ? "" : "HDR formats need an HDR edit: turn on HDR in the HDR card")
+                    .help(options.batch != nil || model.exportTarget.isHDR ? "" : "HDR formats need an HDR edit: turn on HDR in the HDR card")
                 }
                 if s.format.usesQuality {
                     GridRow {
@@ -264,7 +301,9 @@ struct ExportOptionsView: View {
             }
 
             VStack(spacing: 4) {
-                Text("\(Int(size.width)) × \(Int(size.height)) px" + (s.format.bitDepthIsAdvanced && s.bitDepth > 8 ? ", \(s.bitDepth)-bit" : ""))
+                Text(options.batch.map { n in
+                    "\(n) photos" + (s.format.isGainMap ? ". Each is made HDR (HLG P3) for the export, and keeps that." : "")
+                } ?? "\(Int(size.width)) × \(Int(size.height)) px" + (s.format.bitDepthIsAdvanced && s.bitDepth > 8 ? ", \(s.bitDepth)-bit" : ""))
                     .foregroundStyle(.secondary)
                 Text(s.format.detail)
                     .font(.caption)
@@ -285,6 +324,10 @@ struct ExportOptionsView: View {
             }
             .frame(width: 460)
             .fixedSize(horizontal: false, vertical: true)
+            if options.batch != nil {
+                Toggle("Auto-adjust raws that haven't been edited", isOn: $options.autoAdjust)
+                    .help("Applies Auto (camera style, exposure, tone mapping) to each raw without an edit before exporting it; the edit is saved with the photo")
+            }
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 24)

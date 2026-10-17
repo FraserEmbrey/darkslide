@@ -25,9 +25,11 @@ actor Engine {
     /// "scene-referred (filmic)". darktable fixes it at startup.
     init(workflow: String, backend: GPUBackend, onExit: @escaping @Sendable (Int32) -> Void) throws {
         let fm = FileManager.default
-        let support = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                  appropriateFor: nil, create: true)
-            .appendingPathComponent("Darkslide/darktable", isDirectory: true)
+        // EngineConfigDir: launch argument (-EngineConfigDir /path) for testing: darktable's
+        // settings and lock elsewhere, so a test copy runs beside the user's
+        let support = try UserDefaults.standard.string(forKey: "EngineConfigDir").map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appendingPathComponent("Darkslide/darktable", isDirectory: true)
         configDir = support
         let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
                                 appropriateFor: nil, create: true)

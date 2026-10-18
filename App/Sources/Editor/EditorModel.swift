@@ -2435,7 +2435,9 @@ final class EditorModel {
         // the frame and watermark on both, so the gain map between them is the photo's
         let extras = ExportExtras.load()
         let framedHDR = extras.any ? extras.composite(hdr) : hdr
-        let framedSDR = extras.any ? extras.composite(sdr) : sdr
+        var framedSDR = extras.any ? extras.composite(sdr) : sdr
+        // renders carry no metadata: the photo's own, as darktable's exports have
+        if let photo = self.url { framedSDR = framedSDR.settingProperties(Self.exportMetadata(of: photo)) }
         let options: [CIImageRepresentationOption: Any] = [
             CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): Double(settings.quality) / 100,
             .hdrImage: framedHDR,
@@ -2450,6 +2452,34 @@ final class EditorModel {
         }
         // render the preview again at its own size (the frame file was reused)
         requestRender()
+    }
+
+    /// A photo's camera metadata (time, camera and lens, exposure, location)
+    /// and rating, for a file written from renders, which are already upright.
+    nonisolated static func exportMetadata(of photo: URL) -> [String: Any] {
+        guard let source = CGImageSourceCreateWithURL(photo as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let all = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else { return [:] }
+        var props: [String: Any] = [:]
+        for key in [kCGImagePropertyExifDictionary, kCGImagePropertyExifAuxDictionary, kCGImagePropertyTIFFDictionary,
+                    kCGImagePropertyGPSDictionary, kCGImagePropertyIPTCDictionary] {
+            if let d = all[key as String] { props[key as String] = d }
+        }
+        if var exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+            exif.removeValue(forKey: kCGImagePropertyExifPixelXDimension as String)
+            exif.removeValue(forKey: kCGImagePropertyExifPixelYDimension as String)
+            props[kCGImagePropertyExifDictionary as String] = exif
+        }
+        var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+        tiff[kCGImagePropertyTIFFOrientation as String] = 1
+        props[kCGImagePropertyTIFFDictionary as String] = tiff
+        props[kCGImagePropertyOrientation as String] = 1
+        let rating = Sidecar.rating(of: photo)
+        if rating > 0 {
+            var iptc = props[kCGImagePropertyIPTCDictionary as String] as? [String: Any] ?? [:]
+            iptc[kCGImagePropertyIPTCStarRating as String] = rating
+            props[kCGImagePropertyIPTCDictionary as String] = iptc
+        }
+        return props
     }
 
     /// settings that turn the edit into its SDR rendition: tone mappers back to

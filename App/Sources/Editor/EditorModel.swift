@@ -1051,6 +1051,7 @@ final class EditorModel {
                     // -StartMap YES: the sidebar's Map
                     if UserDefaults.standard.bool(forKey: "StartMap") { showSource(.map) }
                     // -TestBatchExport /folder: the photos showing, as HDR HEIC with Auto, into the folder
+                    // (and with -TestBatchToPhotos YES, into Photos too)
                     if let out = UserDefaults.standard.string(forKey: "TestBatchExport"), !Self.batchTestRan {
                         Self.batchTestRan = true
                         try? await Task.sleep(for: .seconds(2))
@@ -1059,7 +1060,8 @@ final class EditorModel {
                         s.longEdge = 0
                         s.enlarge = nil
                         let started = Date()
-                        await exportPhotos(library.items.map(\.url), settings: s, to: URL(fileURLWithPath: out), autoAdjust: true)
+                        await exportPhotos(library.items.map(\.url), settings: s, to: URL(fileURLWithPath: out), autoAdjust: true,
+                                           toPhotos: UserDefaults.standard.bool(forKey: "TestBatchToPhotos"))
                         FileHandle.standardError.write("Darkslide batch test: \(Int(Date().timeIntervalSince(started))) s, error \(errorMessage ?? "none")\n".data(using: .utf8)!)
                     }
                 }

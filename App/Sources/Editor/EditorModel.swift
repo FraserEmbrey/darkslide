@@ -1050,6 +1050,14 @@ final class EditorModel {
                     await showLibrary()
                     // -StartMap YES: the sidebar's Map
                     if UserDefaults.standard.bool(forKey: "StartMap") { showSource(.map) }
+                    // -TestOpenFromLibrary /photo: opens it from the grid, logging any error
+                    if let path = UserDefaults.standard.string(forKey: "TestOpenFromLibrary"), !Self.openFromLibraryTestRan {
+                        Self.openFromLibraryTestRan = true
+                        try? await Task.sleep(for: .seconds(2))
+                        await open(URL(fileURLWithPath: path))
+                        try? await Task.sleep(for: .seconds(3))
+                        FileHandle.standardError.write("Darkslide open from library test: at \(self.url?.lastPathComponent ?? "-"), library \(showingLibrary), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    }
                     // -TestBatchExport /folder: the photos showing, as HDR HEIC with Auto, into the folder
                     // (and with -TestBatchToPhotos YES, into Photos too)
                     if let out = UserDefaults.standard.string(forKey: "TestBatchExport"), !Self.batchTestRan {
@@ -2129,7 +2137,10 @@ final class EditorModel {
                         fullRenderMs = fullRenderMs == 0 ? ms : fullRenderMs * 0.6 + ms * 0.4
                     }
                 } catch {
-                    errorMessage = error.localizedDescription
+                    // mid-open the engine has no photo for a moment (the last
+                    // closed, a raw darktable can't read being decoded by macOS);
+                    // the open renders when it's done
+                    if !isOpening { errorMessage = error.localizedDescription }
                     return
                 }
                 if draft { settleAfterEdits() }
@@ -2151,7 +2162,7 @@ final class EditorModel {
             beforeImage = frame.image
             beforeKey = key
         } catch {
-            errorMessage = error.localizedDescription
+            if !isOpening { errorMessage = error.localizedDescription }
         }
     }
 
@@ -2611,6 +2622,7 @@ final class EditorModel {
     static var compositeTestRan = false
     static var rescueTestRan = false
     static var batchTestRan = false
+    static var openFromLibraryTestRan = false
     /// the photos' renders for the sheet's preview, by path, with their sidecars' dates
     @ObservationIgnored var compositeRenders: [String: (date: Date?, image: CIImage)] = [:]
     /// the base photo's subject for the preview, by path

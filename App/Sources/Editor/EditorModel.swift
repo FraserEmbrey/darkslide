@@ -1057,6 +1057,12 @@ final class EditorModel {
                         await open(URL(fileURLWithPath: path))
                         try? await Task.sleep(for: .seconds(3))
                         FileHandle.standardError.write("Darkslide open from library test: at \(self.url?.lastPathComponent ?? "-"), library \(showingLibrary), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                        // then G on another photo selected in the grid opens that one
+                        await showLibrary()
+                        library.selection = library.items.first { $0.url != self.url }?.url
+                        toggleLibrary()
+                        try? await Task.sleep(for: .seconds(4))
+                        FileHandle.standardError.write("Darkslide open from library test: G opened \(self.url?.lastPathComponent ?? "-"), library \(showingLibrary)\n".data(using: .utf8)!)
                     }
                     // -TestBatchExport /folder: the photos showing, as HDR HEIC with Auto, into the folder
                     // (and with -TestBatchToPhotos YES, into Photos too)
@@ -3344,7 +3350,12 @@ extension EditorModel {
         if library.source == nil, let folder = library.lastFolder { library.show(folder: folder) }
         guard library.source != nil else { return }
         if showingLibrary {
-            if url != nil { showingLibrary = false }
+            // the photo selected in the grid, as Return opens it
+            if let selected = library.selection, selected != libraryURL {
+                Task { await open(selected) }
+            } else if url != nil {
+                showingLibrary = false
+            }
         } else {
             Task { await showLibrary() }
         }

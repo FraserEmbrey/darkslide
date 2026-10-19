@@ -98,6 +98,17 @@ struct AppCommands: Commands {
                     .keyboardShortcut("e")
                     .disabled(model.url == nil || model.batchExport != nil)
             }
+            Menu("Export with Preset") {
+                let photos = model.photosForPresetExport
+                ForEach(model.exportPresets) { preset in
+                    Button(photos.count > 1 ? "\(preset.name) (\(photos.count) Photos)" : preset.name) {
+                        model.export(model.photosForPresetExport, with: preset)
+                    }
+                    .disabled(photos.isEmpty || model.batchExport != nil)
+                }
+                Divider()
+                Button("Manage Presets…") { model.managingExportPresets = true }
+            }
             if model.batchExport != nil {
                 Button("Stop Exporting") { model.stopBatchExport = true }
             }

@@ -144,6 +144,25 @@ struct ExportOptionsView: View {
         VStack(spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
+                    label("Preset:")
+                    HStack {
+                        Picker("Preset", selection: Binding(
+                            get: { model.exportPresets.first { $0.settings == options.settings && $0.extras == options.extras }?.id },
+                            set: { id in
+                                guard let p = model.exportPresets.first(where: { $0.id == id }) else { return }
+                                options.settings = p.settings
+                                options.extras = p.extras
+                            })) {
+                            Text("Custom").tag(UUID?.none)
+                            Divider()
+                            ForEach(model.exportPresets) { Text($0.name).tag(Optional($0.id)) }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        Button("Save as Preset…") { saveAsPreset() }
+                    }
+                }
+                GridRow {
                     label("Format:")
                     Picker("Format", selection: $options.settings.format) {
                         Section("HDR") {
@@ -352,6 +371,24 @@ struct ExportOptionsView: View {
         }
         .labelsHidden()
         .fixedSize()
+    }
+
+    /// the options as they are, named, for File › Export with Preset
+    private func saveAsPreset() {
+        let alert = NSAlert()
+        alert.messageText = "Save Export Preset"
+        alert.informativeText = "Its files go in a folder called Exports beside the photos. Change that in File › Export with Preset › Manage Presets."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "Name"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        model.exportPresets.append(ExportPreset(name: name.isEmpty ? "\(options.settings.format.title) Preset" : name,
+                                                settings: options.settings, extras: options.extras,
+                                                autoAdjust: options.autoAdjust, addToPhotos: options.addToPhotos))
     }
 
     private func label(_ text: String) -> some View {

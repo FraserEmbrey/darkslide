@@ -57,6 +57,9 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { model.choosingAdjustmentsToCopy }, set: { model.choosingAdjustmentsToCopy = $0 })) {
                 CopyAdjustmentsSheet()
             }
+            .sheet(isPresented: Binding(get: { model.managingExportPresets }, set: { model.managingExportPresets = $0 })) {
+                ExportPresetsSheet()
+            }
             .sheet(isPresented: Binding(get: { model.choosingDenoise }, set: { model.choosingDenoise = $0 })) {
                 DenoiseSheet()
             }

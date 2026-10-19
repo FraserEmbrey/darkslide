@@ -59,6 +59,7 @@ final class EditorModel {
     private static var decoderSwitchTested = false
     private static var versionsTested = false
     private static var smartAlbumsTested = false
+    private static var exportPresetTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -180,6 +181,9 @@ final class EditorModel {
     var choosingAdjustmentsToCopy = false
     /// Image › Denoise to New DNG… is asking for the amount
     var choosingDenoise = false
+    /// named export options for File › Export with Preset (ExportPresets.swift)
+    var exportPresets = ExportPreset.load() { didSet { ExportPreset.save(exportPresets) } }
+    var managingExportPresets = false
     /// the Photos asset open, when the photo came from Photos (its original
     /// is edited from a cache file)
     private(set) var photosAsset: String?
@@ -1663,6 +1667,28 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("committed")
                     await undo()
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
+                }
+            }
+            // TestExportPreset: launch argument (-TestExportPreset YES) for testing: exports
+            // the folder's photos with the second preset, logs the files, then shows the presets sheet
+            if UserDefaults.standard.bool(forKey: "TestExportPreset"), !Self.exportPresetTested {
+                Self.exportPresetTested = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    let photos = library.items.map(\.url)
+                    let preset = exportPresets[1]
+                    export(photos, with: preset)
+                    try? await Task.sleep(for: .seconds(1))
+                    while batchExport != nil { try? await Task.sleep(for: .milliseconds(200)) }
+                    try? await Task.sleep(for: .seconds(1))
+                    let dir = url.deletingLastPathComponent().appendingPathComponent("Exports")
+                    let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []).sorted { $0.path < $1.path }
+                    let sizes = files.map { f -> String in
+                        let p = CGImageSourceCreateWithURL(f as CFURL, nil).flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) } as? [CFString: Any]
+                        return "\(f.lastPathComponent) \(p?[kCGImagePropertyPixelWidth] ?? 0)x\(p?[kCGImagePropertyPixelHeight] ?? 0)"
+                    }
+                    FileHandle.standardError.write("Darkslide export preset \(preset.name), \(photos.count) photos: \(sizes), error \(errorMessage ?? "none")\n".data(using: .utf8)!)
+                    managingExportPresets = true
                 }
             }
             // TestSmartAlbums: launch argument (-TestSmartAlbums YES) for testing: shows

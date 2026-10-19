@@ -91,6 +91,8 @@ struct OpenReply: Decodable {
     let alias: String
     let hadSidecar: Bool
     let sensor: String?      // "bayer", "xtrans", "monochrome" or "linear"
+    let xyzToCam: [Double]?  // raws: the camera's matrices, 4 × 3 and 3 × 4 (CameraWhite)
+    let camToXyz: [Double]?
     let modules: [EngineModule]
 }
 

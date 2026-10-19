@@ -404,7 +404,14 @@ struct ZoomableImage: View {
                          backdrop: backdrop(in: geo.size)?.image,
                          backdropRect: backdrop(in: geo.size)?.rect ?? .zero,
                          canPan: model.imageIsZoomed && !model.comparing,
-                         onClick: { p in if !model.isCropping { click(at: p, in: geo.size, frame: size) } },
+                         onClick: { p in
+                             if model.whitePickTarget != nil {
+                                 let u = imagePoint(at: p, in: geo.size, frame: size)
+                                 if (0...1).contains(u.x), (0...1).contains(u.y) { model.pickWhite(at: u) }
+                             } else if !model.isCropping {
+                                 click(at: p, in: geo.size, frame: size)
+                             }
+                         },
                          onPan: { d in model.pan(byPixels: CGSize(width: d.width * displayScale, height: d.height * displayScale)) })
                 // while straightening, turn the last frame at once; darktable's render follows
                 .rotationEffect(.degrees(-model.straightenPreview.degrees), anchor: straightenAnchor(in: geo.size, frame: size))
@@ -455,11 +462,15 @@ struct ZoomableImage: View {
                     if waitingForFrame { pinch = 1; waitingForFrame = false }
                 }
                 .onHover { inside in
+                    if model.whitePickTarget != nil {
+                        if inside { NSCursor.crosshair.push() } else { NSCursor.pop() }
+                        return
+                    }
                     guard case .scale = model.zoom else { return }
                     if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
                 }
                 // not while the look browser is open over it, where it shows by the popover's edge
-                .help(model.lookBrowserOpen ? "" : model.imageIsZoomed ? "Drag to move around; click to fit the photo" : "Click to zoom to 100% here")
+                .help(model.lookBrowserOpen ? "" : model.whitePickTarget != nil ? "Click something that should be grey or white" : model.imageIsZoomed ? "Drag to move around; click to fit the photo" : "Click to zoom to 100% here")
         }
     }
 }

@@ -368,6 +368,9 @@ struct ModuleCard: View {
             if showsContent, module.op == "channelmixerrgb" {
                 SceneWhiteControls(module: module)
                     .transition(.opacity)
+            } else if showsContent, module.op == "temperature", model.cameraWhite != nil {
+                RawWhiteControls(module: module)
+                    .transition(.opacity)
             } else if showsContent, module.op == "lens" {
                 LensControls(module: module)
                     .transition(.opacity)
@@ -682,6 +685,7 @@ struct SceneWhiteControls: View {
             ParamSlider(label: "Tint", value: c.tint, defaultValue: 0,
                         range: Illuminant.tintRange, isInteger: false, unit: nil,
                         trackColors: [.green, Color(red: 0.85, green: 0.3, blue: 0.85)]) { set(kelvin: c.kelvin, tint: $0) }
+            WhitePickButton(module: module)
             Text("The colour of the light in the scene. darktable corrects it in color calibration, which adapts colours more accurately than scaling the raw channels (its raw white balance, left at camera reference).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -702,6 +706,75 @@ struct SceneWhiteControls: View {
     private func isAdvanced(_ f: EngineField) -> Bool {
         !["illuminant", "x", "y", "temperature"].contains(f.name) && !f.name.hasPrefix("normalize_")
             && Presentation.isVisible(f, in: module)
+    }
+}
+
+/// darktable's raw white balance as temperature and tint, worked out from the
+/// camera's matrix (CameraWhite); the channel multipliers it sets are under Advanced.
+struct RawWhiteControls: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+    @State private var showAdvanced = false
+
+    private static let channels = ["red", "green", "blue"]
+    private func number(_ name: String) -> Double { module.fields.first { $0.name == name }?.value.number ?? 0 }
+
+    var body: some View {
+        if let cam = model.cameraWhite {
+            let c = cam.kelvinAndTint(multipliers: Self.channels.map(number))
+            VStack(alignment: .leading, spacing: 14) {
+                ParamSlider(label: "Temperature", value: c.kelvin, defaultValue: 5000,
+                            range: Illuminant.kelvinRange, isInteger: true, unit: "K",
+                            trackColors: [.blue, .yellow]) { set(cam, kelvin: $0, tint: c.tint) }
+                ParamSlider(label: "Tint", value: c.tint, defaultValue: 0,
+                            range: Illuminant.tintRange, isInteger: false, unit: nil,
+                            trackColors: [.green, Color(red: 0.85, green: 0.3, blue: 0.85)]) { set(cam, kelvin: c.kelvin, tint: $0) }
+                WhitePickButton(module: module)
+                Text("Scales the camera's red, green and blue to neutralise the light. With colour calibration on, leave this at camera reference and set the light there instead.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(module.fields.filter { Presentation.isVisible($0, in: module) }) { f in
+                            FieldControl(op: module.op, field: f) { model.setValue($0, module: module.key, field: f.name) }
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+            }
+        }
+    }
+
+    private func set(_ cam: CameraWhite, kelvin: Double, tint: Double) {
+        let mul = cam.multipliers(kelvin: kelvin, tint: tint)
+        for (k, name) in Self.channels.enumerated() { model.setValue(.number(mul[k]), module: module.key, field: name) }
+    }
+}
+
+/// Starts the white balance picker: click something neutral on the photo.
+struct WhitePickButton: View {
+    @Environment(EditorModel.self) private var model
+    let module: EngineModule
+
+    var body: some View {
+        let picking = model.whitePickTarget == module.key
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                model.pickWhite(for: picking ? nil : module.key)
+            } label: {
+                Label(picking ? "Click Something Neutral…" : "Pick Neutral", systemImage: "eyedropper")
+            }
+            .help("Click something on the photo that should be grey or white, and the white balance makes it so")
+            if picking {
+                // Escape stops picking
+                Button("Cancel") { model.pickWhite(for: nil) }
+                    .keyboardShortcut(.cancelAction)
+                    .frame(width: 0, height: 0).opacity(0)
+            }
+            if let note = model.whitePickNote {
+                Text(note).font(.caption).foregroundStyle(.orange)
+            }
+        }
     }
 }
 

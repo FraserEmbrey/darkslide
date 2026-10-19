@@ -573,6 +573,24 @@ static void _cmd_open(JsonObject *o)
                                    : img->buf_dsc.filters ? "bayer" : "linear");
   json_builder_set_member_name(b, "hadSidecar");
   json_builder_add_boolean_value(b, had_edit);
+  // the camera's colour matrices, for showing raw white balance as temperature
+  // and tint (darktable works these out in the white balance module's GUI)
+  double xyz_to_cam[4][3], cam_to_xyz[3][4];
+  if(dt_image_is_raw(img)
+     && dt_colorspaces_conversion_matrices_xyz(img->adobe_XYZ_to_CAM, (float *)img->d65_color_matrix,
+                                               xyz_to_cam, cam_to_xyz))
+  {
+    json_builder_set_member_name(b, "xyzToCam");
+    json_builder_begin_array(b);
+    for(int k = 0; k < 4; k++)
+      for(int i = 0; i < 3; i++) json_builder_add_double_value(b, xyz_to_cam[k][i]);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "camToXyz");
+    json_builder_begin_array(b);
+    for(int i = 0; i < 3; i++)
+      for(int k = 0; k < 4; k++) json_builder_add_double_value(b, cam_to_xyz[i][k]);
+    json_builder_end_array(b);
+  }
   _add_modules(b);
   _ok_done(b);
 }

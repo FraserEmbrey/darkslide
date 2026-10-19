@@ -22,6 +22,12 @@ final class EditorModel {
     private(set) var url: URL?
     private(set) var camera = ""
     private(set) var sensor = "bayer"
+    /// raws: the camera's matrices, for white balance in temperature and tint
+    private(set) var cameraWhite: CameraWhite?
+    /// the white balance module being picked for (WhitePicker), and what went wrong
+    var whitePickTarget: String?
+    var whitePickNote: String?
+    var whitePickTask: Task<Void, Never>?
     private(set) var image: CGImage?
 
     // Before and after: the photo as opened on the left of a movable divider
@@ -1654,11 +1660,41 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
                 }
             }
+            // TestWhitePick: launch argument (-TestWhitePick 0.5,0.5) for testing, logs the
+            // raw white balance as temperature and tint, then picks white at that point
+            if let spec = UserDefaults.standard.string(forKey: "TestWhitePick") {
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide white: \(s)\n".data(using: .utf8)!) }
+                    try? await Task.sleep(for: .seconds(4))
+                    if let t = modules.first(where: { $0.op == "temperature" }), let cam = cameraWhite {
+                        let mul = ["red", "green", "blue"].map { n in t.fields.first { $0.name == n }?.value.number ?? 0 }
+                        let kt = cam.kelvinAndTint(multipliers: mul)
+                        let back = cam.multipliers(kelvin: kt.kelvin, tint: kt.tint)
+                        log("D65 multipliers \(cam.multipliers(white: [0.95047, 1, 1.08883])), xyzToCam \(cam.xyzToCam)")
+                        log("raw multipliers \(mul) = \(Int(kt.kelvin)) K tint \(kt.tint), back \(back.prefix(3))")
+                    }
+                    let p = spec.split(separator: ",").compactMap { Double($0) }
+                    guard p.count == 2, let cc = modules.first(where: { $0.op == "channelmixerrgb" && $0.enabled }) else { return log("no colour calibration") }
+                    @MainActor func state() -> String {
+                        let m = modules.first { $0.key == cc.key }!
+                        return m.fields.filter { ["illuminant", "x", "y", "temperature"].contains($0.name) }
+                            .map { "\($0.name) \($0.value.number ?? 0)" }.joined(separator: ", ")
+                    }
+                    log("before: \(state())")
+                    pickWhite(for: cc.key)
+                    pickWhite(at: CGPoint(x: p[0], y: p[1]))
+                    await whitePickTask?.value
+                    log("after: \(state()) note \(whitePickNote ?? "none")")
+                }
+            }
             // StartExport: launch argument (-StartExport YES) for testing, opens as ⌘E would
             if UserDefaults.standard.bool(forKey: "StartExport") {
                 Task { @MainActor in ExportPanel.present(model: self) }
             }
             sensor = reply.sensor ?? "bayer"
+            cameraWhite = CameraWhite(xyzToCam: reply.xyzToCam, camToXyz: reply.camToXyz)
+            whitePickTarget = nil
+            whitePickNote = nil
             photosAsset = openingPhotosAsset
             modules = reply.modules
             panBackdrop = nil

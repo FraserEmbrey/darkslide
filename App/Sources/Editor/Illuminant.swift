@@ -48,3 +48,50 @@ enum Illuminant {
         return (t, ((u - p.u) * n.u + (v - p.v) * n.v) * 1000)
     }
 }
+
+/// The camera's colour matrices (from darktable's open reply), for showing the
+/// raw white balance module's channel multipliers as temperature and tint.
+/// darktable does this in the module's GUI code: a multiplier is one over the
+/// camera's response to the light's white (temperature.c, `_xyz2mul`). The
+/// light here comes from `Illuminant`, so the numbers agree with colour
+/// calibration's, though not exactly with darktable's own white balance module,
+/// which integrates daylight spectra and treats tint as a scale on Y.
+struct CameraWhite: Sendable {
+    let xyzToCam: [[Double]]   // 4 × 3
+    let camToXyz: [[Double]]   // 3 × 4
+
+    init?(xyzToCam a: [Double]?, camToXyz b: [Double]?) {
+        guard let a, let b, a.count == 12, b.count == 12 else { return nil }
+        xyzToCam = (0..<4).map { k in Array(a[k * 3..<k * 3 + 3]) }
+        camToXyz = (0..<3).map { i in Array(b[i * 4..<i * 4 + 4]) }
+    }
+
+    /// red, green, blue and the fourth channel's multipliers, green = 1
+    func multipliers(kelvin: Double, tint: Double) -> [Double] {
+        multipliers(white: Self.xyz(Illuminant.xy(kelvin: kelvin, tint: tint)))
+    }
+
+    func multipliers(white xyz: [Double]) -> [Double] {
+        let cam = xyzToCam.map { row in zip(row, xyz).reduce(0) { $0 + $1.0 * $1.1 } }
+        let mul = cam.map { $0 > 0 ? 1 / $0 : 0 }
+        let g = mul[1] > 0 ? mul[1] : 1
+        return mul.map { $0 / g }
+    }
+
+    /// the light the multipliers neutralise, as temperature and tint
+    func kelvinAndTint(multipliers mul: [Double]) -> (kelvin: Double, tint: Double) {
+        let cam = mul.map { $0 > 0 ? 1 / $0 : 0 }
+        // a three-colour sensor has no fourth channel: its row is zero, so it adds nothing
+        let xyz = camToXyz.map { row in zip(row, cam).reduce(0) { $0 + $1.0 * $1.1 } }
+        let sum = xyz.reduce(0, +)
+        guard sum > 0 else { return (5000, 0) }
+        return Illuminant.kelvinAndTint(x: xyz[0] / sum, y: xyz[1] / sum)
+    }
+
+    /// the camera's response to a colour given in XYZ
+    func camera(_ xyz: [Double]) -> [Double] {
+        xyzToCam.map { row in zip(row, xyz).reduce(0) { $0 + $1.0 * $1.1 } }
+    }
+
+    static func xyz(_ p: (x: Double, y: Double)) -> [Double] { [p.x / p.y, 1, (1 - p.x - p.y) / p.y] }
+}

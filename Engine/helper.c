@@ -1432,6 +1432,9 @@ static void _cmd_add_local(JsonObject *o)
     form->points = g_list_append(form->points, g);
   }
   dt_masks_gui_form_save_creation(&H.edit.dev, m, form, NULL);
+  // the shapes into the history: darktable only records them with its GUI
+  // attached, and a subject, never moved after, was lost on the next undo
+  dt_dev_add_masks_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
   }
   m->blend_params->mask_mode = DEVELOP_MASK_ENABLED | DEVELOP_MASK_MASK;
   _commit(m, TRUE);

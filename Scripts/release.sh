@@ -76,7 +76,7 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 
 git push origin "$TAG"
 cat > "$OUT/notes.md" <<EOF
-darktable's raw engine, in a Mac app that feels like a Mac app. Open a raw, drag a slider, and watch darktable re-render on the GPU before you've let go. Turn on HDR and see your highlights the way an XDR display can show them, then export them as HEIC or a gain map JPEG that looks right on a phone.
+darktable's raw engine, in a Mac-assed Mac app: nicer to use, faster, and built on Metal, Core Image, Core ML and the rest of the Mac's own technologies. Open a raw, drag a slider, and watch darktable re-render on the GPU before you've let go. Turn on HDR and see your highlights the way an XDR display can show them, then export them as HEIC or a gain map JPEG that looks right on a phone.
 
 ## Install
 

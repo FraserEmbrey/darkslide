@@ -1,10 +1,10 @@
 # Darkslide
 
-**darktable's raw engine, in a Mac app that feels like a Mac app.**
+**darktable's raw engine, in a Mac-assed Mac app.**
 
 ![Darkslide editing a raw of Brighton's Royal Pavilion at night in HDR](docs/screenshot.jpg)
 
-darktable is one of the best raw processors there is: scene-referred, colour-managed, free, and fussy in all the right ways. Its interface is also GTK on a Mac, which is a bit like wearing walking boots to a wedding. Darkslide keeps the engine and replaces the boots. You get darktable's processing, sliders that behave like macOS sliders, and HDR you can actually see while you edit.
+darktable is one of the best raw processors there is: scene-referred, colour-managed, free, and fussy in all the right ways. Its interface is also GTK on a Mac, which is a bit like wearing walking boots to a wedding. Darkslide keeps the engine and replaces the boots. The aim is what John Gruber calls a Mac-assed Mac app: one that's nicer to use, faster, and built on the Mac's own technologies rather than painted to look like them. You get darktable's processing, sliders that behave like macOS sliders, and HDR you can actually see while you edit.
 
 **[Download the latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest)** for Apple silicon Macs on macOS 26 or later. It's version 0.1, so expect some rough edges.
 
@@ -28,7 +28,7 @@ darktable is one of the best raw processors there is: scene-referred, colour-man
 The goals, in order:
 
 - **darktable's results.** Every raw is processed by darktable 5.6.2, and an edit is darktable's own history, so it opens the same in darktable.
-- **A native Mac app.** SwiftUI, the standard toolbar, sidebar and inspector, keyboard shortcuts you'd guess, and the save panel you already know.
+- **A Mac-assed Mac app.** SwiftUI, the standard toolbar, sidebar and inspector, keyboard shortcuts you'd guess, and the save panel you already know. Underneath, the Mac's own technologies wherever they fit: Metal for the GPU, Core Image for HDR and gain maps, Core ML for the AI models, PhotoKit for Apple Photos, MapKit for places.
 - **HDR, properly.** Edit in HDR on an XDR or other EDR display, see how much of the image sits above white, and export HEIC, HLG or PQ, or JPEGs with an ISO 21496-1 gain map that look right on phones too.
 - **Fast on Apple silicon.** darktable's GPU code runs on Metal, and moving a slider reruns only the part of the pipeline it affects.
 - **Your files stay yours.** Edits live in darktable's own XMP sidecars beside the photo. There's no import step, and no database holding your edits hostage.

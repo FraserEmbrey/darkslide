@@ -260,6 +260,10 @@ The models are darktable 5.6's RawNIND raw denoiser (GPL-3.0), from darktable-ai
 
 For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` points at `vendor/dt-install/bin/darkroom-helper`.
 
+## Releasing
+
+`Scripts/release.sh 0.2` builds a release from the tag `v0.2` (tagging HEAD if it isn't tagged). The release leaves the models out, since they're downloaded when first used. It signs every binary with a Developer ID, with the hardened runtime and `App/Darkslide.entitlements`, then has Apple notarise it and staples the ticket. Finally it pushes the tag and drafts a GitHub release with the zipped app. Check the draft, then publish it. The top of the script lists what it needs once: the Developer ID certificate, notarytool's keychain profile, and the models published with `Scripts/publish-models.sh`.
+
 ## Layout
 
 | Path | What |
@@ -273,7 +277,7 @@ For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` 
 
 ## Known limits
 
-- **Not notarised:** The app is signed with a development identity only, so on another Mac Gatekeeper blocks it until it's allowed in System Settings › Privacy & Security.
+- **Development builds aren't notarised:** `build-app.sh` signs with a development identity, so on another Mac Gatekeeper blocks the app until it's allowed in System Settings › Privacy & Security. Releases (below) are notarised.
 - **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
 - **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
 - **White balance:** The temperature module stores RGB multipliers. Kelvin and tint are worked out in darktable's GUI code, so they need a custom editor.

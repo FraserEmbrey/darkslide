@@ -146,6 +146,8 @@ struct ContentView: View {
                             get: { model.isCropping },
                             set: { $0 ? model.beginCrop() : model.commitCrop() }))
                             .help("Crop and straighten (⌘K)")
+                        Toggle("Spot Removal", systemImage: "bandage", isOn: $model.isRemovingSpots)
+                            .help("Heal or clone away spots and blemishes")
                         Menu {
                             Button("Fit") { model.zoom = .fit }
                             Divider()
@@ -432,6 +434,9 @@ struct ZoomableImage: View {
                         CropOverlay(frameSize: size)
                     } else if model.comparing {
                         CompareDivider(imageSize: size, pixelExact: model.imageIsZoomed)
+                    } else if model.isRemovingSpots {
+                        SpotOverlay(toView: { toView($0, in: geo.size, frame: size) },
+                                    toImage: { toImage($0, in: geo.size, frame: size) })
                     } else if model.selectedLocal != nil {
                         LocalShapeOverlay(toView: { toView($0, in: geo.size, frame: size) },
                                           toImage: { toImage($0, in: geo.size, frame: size) })

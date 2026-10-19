@@ -357,6 +357,37 @@ actor Engine {
         _ = try await request(body)
     }
 
+    // MARK: Spots (darktable's retouch module)
+
+    struct Spot: Decodable, Identifiable, Equatable, Sendable {
+        let id: Int
+        var x, y, r, sx, sy: Double
+        var clone: Bool
+        var center: CGPoint { CGPoint(x: x, y: y) }
+        var source: CGPoint { CGPoint(x: sx, y: sy) }
+    }
+    struct SpotsReply: Decodable {
+        let spots: [Spot]
+        var added: Int? = nil
+        var modules: [EngineModule]? = nil
+    }
+
+    func spots() async throws -> [Spot] { try await request(["cmd": "spots"], as: SpotsReply.self).spots }
+
+    /// a spot healed (or cloned) from `source`, in output pixels
+    func addSpot(at c: CGPoint, radius: Double, source: CGPoint, clone: Bool) async throws -> SpotsReply {
+        try await request(["cmd": "add_spot", "x": c.x, "y": c.y, "r": radius, "sx": source.x, "sy": source.y, "clone": clone],
+                          as: SpotsReply.self)
+    }
+
+    func moveSpot(_ s: Spot) async throws {
+        _ = try await request(["cmd": "move_spot", "id": s.id, "x": s.x, "y": s.y, "r": s.r, "sx": s.sx, "sy": s.sy])
+    }
+
+    func removeSpot(_ id: Int) async throws -> [Spot] {
+        try await request(["cmd": "remove_spot", "id": id], as: SpotsReply.self).spots
+    }
+
     func renameInstance(_ module: String, to name: String) async throws -> [EngineModule] {
         try await request(["cmd": "rename_instance", "module": module, "name": name], as: ModulesReply.self).modules
     }

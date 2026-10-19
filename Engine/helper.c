@@ -1635,6 +1635,185 @@ static void _cmd_to_output(JsonObject *o)
   _ok_done(b);
 }
 
+// ---- Spot removal: darktable's retouch module, heal or clone, with circles.
+// retouch keeps its own list of shapes in its params (rt_forms), which its
+// GUI fills in as shapes are drawn (rt_resynch_params); headless, the engine
+// does. Its form data, as retouch.c declares it in darktable 5.6.2:
+typedef struct
+{
+  dt_mask_id_t formid;
+  int scale;
+  int algorithm;   // 1 clone, 2 heal, 3 blur, 4 fill
+  int blur_type;
+  float blur_radius;
+  int fill_mode;
+  float fill_color[3];
+  float fill_brightness;
+  int distort_mode;
+} _rt_form_t;
+#define RT_FORMS 300
+
+static _rt_form_t *_rt_forms(dt_iop_module_t *m)
+{
+  dt_introspection_field_t *f = m ? _find_field(m, "rt_forms") : NULL;
+  if(!f || f->header.size != sizeof(_rt_form_t) * RT_FORMS) return NULL;
+  return (_rt_form_t *)((char *)m->params + f->header.offset);
+}
+
+static dt_iop_module_t *_retouch(void)
+{
+  for(GList *l = H.edit.dev.iop; l; l = g_list_next(l))
+  {
+    dt_iop_module_t *m = l->data;
+    if(!strcmp(m->op, "retouch") && m->multi_priority == 0) return m;
+  }
+  return NULL;
+}
+
+// a spot's centre, radius and source from output pixels into the circle
+static void _place_spot(dt_masks_form_t *form, JsonObject *o)
+{
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+  const float x = json_object_get_double_member(o, "x"), y = json_object_get_double_member(o, "y");
+  const float r = json_object_get_double_member(o, "r");
+  float pts[6] = { x, y, x + r, y,
+                   json_object_get_double_member(o, "sx"), json_object_get_double_member(o, "sy") };
+  _to_input(pts, 3);
+  dt_masks_point_circle_t *c = form->points->data;
+  c->center[0] = pts[0] / iw;
+  c->center[1] = pts[1] / ih;
+  c->radius = CLAMP(hypotf(pts[2] - pts[0], pts[3] - pts[1]) / fminf(iw, ih), 0.0005f, 0.5f);
+  // a soft edge, half the radius again, as darktable's spot tools start
+  c->border = c->radius * 0.5f;
+  form->source[0] = pts[4] / iw;
+  form->source[1] = pts[5] / ih;
+}
+
+static void _rebuild_pipe(void)
+{
+  dt_dev_pixelpipe_cleanup_nodes(&H.edit.pipe);
+  dt_dev_pixelpipe_create_nodes(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_synch_all(&H.edit.pipe, &H.edit.dev);
+  dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
+  H.edit.dirty = TRUE;
+}
+
+static void _add_spots(JsonBuilder *b)
+{
+  dt_iop_module_t *m = _retouch();
+  _rt_form_t *rt = _rt_forms(m);
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight, mind = fminf(iw, ih);
+  json_builder_set_member_name(b, "spots");
+  json_builder_begin_array(b);
+  for(int i = 0; rt && m->enabled && i < RT_FORMS && rt[i].formid; i++)
+  {
+    dt_masks_form_t *form = dt_masks_get_from_id(&H.edit.dev, rt[i].formid);
+    if(!form || !(form->type & DT_MASKS_CIRCLE) || !form->points) continue;
+    const dt_masks_point_circle_t *c = form->points->data;
+    float pts[6] = { c->center[0] * iw, c->center[1] * ih, c->center[0] * iw + c->radius * mind, c->center[1] * ih,
+                     form->source[0] * iw, form->source[1] * ih };
+    _to_output(pts, 3);
+    json_builder_begin_object(b);
+    json_builder_set_member_name(b, "id");
+    json_builder_add_int_value(b, rt[i].formid);
+    json_builder_set_member_name(b, "x");
+    json_builder_add_double_value(b, pts[0]);
+    json_builder_set_member_name(b, "y");
+    json_builder_add_double_value(b, pts[1]);
+    json_builder_set_member_name(b, "r");
+    json_builder_add_double_value(b, hypotf(pts[2] - pts[0], pts[3] - pts[1]));
+    json_builder_set_member_name(b, "sx");
+    json_builder_add_double_value(b, pts[4]);
+    json_builder_set_member_name(b, "sy");
+    json_builder_add_double_value(b, pts[5]);
+    json_builder_set_member_name(b, "clone");
+    json_builder_add_boolean_value(b, rt[i].algorithm == 1);
+    json_builder_end_object(b);
+  }
+  json_builder_end_array(b);
+}
+
+// {"cmd":"spots"}: the spots, in output pixels
+static void _cmd_spots(void)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  JsonBuilder *b = _ok();
+  _add_spots(b);
+  _ok_done(b);
+}
+
+// {"cmd":"add_spot","x":..,"y":..,"r":..,"sx":..,"sy":..,"clone":false}, output pixels:
+// a circle healed (or cloned) from the source, retouch switched on
+static void _cmd_add_spot(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _retouch();
+  _rt_form_t *rt = _rt_forms(m);
+  if(!rt) return _error("darktable's retouch module isn't as expected");
+  int slot = 0;
+  while(slot < RT_FORMS && rt[slot].formid) slot++;
+  if(slot == RT_FORMS) return _error("retouch holds 300 spots at most");
+  dt_masks_form_t *form = dt_masks_create(DT_MASKS_CIRCLE | DT_MASKS_CLONE);
+  form->points = g_list_append(form->points, calloc(1, sizeof(dt_masks_point_circle_t)));
+  _place_spot(form, o);
+  dt_masks_gui_form_save_creation(&H.edit.dev, m, form, NULL);
+  memset(&rt[slot], 0, sizeof(_rt_form_t));
+  rt[slot].formid = form->formid;
+  rt[slot].algorithm = json_object_get_boolean_member_with_default(o, "clone", FALSE) ? 1 : 2;
+  rt[slot].distort_mode = 2;
+  // into the history with its shapes: darktable records masks history only
+  // with its GUI attached, and moving through the history (undo) rebuilds the
+  // shapes from it, which dropped the spot
+  dt_dev_add_masks_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
+  _commit(m, TRUE);
+  _rebuild_pipe();
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "added");
+  json_builder_add_int_value(b, form->formid);
+  _add_spots(b);
+  _add_modules(b);
+  _ok_done(b);
+}
+
+// {"cmd":"move_spot","id":..,"x":..,"y":..,"r":..,"sx":..,"sy":..}
+static void _cmd_move_spot(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _retouch();
+  dt_masks_form_t *form = m ? dt_masks_get_from_id(&H.edit.dev, json_object_get_int_member_with_default(o, "id", 0)) : NULL;
+  if(!form || !(form->type & DT_MASKS_CIRCLE)) return _error("no such spot");
+  _place_spot(form, o);
+  _shape_changed(m);
+  JsonBuilder *b = _ok();
+  _ok_done(b);
+}
+
+// {"cmd":"remove_spot","id":..}
+static void _cmd_remove_spot(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _retouch();
+  _rt_form_t *rt = _rt_forms(m);
+  const dt_mask_id_t id = json_object_get_int_member_with_default(o, "id", 0);
+  if(!rt || !id) return _error("no such spot");
+  dt_masks_form_t *grp = dt_masks_get_from_id(&H.edit.dev, m->blend_params->mask_id);
+  for(GList *l = grp ? grp->points : NULL; l; l = g_list_next(l))
+  {
+    dt_masks_point_group_t *gp = l->data;
+    if(gp->formid == id) { grp->points = g_list_delete_link(grp->points, l); free(gp); break; }
+  }
+  int n = 0;
+  for(int i = 0; i < RT_FORMS; i++)
+    if(rt[i].formid && rt[i].formid != id) rt[n++] = rt[i];
+  for(; n < RT_FORMS; n++) memset(&rt[n], 0, sizeof(_rt_form_t));
+  dt_dev_add_masks_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
+  _commit(m, TRUE);
+  _rebuild_pipe();
+  JsonBuilder *b = _ok();
+  _add_spots(b);
+  _ok_done(b);
+}
+
 // {"cmd":"rename_instance","module":"exposure:1","name":"..."}: an instance's
 // name, kept in the history and the sidecar
 static void _cmd_rename_instance(JsonObject *o)
@@ -3165,6 +3344,10 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "lens_lenses")) _cmd_lens_lenses(o);
     else if(!strcmp(cmd, "set_text")) _cmd_set_text(o);
     else if(!strcmp(cmd, "add_local")) _cmd_add_local(o);
+    else if(!strcmp(cmd, "spots")) _cmd_spots();
+    else if(!strcmp(cmd, "add_spot")) _cmd_add_spot(o);
+    else if(!strcmp(cmd, "move_spot")) _cmd_move_spot(o);
+    else if(!strcmp(cmd, "remove_spot")) _cmd_remove_spot(o);
     else if(!strcmp(cmd, "set_shape")) _cmd_set_shape(o);
     else if(!strcmp(cmd, "shape")) _cmd_shape(o);
     else if(!strcmp(cmd, "to_output")) _cmd_to_output(o);

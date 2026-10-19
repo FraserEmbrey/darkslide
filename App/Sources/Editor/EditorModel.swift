@@ -61,6 +61,7 @@ final class EditorModel {
     private static var smartAlbumsTested = false
     private static var exportPresetTested = false
     private static var shortcutsTested = false
+    private static var spotsTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -146,6 +147,20 @@ final class EditorModel {
     var isFindingSubject = false
     var pendingShape: ShapeEdit?
     var sendingShape = false
+    /// Spot removal (darktable's retouch): on while its tool is, the spots on
+    /// the photo in output pixels, the one selected, and the size for new ones
+    /// as a fraction of the photo's shorter side
+    var isRemovingSpots = false {
+        didSet { if isRemovingSpots != oldValue { selectedSpot = nil; if isRemovingSpots { Task { await fetchSpots() } } } }
+    }
+    private(set) var spots: [Engine.Spot] = []
+    var selectedSpot: Int?
+    var spotSize = UserDefaults.standard.object(forKey: "SpotSize") as? Double ?? 0.02 {
+        didSet { UserDefaults.standard.set(spotSize, forKey: "SpotSize") }
+    }
+    var spotClones = false
+    private var pendingSpot: Engine.Spot?
+    private var sendingSpot = false
     /// the folder of film-look LUTs (Settings, or the Look card) and what's in it
     var lutFolder: URL? = UserDefaults.standard.url(forKey: "LUTFolder") {
         didSet {
@@ -1670,6 +1685,52 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
                 }
             }
+            // TestSpots: launch argument (-TestSpots YES) for testing: heals a spot in the
+            // middle, moves it, then removes it, logging the spots and the middle's brightness
+            if UserDefaults.standard.bool(forKey: "TestSpots"), !Self.spotsTested {
+                Self.spotsTested = true
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide spots: \(s)\n".data(using: .utf8)!) }
+                    try? await Task.sleep(for: .seconds(4))
+                    isRemovingSpots = true
+                    let c = CGPoint(x: imageSize.width / 2, y: imageSize.height / 2)
+                    addSpot(at: c)
+                    try? await Task.sleep(for: .seconds(3))
+                    log("added \(spots.map { "\($0.id) at \(Int($0.x)),\(Int($0.y)) r \(Int($0.r)) from \(Int($0.sx)),\(Int($0.sy))" }), retouch on \(modules.first { $0.op == "retouch" }?.enabled ?? false), error \(errorMessage ?? "none")")
+                    if var s = spots.first {
+                        s.x += 100; s.sx += 100
+                        moveSpot(s)
+                        try? await Task.sleep(for: .seconds(3))
+                        await fetchSpots()
+                        log("moved \(spots.map { "\(Int($0.x)),\(Int($0.y))" })")
+                        removeSpot(s.id)
+                        try? await Task.sleep(for: .seconds(3))
+                        log("removed, \(spots.count) left")
+                        addSpot(at: c)
+                        try? await Task.sleep(for: .seconds(3))
+                        log("added again: \(spots.count)")
+                        // at 100% on the spot, with and without retouch, to look at
+                        zoomCenter = CGPoint(x: 0.5, y: 0.5)
+                        zoom = .scale(1)
+                        try? await Task.sleep(for: .seconds(3))
+                        @MainActor func patch() -> [UInt8] {
+                            guard let img = image, let ctx = CGContext(data: nil, width: 200, height: 200, bitsPerComponent: 8, bytesPerRow: 200,
+                                                                         space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else { return [] }
+                            ctx.draw(img, in: CGRect(x: -(img.width / 2 - 100), y: -(img.height / 2 - 100), width: img.width, height: img.height))
+                            return Array(UnsafeBufferPointer(start: ctx.data!.assumingMemoryBound(to: UInt8.self), count: 200 * 200))
+                        }
+                        let healed = patch()
+                        log("zoomed: healed, frame \(image?.width ?? 0)x\(image?.height ?? 0), frames \(frameID)")
+                        if let r = modules.first(where: { $0.op == "retouch" }) {
+                            setEnabled(false, module: r.key)
+                            try? await Task.sleep(for: .seconds(3))
+                            let plain = patch()
+                            let changed = zip(healed, plain).filter { abs(Int($0) - Int($1)) > 8 }.count
+                            log("zoomed: unhealed, frames \(frameID), \(changed) of 40000 middle pixels differ")
+                        }
+                    }
+                }
+            }
             // TestShortcuts: launch argument (-TestShortcuts YES) for testing: runs the
             // Export with Preset action on the folder's photos, as Shortcuts would
             if UserDefaults.standard.bool(forKey: "TestShortcuts"), !Self.shortcutsTested {
@@ -1828,6 +1889,8 @@ final class EditorModel {
             cameraWhite = CameraWhite(xyzToCam: reply.xyzToCam, camToXyz: reply.camToXyz)
             whitePickTarget = nil
             whitePickNote = nil
+            isRemovingSpots = false
+            spots = []
             photosAsset = openingPhotosAsset
             modules = reply.modules
             panBackdrop = nil
@@ -2327,6 +2390,7 @@ final class EditorModel {
                     }
                     // the shape may have changed with an undo, or been placed by the engine
                     if selectedLocal != nil, pendingShape == nil, !sendingShape { await fetchLocalShape() }
+                    if isRemovingSpots, pendingSpot == nil, !sendingSpot, crop == nil { await fetchSpots() }
                     // the crop or rotation may have changed
                     if showFocusPoint, crop == nil { await fetchFocusOutline() }
                     frameStraighten = renderStraighten
@@ -3319,6 +3383,7 @@ extension EditorModel {
         cropAspect = .free
         comparing = false
         zoom = .fit
+        isRemovingSpots = false
         isCropping = true
         requestRender()
     }
@@ -4019,6 +4084,69 @@ extension EditorModel {
                 }
                 requestRender()
             }
+        }
+    }
+}
+
+// MARK: - Spot removal
+
+extension EditorModel {
+    func fetchSpots() async {
+        guard let engine, let found = try? await engine.spots() else { return }
+        if pendingSpot == nil, !sendingSpot { spots = found }
+    }
+
+    /// A spot where the photo was clicked (output pixels), healed from the
+    /// nearby patch whose surroundings match best (SpotSource).
+    func addSpot(at c: CGPoint) {
+        guard let engine, url != nil else { return }
+        let r = spotSize * min(imageSize.width, imageSize.height)
+        let source = SpotSource.find(for: c, radius: r, in: image, shown: imageIsZoomed ? shownCrop : nil, size: imageSize)
+        Task {
+            await settleEdits()
+            recordUndoStep(label: spotClones ? "Clone Spot" : "Heal Spot")
+            do {
+                let reply = try await engine.addSpot(at: c, radius: r, source: source, clone: spotClones)
+                if let m = reply.modules { modules = m }
+                spots = reply.spots
+                selectedSpot = reply.added
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't remove the spot: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// A drag on a spot or its source: only the latest goes to the engine.
+    func moveSpot(_ s: Engine.Spot) {
+        guard let engine, let i = spots.firstIndex(where: { $0.id == s.id }) else { return }
+        spots[i] = s
+        recordUndoStep(label: "Move Spot", gesture: "spot:\(s.id)")
+        hasUnsavedChanges = true
+        pendingSpot = s
+        guard !sendingSpot else { return }
+        sendingSpot = true
+        Task {
+            defer { sendingSpot = false }
+            await settleEdits()
+            while let e = pendingSpot {
+                pendingSpot = nil
+                try? await engine.moveSpot(e)
+                requestRender()
+            }
+        }
+    }
+
+    func removeSpot(_ id: Int) {
+        guard let engine else { return }
+        if selectedSpot == id { selectedSpot = nil }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "Remove Spot")
+            if let left = try? await engine.removeSpot(id) { spots = left }
+            hasUnsavedChanges = true
+            requestRender()
         }
     }
 }

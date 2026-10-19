@@ -166,6 +166,9 @@ struct HDRDetailsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             CardTitle(title: "HDR", isExpanded: $isExpanded)
+            if isExpanded, model.viewHDR {
+                DisplayHDRStatus()
+            }
             if isExpanded, let a = model.hdrAnalysis {
                 HStack {
                     Text("Export format")
@@ -298,5 +301,30 @@ private struct LegendRow: View {
             Rectangle().fill(color).frame(width: 12, height: 2)
             Text(text)
         }
+    }
+}
+
+/// What this display can show of HDR in its current preset, as Pixelmator
+/// reports it: full, limited or none.
+struct DisplayHDRStatus: View {
+    @Environment(EditorModel.self) private var model
+
+    static func stops(_ headroom: Double) -> String {
+        "+\(log2(max(headroom, 1)).formatted(.number.precision(.fractionLength(0...1)))) stops"
+    }
+
+    var body: some View {
+        let (text, symbol, color): (String, String, Color) = switch model.displayHDRSupport {
+        case .full:
+            ("This display has full HDR support, up to \(Self.stops(model.displayPotentialHeadroom)).", "checkmark.circle", .secondary)
+        case .limited:
+            ("This display has limited HDR support, up to \(Self.stops(model.displayPotentialHeadroom)) and less when it's bright.", "sun.max", .secondary)
+        case .none:
+            (model.displayHasShownHDR ? "This display's current preset doesn't show HDR." : "This display can't show HDR.",
+             "exclamationmark.triangle", .orange)
+        }
+        Label(text, systemImage: symbol)
+            .font(.caption)
+            .foregroundStyle(color)
     }
 }

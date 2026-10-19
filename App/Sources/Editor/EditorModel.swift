@@ -328,6 +328,7 @@ final class EditorModel {
         didSet {
             guard viewHDR != oldValue else { return }
             watchHeadroom()
+            noteLimitedHDR()
             if viewHDR { useHDRProfileIfSDR() }
             if !switchingViewForPhoto { viewHDRFollowsPhoto = false }
             if url != nil { requestRender() }
@@ -471,13 +472,47 @@ final class EditorModel {
     /// A Pro Display XDR counts from the start.
     private(set) var displayHasShownHDR = false
 
-    private static var screenCanShowHDR: Bool {
-        (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
+    /// The most this display can show in its current preset, × SDR white,
+    /// however bright the screen is: 16 for XDR, 10 for HDR Video, about 5
+    /// for Apple Display (P3-600 nits), 1 without HDR.
+    private(set) var displayPotentialHeadroom = EditorModel.screenPotentialHeadroom
+    /// briefly shown on switching to HDR on a display with limited HDR
+    private(set) var showLimitedHDRNote = false
+    private var limitedHDRNoteTask: Task<Void, Never>?
+
+    enum DisplayHDRSupport { case full, limited, none }
+
+    /// As Pixelmator puts it: full from 3 stops (XDR, HDR Video), limited
+    /// below that (Apple Display, whose headroom shrinks as it gets brighter)
+    var displayHDRSupport: DisplayHDRSupport {
+        displayPotentialHeadroom >= 8 ? .full : displayPotentialHeadroom > 1 ? .limited : .none
+    }
+
+    private static var screenPotentialHeadroom: Double {
+        Double(NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
+    }
+
+    private static var screenCanShowHDR: Bool { screenPotentialHeadroom > 1 }
+
+    private func noteLimitedHDR() {
+        limitedHDRNoteTask?.cancel()
+        guard viewHDR, displayHDRSupport == .limited else { showLimitedHDRNote = false; return }
+        showLimitedHDRNote = true
+        limitedHDRNoteTask = Task {
+            try? await Task.sleep(for: .seconds(6))
+            if !Task.isCancelled { showLimitedHDRNote = false }
+        }
     }
 
     private func updateDisplayHDR() {
         let canShow = Self.screenCanShowHDR
         if canShow != displayCanShowHDR { displayCanShowHDR = canShow }
+        let potential = Self.screenPotentialHeadroom
+        if potential != displayPotentialHeadroom {
+            let wasLimited = displayHDRSupport == .limited
+            displayPotentialHeadroom = potential
+            if displayHDRSupport == .limited, !wasLimited { noteLimitedHDR() }
+        }
         guard let screen = NSScreen.main,
               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
               let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue(),

@@ -267,8 +267,18 @@ struct CanvasView: View {
             .overlay(alignment: .top) {
                 if model.viewHDR, !model.displayCanShowHDR, model.url != nil, !model.showsClipping {
                     NoHDRDisplayBanner(presetIsTheCause: model.displayHasShownHDR).padding(.top, 12)
+                } else if model.showLimitedHDRNote, model.url != nil, !model.showsClipping {
+                    Label("This display has limited HDR support: up to \(DisplayHDRStatus.stops(model.displayPotentialHeadroom)), less when it's bright",
+                          systemImage: "sun.max")
+                        .font(.callout)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 12)
+                        .transition(.opacity)
                 }
             }
+            .animation(.default, value: model.showLimitedHDRNote)
             .overlay(alignment: .top) {
                 // what the Option-drag clipping view shows
                 if model.showsClipping {

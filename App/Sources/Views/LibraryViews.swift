@@ -77,12 +77,44 @@ struct ItemBadges: View {
 }
 
 /// Right-click menu for a photo: its exports, and Finder.
+/// A stack's count on its pick: click to open or close the stack (⇧K).
+struct StackBadge: View {
+    @Environment(EditorModel.self) private var model: EditorModel?
+    let item: LibraryItem
+
+    var body: some View {
+        if item.stackSize > 1, item.isStackPick {
+            Button { model?.library.toggleStack(item.url) } label: {
+                HStack(spacing: 2) {
+                    Image(systemName: item.stackOpen ? "chevron.left" : "square.stack")
+                    Text("\(item.stackSize)")
+                }
+                .font(.system(size: 9, weight: .semibold))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .help(item.stackOpen ? "Close the stack (⇧K)" : "\(item.stackSize) versions: open the stack (⇧K)")
+        }
+    }
+}
+
 struct ItemMenu: View {
     @Environment(EditorModel.self) private var model: EditorModel?
     let item: LibraryItem
 
     var body: some View {
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url.photoFile]) }
+        if let model, item.stackSize > 1 {
+            Divider()
+            Button(item.stackOpen ? "Close Stack" : "Open Stack") { model.library.toggleStack(item.url) }
+            if item.stackOpen, !item.isStackPick {
+                Button("Pick for Stack") { model.library.pickForStack(item.url) }
+                    .help("Show this version when the stack is closed")
+            }
+        }
         if let model {
             Divider()
             // on a selected photo, paste goes to every selected one
@@ -340,8 +372,10 @@ struct LibraryGrid: View {
                 .frame(maxWidth: .infinity)
                 .opacity(model.library.rating(of: item.url) < 0 ? 0.4 : 1)
                 .overlay(alignment: .bottomTrailing) { ItemBadges(item: item).padding(4) }
+                .overlay(alignment: .topLeading) { StackBadge(item: item).padding(4) }
                 .padding(8)
-                .background(selected ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.04),
+                // an open stack's photos share a darker ground, as Aperture's did
+                .background(selected ? Color.accentColor.opacity(0.3) : Color.primary.opacity(item.stackOpen ? 0.12 : 0.04),
                             in: RoundedRectangle(cornerRadius: 8))
             VStack(spacing: 1) {
                 Text(item.name)

@@ -219,6 +219,8 @@ struct AppCommands: Commands {
                 set: { _ in model.showLibrary(as: .cull) }))
                 .keyboardShortcut("3", modifiers: [.command, .option])
                 .disabled(model.library.source == nil && model.library.lastFolder == nil)
+            Button("Open All Stacks") { model.library.setAllStacks(open: true) }
+            Button("Close All Stacks") { model.library.setAllStacks(open: false) }
             Toggle("Hide Rejected Photos", isOn: Binding(
                 get: { model.library.ratingFilter == .notRejected },
                 set: { model.library.ratingFilter = $0 ? .notRejected : .all }))
@@ -327,6 +329,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch event.keyCode {
             case 5:   // G
                 model.toggleLibrary()
+                return nil
+            case 40 where event.modifierFlags.contains(.shift):   // ⇧K: open or close a stack, as in Aperture
+                guard model.showingLibrary, let sel = model.library.selection, model.library.isStacked(sel) else { return event }
+                model.library.toggleStack(sel)
                 return nil
             case 8:   // C: crop, and C again to finish
                 guard !model.showingLibrary, model.url != nil else { return event }

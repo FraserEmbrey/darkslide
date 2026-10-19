@@ -62,6 +62,7 @@ final class EditorModel {
     private static var exportPresetTested = false
     private static var shortcutsTested = false
     private static var spotsTested = false
+    private static var stacksTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -848,6 +849,8 @@ final class EditorModel {
         showOpeningPreview(for: url)
         // stay in the folder or collection being worked through if it has this photo
         // (a Photos original's cache folder is never shown)
+        // a version in a closed stack: open the stack, so it's in the filmstrip
+        library.reveal(url)
         if openingPhotosAsset == nil, !library.contains(url) { library.show(folder: url.deletingLastPathComponent()) }
         showingLibrary = false
         do {
@@ -1683,6 +1686,37 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("committed")
                     await undo()
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
+                }
+            }
+            // TestStacks: launch argument (-TestStacks YES) for testing: two versions of the
+            // photo, then its stack closed, open, picked and revealed, logging the library
+            if UserDefaults.standard.bool(forKey: "TestStacks"), !Self.stacksTested {
+                Self.stacksTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let shown = library.items.map { "\($0.name)\($0.stackSize > 1 ? " [\($0.stackSize)\($0.stackOpen ? " open" : "")\($0.isStackPick ? " pick" : "")]" : "")" }
+                        FileHandle.standardError.write("Darkslide stacks: \(s): \(shown), selected \(library.selection?.lastPathComponent ?? "-")\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    for n in 1...2 {
+                        try? PhotoVersion.blankSidecar.write(toFile: PhotoVersion.url(of: url, number: n).path + ".xmp", atomically: true, encoding: .utf8)
+                    }
+                    library.rescan()
+                    try? await Task.sleep(for: .seconds(2))
+                    log("closed")
+                    library.toggleStack(url)
+                    log("opened")
+                    library.pickForStack(PhotoVersion.url(of: url, number: 2))
+                    library.selection = PhotoVersion.url(of: url, number: 1)
+                    library.toggleStack(url)
+                    log("picked version 3, closed with version 2 selected")
+                    await open(PhotoVersion.url(of: url, number: 1))
+                    try? await Task.sleep(for: .seconds(3))
+                    log("opened version 2 in the editor")
+                    library.setAllStacks(open: false)
+                    log("all closed")
+                    library.pickForStack(url)
+                    for n in 1...2 { try? FileManager.default.removeItem(atPath: PhotoVersion.url(of: url, number: n).path + ".xmp") }
                 }
             }
             // TestSpots: launch argument (-TestSpots YES) for testing: heals a spot in the

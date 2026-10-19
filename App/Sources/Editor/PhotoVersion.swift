@@ -92,6 +92,8 @@ extension EditorModel {
                 errorMessage = "Couldn't make a version: \(error.localizedDescription)"
                 return
             }
+            // its stack open, so the new version shows beside the others
+            library.openStack(of: url)
             library.rescan()
             await open(version)
         }
@@ -110,6 +112,8 @@ extension EditorModel {
                 errorMessage = "Couldn't make a version: \(error.localizedDescription)"
                 return
             }
+            // its stack open, so the new version shows beside the others
+            library.openStack(of: url)
             library.rescan()
             await open(version)
         }

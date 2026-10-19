@@ -30,12 +30,23 @@ final class Catalog {
 
     /// saved searches over the library's folders
     var smartAlbums: [SmartAlbum] = [] { didSet { scheduleSave() } }
+    /// the version each stack shows when closed, by the original's path (PhotoVersion);
+    /// a stack not here shows its original
+    private(set) var stackPicks: [String: String] = [:]
+
+    func stackPick(_ stack: String) -> String? { stackPicks[stack] }
+
+    func setStackPick(_ pick: String?, for stack: String) {
+        stackPicks[stack] = pick
+        scheduleSave()
+    }
 
     private struct Stored: Codable {
         var folders: [String]
         var records: [String: Record]
         var remount: [String: String]?
         var smartAlbums: [SmartAlbum]?
+        var stackPicks: [String: String]?
     }
 
     // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone
@@ -51,6 +62,7 @@ final class Catalog {
         records = stored.records
         remount = stored.remount ?? [:]
         smartAlbums = stored.smartAlbums ?? []
+        stackPicks = stored.stackPicks ?? [:]
     }
 
     // MARK: Folders
@@ -187,7 +199,8 @@ final class Catalog {
 
     func save() {
         guard let file else { return }
-        let stored = Stored(folders: folders.map(\.path), records: records, remount: remount, smartAlbums: smartAlbums)
+        let stored = Stored(folders: folders.map(\.path), records: records, remount: remount, smartAlbums: smartAlbums,
+                            stackPicks: stackPicks)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(stored) { try? data.write(to: file, options: .atomic) }
     }

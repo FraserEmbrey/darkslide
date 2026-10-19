@@ -23,6 +23,14 @@ struct LibraryItem: Identifiable, Hashable {
     var hasEdit: Bool
     /// darktable's version number (PhotoVersion), 0 for the original
     var version = 0
+    /// the original's path: an original and its versions are one stack
+    var stack: String { version > 0 ? url.photoFile.path : url.path }
+    /// how many photos its stack holds, as shown (1: not stacked)
+    var stackSize = 1
+    /// its stack is open, showing every version
+    var stackOpen = false
+    /// it's the photo its stack shows when closed
+    var isStackPick = false
 }
 
 /// What the grid and filmstrip show: a folder, or a collection gathered
@@ -128,8 +136,88 @@ final class Library {
     /// Photos the filter would hide stay while they're the current photo, so
     /// rating one doesn't pull it from under you; they go on the next change.
     private func applyFilter() {
-        guard ratingFilter != .all else { items = allItems; return }
-        items = allItems.filter { ratingFilter.shows(ratings[$0.url] ?? 0) || $0.url == selection }
+        let shown = ratingFilter == .all ? allItems
+            : allItems.filter { ratingFilter.shows(ratings[$0.url] ?? 0) || $0.url == selection }
+        items = stacked(shown)
+    }
+
+    // MARK: Stacks
+
+    /// An original and its versions are a stack, as in Aperture: closed, the
+    /// grid and filmstrip show its pick (the original unless another was
+    /// picked) with a count; open, every version. Stacks start closed.
+    private(set) var openStacks: Set<String> = []
+
+    private func stacked(_ shown: [LibraryItem]) -> [LibraryItem] {
+        // only versions make stacks, so most folders have none to look at
+        guard shown.contains(where: { $0.version > 0 }) else { return shown }
+        let groups = Dictionary(grouping: shown, by: \.stack)
+        var out: [LibraryItem] = []
+        for var item in shown {
+            guard let group = groups[item.stack], group.count > 1 else { out.append(item); continue }
+            let pick = catalog.stackPick(item.stack).flatMap { p in group.first { $0.url.path == p } } ?? group[0]
+            item.stackSize = group.count
+            item.isStackPick = item.url == pick.url
+            if openStacks.contains(item.stack) {
+                item.stackOpen = true
+                out.append(item)
+            } else if item.isStackPick {
+                out.append(item)
+            }
+        }
+        return out
+    }
+
+    /// the stack a photo is in, if it's in one that's showing
+    private func stack(of url: URL) -> String? {
+        allItems.first { $0.url == url }.map(\.stack).flatMap { key in
+            allItems.filter { $0.stack == key }.count > 1 ? key : nil
+        }
+    }
+
+    func isStacked(_ url: URL) -> Bool { stack(of: url) != nil }
+    func isStackOpen(_ url: URL) -> Bool { stack(of: url).map(openStacks.contains) ?? false }
+
+    func toggleStack(_ url: URL) {
+        guard let key = stack(of: url) else { return }
+        setStack(key, open: !openStacks.contains(key))
+    }
+
+    /// Opens the stack a photo is in, so it shows (a version opened in the editor).
+    func reveal(_ url: URL) {
+        if let key = stack(of: url), !openStacks.contains(key) { setStack(key, open: true) }
+    }
+
+    /// opens a photo's stack before its versions are scanned (a version just made)
+    func openStack(of original: URL) {
+        openStacks.insert(original.photoFile.path)
+        applyFilter()
+    }
+
+    func setAllStacks(open: Bool) {
+        openStacks = open ? Set(allItems.filter { $0.version > 0 }.map(\.stack)) : []
+        afterStackChange()
+    }
+
+    /// the photo a closed stack shows
+    func pickForStack(_ url: URL) {
+        guard let key = stack(of: url) else { return }
+        catalog.setStackPick(url.path == key ? nil : url.path, for: key)
+        applyFilter()
+    }
+
+    private func setStack(_ key: String, open: Bool) {
+        if open { openStacks.insert(key) } else { openStacks.remove(key) }
+        afterStackChange()
+    }
+
+    /// a selection that's gone into a closed stack moves to its pick
+    private func afterStackChange() {
+        applyFilter()
+        if let sel = selection, !items.contains(where: { $0.url == sel }),
+           let key = allItems.first(where: { $0.url == sel })?.stack {
+            selection = items.first { $0.stack == key }?.url
+        }
     }
 
     /// Reads every photo's rating, off the main thread.

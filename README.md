@@ -299,7 +299,7 @@ Lens correction shows the lens darktable matched (the engine now sends modules' 
 
 ## Building
 
-Needs Xcode 16 or later, Homebrew, and these formulae:
+Needs an Apple silicon Mac with Xcode 26 or later, Homebrew, and these formulae:
 
 ```fish
 brew install gtk+3 json-glib librsvg exiv2 lensfun pugixml potrace libomp pkgconf intltool cmake ninja

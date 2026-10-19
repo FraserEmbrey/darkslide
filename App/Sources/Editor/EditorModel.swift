@@ -458,13 +458,48 @@ final class EditorModel {
     /// (EDRImageView's probe layer makes macOS report the true figure).
     private(set) var displayHeadroom = Double(NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
     private var headroomWatch: Task<Void, Never>?
+    /// Whether this display can show HDR in its current mode. An SDR screen,
+    /// or a reference preset without HDR (Photography P3-D65), reports a
+    /// potential headroom of 1; XDR and Apple Display presets report more,
+    /// as do the HDR reference presets. HDR viewing stays available, as in
+    /// Photos, but the canvas says why the highlights are clipped.
+    private(set) var displayCanShowHDR = EditorModel.screenCanShowHDR
+    /// This display has shown HDR before, so it's an SDR preset (Photography,
+    /// Internet & Web) stopping it, which Displays settings can change. macOS
+    /// doesn't say what the hardware can do, only what the current preset
+    /// allows, so the app remembers each display it has seen with headroom.
+    /// A Pro Display XDR counts from the start.
+    private(set) var displayHasShownHDR = false
+
+    private static var screenCanShowHDR: Bool {
+        (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
+    }
+
+    private func updateDisplayHDR() {
+        let canShow = Self.screenCanShowHDR
+        if canShow != displayCanShowHDR { displayCanShowHDR = canShow }
+        guard let screen = NSScreen.main,
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+              let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue(),
+              let id = CFUUIDCreateString(nil, uuid) as String? else { return }
+        var known = UserDefaults.standard.stringArray(forKey: "HDRDisplays") ?? []
+        if canShow, !known.contains(id) {
+            known.append(id)
+            UserDefaults.standard.set(known, forKey: "HDRDisplays")
+        }
+        let shown = known.contains(id) || screen.localizedName.contains("XDR")
+        if shown != displayHasShownHDR { displayHasShownHDR = shown }
+    }
 
     private func watchHeadroom() {
         headroomWatch?.cancel()
+        updateDisplayHDR()
         guard viewHDR else { return }
         headroomWatch = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
+                // a display preset changed in System Settings, or the window moved screens
+                updateDisplayHDR()
                 let now = Double(NSScreen.main?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
                 // ignore tiny drift; re-analyse when it moves by more than ~1/20 stop
                 if abs(log2(max(now, 1)) - log2(max(displayHeadroom, 1))) > 0.05 {
@@ -593,6 +628,7 @@ final class EditorModel {
     private var failedStarts = 0
 
     func startEngine() async {
+        updateDisplayHDR()   // remembers this display if it can show HDR now
         // the window's start-up task can run again (opening a file can bring
         // it back), and a second helper would fail on darktable's database lock
         guard !startingEngine, engine == nil else { return }
@@ -1625,7 +1661,7 @@ final class EditorModel {
             if let amount = catalog.aiDenoise(of: url) { await setAIDenoise(amount, restoring: true) }
             // an HDR edit is shown in HDR, on a display that can
             if exportTarget.isHDR, !viewHDR,
-               (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1 {
+               Self.screenCanShowHDR {
                 setViewHDRForPhoto(true)
             }
             requestRender()

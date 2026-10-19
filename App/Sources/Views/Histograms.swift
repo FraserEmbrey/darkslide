@@ -128,7 +128,7 @@ struct PinnedHistogram: View {
                     Text("Peak \(a.peakText)")
                     Text("·")
                     Text("\(a.fractionAboveSDR.formatted(.percent.precision(.fractionLength(0)))) above white")
-                    if a.fractionAboveDisplay > 0 {
+                    if a.fractionAboveDisplay >= HDRAnalysis.beyondDisplayShown {
                         Text("·")
                         Text("\(a.fractionAboveDisplay.formatted(.percent.precision(.fractionLength(1)))) beyond display")
                             .foregroundStyle(.orange)
@@ -254,7 +254,7 @@ struct HDRDetailsCard: View {
                             row("Before the limit", "+\(log2(a.unlimitedPeak).formatted(.number.precision(.fractionLength(1)))) stops")
                         }
                         row("Above reference white", percent(a.fractionAboveSDR))
-                        row("Beyond this display", percent(a.fractionAboveDisplay), warn: a.fractionAboveDisplay > 0)
+                        row("Beyond this display", percent(a.fractionAboveDisplay), warn: a.fractionAboveDisplay >= HDRAnalysis.beyondDisplayShown)
                         row("Near format peak", percent(a.fractionNearPeak), warn: a.fractionNearPeak > 0.05,
                             help: "Within a third of a stop of the format's peak: highlights the tone mapper is compressing hard")
                         row("Clipped by format", percent(a.fractionClipped), warn: a.fractionClipped > 0.001)

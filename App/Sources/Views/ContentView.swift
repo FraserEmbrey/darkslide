@@ -174,9 +174,16 @@ struct ContentView: View {
                 .hidden(model.showingLibrary)
                 ToolbarItem(id: "beyond") {
                     @Bindable var model = model
-                    Toggle("Beyond Display", systemImage: "exclamationmark.triangle", isOn: $model.showHeadroomOverlay)
+                    // orange when part of the photo is brighter than this display can show
+                    let beyond = model.viewHDR ? model.hdrAnalysis?.fractionAboveDisplay ?? 0 : 0
+                    let warn = beyond >= HDRAnalysis.beyondDisplayShown
+                    Toggle("Beyond Display", systemImage: warn ? "exclamationmark.triangle.fill" : "exclamationmark.triangle",
+                           isOn: $model.showHeadroomOverlay)
+                        .foregroundStyle(warn && !model.showHeadroomOverlay ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
                         .disabled(!model.viewHDR)
-                        .help("Highlight areas brighter than this display can show")
+                        .help(warn
+                              ? "\(beyond.formatted(.percent.precision(.fractionLength(1)))) of the photo is brighter than this display can show. Click to highlight it."
+                              : "Highlight areas brighter than this display can show")
                 }
                 .hidden(model.showingLibrary)
     }
@@ -255,6 +262,11 @@ struct CanvasView: View {
             }
             .overlay(alignment: .bottomLeading) {
                 if model.url != nil { ZoomChip().padding(12) }
+            }
+            .overlay(alignment: .top) {
+                if model.viewHDR, !model.displayCanShowHDR, model.url != nil, !model.showsClipping {
+                    NoHDRDisplayBanner(presetIsTheCause: model.displayHasShownHDR).padding(.top, 12)
+                }
             }
             .overlay(alignment: .top) {
                 // what the Option-drag clipping view shows
@@ -677,5 +689,35 @@ private struct WindowSubtitle: View {
         if let ms = model.lastRenderMs { parts.append("\(model.lastRenderWasDraft ? "draft" : "rendered") in \(ms) ms") }
         if model.hasUnsavedChanges { parts.append("edited") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Shown over an HDR view on a display that can't show HDR in its current
+/// mode. macOS doesn't let an app read or change the display preset, so where
+/// the display has shown HDR before (an SDR preset is the cause) it offers
+/// Displays settings, where the preset is chosen; an SDR monitor gets none.
+private struct NoHDRDisplayBanner: View {
+    let presetIsTheCause: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presetIsTheCause ? "This display's current preset doesn't show HDR" : "This display can't show HDR")
+                Text("Highlights above white are clipped here. Exports aren't affected.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if presetIsTheCause {
+                Button("Display Settings…") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 }

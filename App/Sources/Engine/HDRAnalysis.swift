@@ -63,6 +63,8 @@ struct HDRAnalysis: Sendable {
     let peak: Double              // × reference white
     let fractionAboveSDR: Double
     let fractionAboveDisplay: Double
+    /// below this, "beyond display" rounds to 0.0% and isn't worth a warning
+    static let beyondDisplayShown = 0.0005
     let fractionClipped: Double   // at the format's ceiling or outside its gamut
     let fractionNearPeak: Double  // within a third of a stop of the format's peak
     let displayHeadroom: Double

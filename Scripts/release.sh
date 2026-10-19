@@ -86,7 +86,7 @@ It needs an Apple silicon Mac and macOS 26. I've built it around Metal, Core ML 
 
 ## Good to know
 
-- It's version $VERSION, so expect rough edges. darktable does the processing, so the results should be solid. Issues are welcome.
+- It's a vibe-coded project, built quickly in my spare time with Claude Code writing most of the code. darktable does the processing, so the results should be solid, but the app around it hasn't had much review or testing. Expect bugs and keep backups. Issues are welcome.
 - Edits are saved as darktable XMP sidecars next to your photos, so you can open them in darktable.
 - The AI models for Denoise and Rescue Focus aren't included. I'd rather keep the download small and not make anyone install AI they might never use. The first time you use one, it asks before downloading its model (30 to 50 MB).
 

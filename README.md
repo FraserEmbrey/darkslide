@@ -8,6 +8,8 @@ darktable has one of the best raw engines around. On a Mac its interface is GTK,
 
 **[Download the latest release](https://github.com/FraserEmbrey/darkslide/releases/latest).** It needs an Apple silicon Mac and macOS 26. It's version 0.1, so expect rough edges.
 
+To be upfront: this is a vibe-coded project. I built it quickly in my spare time, with Claude Code writing most of the code while I steered and tested it. It does what I need, but it hasn't had the review or testing a real app gets, so expect bugs and keep backups of anything you care about.
+
 ## Contents
 
 - [What I want it to be](#what-i-want-it-to-be)

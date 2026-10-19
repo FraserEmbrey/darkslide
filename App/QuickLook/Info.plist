@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Darkslide Preview</string>
+	<key>CFBundleExecutable</key>
+	<string>DarkslideQuickLook</string>
+	<key>CFBundleIdentifier</key>
+	<string>me.frsr.darkslide.quicklook</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>DarkslideQuickLook</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>QLIsDataBasedPreview</key>
+			<true/>
+			<key>QLSupportedContentTypes</key>
+			<array>
+				<string>com.nikon.raw-image</string>
+				<string>com.nikon.nrw-raw-image</string>
+				<string>com.sony.arw-raw-image</string>
+				<string>com.sony.raw-image</string>
+				<string>com.canon.cr2-raw-image</string>
+				<string>com.canon.cr3-raw-image</string>
+				<string>com.canon.crw-raw-image</string>
+				<string>com.fuji.raw-image</string>
+				<string>com.adobe.raw-image</string>
+				<string>com.olympus.or-raw-image</string>
+				<string>com.olympus.raw-image</string>
+				<string>com.panasonic.rw2-raw-image</string>
+				<string>com.panasonic.raw-image</string>
+				<string>com.pentax.raw-image</string>
+				<string>com.leica.rwl-raw-image</string>
+				<string>com.hasselblad.3fr-raw-image</string>
+				<string>com.hasselblad.fff-raw-image</string>
+			</array>
+			<key>QLSupportsSearchableItems</key>
+			<false/>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.quicklook.preview</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>DarkslideQuickLook.PreviewProvider</string>
+	</dict>
+</dict>
+</plist>

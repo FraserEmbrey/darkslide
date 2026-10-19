@@ -125,6 +125,10 @@ File › Export (⌘E) is the macOS save panel with the options underneath, as i
 
 **Export presets.** File › Export with Preset exports with a named set of options in one step: the photos selected in the library, or every photo showing when one or none is selected (a folder, a collection or a smart album), or the photo open in the editor. Each preset holds the export sheet's format, size, quality, profile, frame and watermark, and where the files go: a folder beside the photos ("Exports" to start with), a chosen folder, or asked each time. It also says whether unedited raws get Auto first and whether the files go into Photos. Save as Preset in the export sheet makes one; Manage Presets names them and sets where they go (`ExportPresets.swift`). Three come to start: full size JPEG, web JPEG at 2048 px, and HDR HEIC.
 
+### Quick Look
+
+Space on a raw in Finder shows it as edited in Darkslide. The app bundles a Quick Look preview extension (`App/QuickLook`, built by SwiftPM as a second executable with `NSExtensionMain` as its entry point and placed in `Contents/PlugIns`). It declares the raw types by maker (`com.nikon.raw-image`, `com.sony.arw-raw-image` and so on), and macOS uses it ahead of its own raw preview, which covers the general camera raw type. When a photo is left after an edit, the app writes its render to `~/Library/Caches/Darkslide/quicklook` (`QuickLookCache.swift`), tone mapped to SDR. The sandboxed extension reads that folder through a read-only temporary exception, which Developer ID apps may use. It can't read sidecars, so it trusts a render newer than the photo file. A photo with no render shows the camera's preview, as before. An edit made in darktable afterwards shows once the photo has been opened and left in Darkslide. `qlmanage -p` can't test it: it doesn't load QuickLookUI's host class for preview extensions and stops with a nil-key exception, so test with a `QLPreviewView` and the extension's log (subsystem `me.frsr.darkslide.quicklook`).
+
 ### Library and filmstrip
 
 The library sidebar (the standard sidebar button or View › Show Sidebar; it stays as you leave it) has two collections gathered across folders, **Edited** and **Exported**, then the folders added to the library, each expanding to its subfolders. Add folders with + or by dragging them from Finder; right-click to remove one. A folder that's open but not added shows under Current Folder. "Include Subfolders", above the grid, shows everything beneath a folder (up to 5,000 photos), with each photo's folder under its name.
@@ -334,6 +338,7 @@ For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` 
 | `App/Sources/Engine/` | Process management, wire types, HDR analysis |
 | `App/Sources/Editor/` | Editor state, edit coalescing, camera style matching, settings, presentation overrides |
 | `App/Sources/Views/` | SwiftUI views |
+| `App/QuickLook/` | The Quick Look preview extension: its source, Info.plist and sandbox entitlements |
 | `Design/` | The app icon: `make-icon.py` draws darktable's aperture as a real iris (each blade lying on the next, shading painted in, since glass stacking can't loop) into Icon Composer layers, `AppIcon.icon`, which `build-app.sh` compiles with `actool` |
 
 ## Known limits

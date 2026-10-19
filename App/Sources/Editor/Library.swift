@@ -689,7 +689,10 @@ final class Library {
     func updateThumbnail(for url: URL, from frame: CGImage) {
         guard let small = Self.downscale(frame) else { return }
         thumbnails[url] = small
-        Task.detached(priority: .utility) { Self.storeRender(small, for: url) }
+        Task.detached(priority: .utility) {
+            Self.storeRender(small, for: url)
+            QuickLookCache.store(frame, for: url)
+        }
     }
 
     // MARK: Thumbnail sources

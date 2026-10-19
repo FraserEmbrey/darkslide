@@ -61,6 +61,7 @@ sign() { codesign --force --timestamp --options runtime --sign "$IDENTITY" "$@";
 find "$APP/Contents/Resources" -type f -print0 | while IFS= read -r -d '' f; do
   if file -b "$f" | grep -q "Mach-O"; then sign "$f"; fi
 done
+sign --entitlements "$ROOT/App/QuickLook/QuickLook.entitlements" "$APP/Contents/PlugIns/DarkslideQuickLook.appex"
 sign --entitlements "$ROOT/App/Darkslide.entitlements" "$APP"
 codesign --verify --strict --deep "$APP"
 

@@ -19,6 +19,11 @@ if [ -e "$APP" ]; then trash "$APP"; fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/engine/bin" "$APP/Contents/Resources/engine/share"
 cp "$ROOT/.build/$CONFIG/Darkslide" "$APP/Contents/MacOS/Darkslide"
 cp "$ROOT/App/Info.plist" "$APP/Contents/Info.plist"
+# the Quick Look extension: Space in Finder shows a raw as edited here
+APPEX="$APP/Contents/PlugIns/DarkslideQuickLook.appex"
+mkdir -p "$APPEX/Contents/MacOS"
+cp "$ROOT/.build/$CONFIG/DarkslideQuickLook" "$APPEX/Contents/MacOS/"
+cp "$ROOT/App/QuickLook/Info.plist" "$APPEX/Contents/Info.plist"
 
 # app icon: Design/AppIcon.icon (Icon Composer layers, made by Design/make-icon.py)
 # compiled to Assets.car for Liquid Glass, plus an .icns fallback
@@ -71,10 +76,12 @@ python3 "$ROOT/Scripts/bundle-libs.py" "$APP/Contents/Resources/engine"
 python3 "$ROOT/Scripts/notices.py" "$APP"
 
 # the app and MetalCL keep a debug map naming their build paths; drop it
-strip -S "$APP/Contents/MacOS/Darkslide" "$APP/Contents/Resources/engine/lib/libMetalCL.dylib"
+strip -S "$APP/Contents/MacOS/Darkslide" "$APPEX/Contents/MacOS/DarkslideQuickLook" "$APP/Contents/Resources/engine/lib/libMetalCL.dylib"
 if grep -rlqa "$HOME" "$APP"; then
   echo "these files contain $HOME:" >&2; grep -rla "$HOME" "$APP" >&2; exit 1
 fi
 
-codesign --force --deep --sign "$IDENTITY" "$APP"
+# the extension first, with its sandbox; --deep would sign it again without
+codesign --force --sign "$IDENTITY" --entitlements "$ROOT/App/QuickLook/QuickLook.entitlements" "$APPEX"
+codesign --force --sign "$IDENTITY" "$APP"
 echo "built $APP"

@@ -1669,6 +1669,20 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
                 }
             }
+            // TestQuickLook: launch argument (-TestQuickLook YES) for testing: brightens the
+            // photo a stop and writes its Quick Look render, as leaving it would
+            if UserDefaults.standard.bool(forKey: "TestQuickLook") {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    if let key = modules.first(where: { $0.op == "exposure" })?.key {
+                        let ev = modules.first { $0.key == key }?.fields.first { $0.name == "exposure" }?.value.number ?? 0
+                        setValue(.number(ev + 1), module: key, field: "exposure")
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    if let img = image { QuickLookCache.store(img, for: url) }
+                    FileHandle.standardError.write("Darkslide quick look: wrote \(QuickLookCache.file(for: url).path)\n".data(using: .utf8)!)
+                }
+            }
             // TestExportPreset: launch argument (-TestExportPreset YES) for testing: exports
             // the folder's photos with the second preset, logs the files, then shows the presets sheet
             if UserDefaults.standard.bool(forKey: "TestExportPreset"), !Self.exportPresetTested {

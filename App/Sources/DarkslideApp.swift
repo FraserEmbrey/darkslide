@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -9,7 +10,10 @@ struct DarkslideApp: App {
     init() {
         // before the model, whose catalog and engine read the folders
         FormerName.migrate()
-        _model = State(initialValue: EditorModel())
+        let model = EditorModel()
+        _model = State(initialValue: model)
+        // for the Shortcuts actions (Shortcuts.swift)
+        AppDependencyManager.shared.add(dependency: model)
     }
 
     var body: some Scene {

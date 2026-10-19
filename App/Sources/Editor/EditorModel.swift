@@ -60,6 +60,7 @@ final class EditorModel {
     private static var versionsTested = false
     private static var smartAlbumsTested = false
     private static var exportPresetTested = false
+    private static var shortcutsTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -1667,6 +1668,16 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("committed")
                     await undo()
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
+                }
+            }
+            // TestShortcuts: launch argument (-TestShortcuts YES) for testing: runs the
+            // Export with Preset action on the folder's photos, as Shortcuts would
+            if UserDefaults.standard.bool(forKey: "TestShortcuts"), !Self.shortcutsTested {
+                Self.shortcutsTested = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    let files = await DarkslideShortcutsTest.export(library.items.map(\.url), preset: exportPresets[0], model: self)
+                    FileHandle.standardError.write("Darkslide shortcuts: returned \(files)\n".data(using: .utf8)!)
                 }
             }
             // TestQuickLook: launch argument (-TestQuickLook YES) for testing: brightens the

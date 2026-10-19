@@ -25,6 +25,21 @@ mkdir -p "$APPEX/Contents/MacOS"
 cp "$ROOT/.build/$CONFIG/DarkslideQuickLook" "$APPEX/Contents/MacOS/"
 cp "$ROOT/App/QuickLook/Info.plist" "$APPEX/Contents/Info.plist"
 
+# Shortcuts actions (App/Sources/Editor/Shortcuts.swift): their metadata,
+# extracted as Xcode does from the constant values the compiler wrote;
+# without Metadata.appintents, Shortcuts doesn't list them
+CONFIG_DIR=$([ "$CONFIG" = debug ] && echo Debug || echo Release)
+INTERMEDIATES="$ROOT/.build/out/Intermediates.noindex/Darkslide.build/$CONFIG_DIR/Darkslide-p.build"
+find "$ROOT/App/Sources" -name '*.swift' > "$ROOT/.build/appintents-sources.txt"
+find "$INTERMEDIATES" -name '*.swiftconstvalues' > "$ROOT/.build/appintents-consts.txt"
+xcrun appintentsmetadataprocessor --output "$APP/Contents/Resources" \
+  --toolchain-dir "$(dirname "$(dirname "$(dirname "$(xcrun --find swift)")")")" --module-name Darkslide \
+  --sdk-root "$(xcrun --show-sdk-path)" --xcode-version "$(xcodebuild -version | awk '/Build version/ {print $3}')" \
+  --platform-family macOS --deployment-target 26.0 --target-triple arm64-apple-macos26.0 \
+  --source-file-list "$ROOT/.build/appintents-sources.txt" --swift-const-vals-list "$ROOT/.build/appintents-consts.txt" \
+  > /dev/null 2>&1
+[ -d "$APP/Contents/Resources/Metadata.appintents" ] || { echo "no App Intents metadata" >&2; exit 1; }
+
 # app icon: Design/AppIcon.icon (Icon Composer layers, made by Design/make-icon.py)
 # compiled to Assets.car for Liquid Glass, plus an .icns fallback
 xcrun actool "$ROOT/Design/AppIcon.icon" --compile "$APP/Contents/Resources" --platform macosx \

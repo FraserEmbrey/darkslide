@@ -68,7 +68,14 @@ extension EditorModel {
     /// Exports the photos with a preset: its options, frame and watermark,
     /// into its destination. Several go through the batch export one by one.
     func export(_ photos: [URL], with preset: ExportPreset) {
-        guard !photos.isEmpty, batchExport == nil else { return }
+        Task { await exportNow(photos, with: preset) }
+    }
+
+    /// As export(_:with:), finishing when the files are written; returns them
+    /// (for Shortcuts), or nil when nothing was exported.
+    @discardableResult
+    func exportNow(_ photos: [URL], with preset: ExportPreset) async -> [URL]? {
+        guard !photos.isEmpty, batchExport == nil else { return nil }
         let folder: URL
         switch preset.destination {
         case .subfolder(let name):
@@ -84,29 +91,32 @@ extension EditorModel {
             panel.canChooseDirectories = true
             panel.canCreateDirectories = true
             panel.directoryURL = photos[0].deletingLastPathComponent()
-            guard panel.runModal() == .OK, let chosen = panel.url else { return }
+            guard panel.runModal() == .OK, let chosen = panel.url else { return nil }
             folder = chosen
         }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch {
             errorMessage = "Couldn't make the folder for the exports: \(error.localizedDescription)"
-            return
+            return nil
         }
         // the export reads the frame and watermark from the saved ones
         let extras = ExportExtras.load()
         preset.extras.save()
-        Task {
-            defer { extras.save() }
-            if photos.count == 1 {
-                let photo = photos[0]
-                if url?.standardizedFileURL != photo.standardizedFileURL { await open(photo) }
-                await export(preset.settings, to: Self.freeName(folder.appendingPathComponent(
-                    photo.deletingPathExtension().lastPathComponent + "." + preset.settings.format.fileExtension)))
-            } else {
-                await exportPhotos(photos, settings: preset.settings, to: folder, autoAdjust: preset.autoAdjust,
-                                   toPhotos: preset.addToPhotos)
-            }
+        defer { extras.save() }
+        let started = Date.now
+        if photos.count == 1 {
+            let photo = photos[0]
+            if url?.standardizedFileURL != photo.standardizedFileURL { await open(photo) }
+            await export(preset.settings, to: Self.freeName(folder.appendingPathComponent(
+                photo.deletingPathExtension().lastPathComponent + "." + preset.settings.format.fileExtension)))
+        } else {
+            await exportPhotos(photos, settings: preset.settings, to: folder, autoAdjust: preset.autoAdjust,
+                               toPhotos: preset.addToPhotos)
         }
+        // what this export wrote: the folder's files made since it began
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.creationDateKey])) ?? []
+        return files.filter { ((try? $0.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast) >= started.addingTimeInterval(-1) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 }

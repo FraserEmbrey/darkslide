@@ -135,6 +135,8 @@ The catalog (`~/Library/Application Support/Darkslide/catalog.json`) records the
 
 The toolbar changes with the view: the editor's tools (crop, zoom, compare, SDR/HDR, export, save, inspector) in the editor, Grid | Map in the library. It's one customisable toolbar whose items are hidden by view (`.hidden(_:)`): swapping two toolbars in a window, or a toolbar item with no view, makes AppKit throw, and the `.toolbar` modifier has to come after `.inspector` or its items are registered more than once.
 
+**Smart albums** gather photos from the library's folders by rules, as Aperture's and Photos' did: rating, keyword, camera, lens, date taken, edited, exported, raw, file name, folder and version, matching all or any. + beside Smart Albums in the sidebar makes one; right-click to change or delete it. They're kept in the catalog and gathered each time they're shown, newest first. What they look at comes from each photo's EXIF (ImageIO), its sidecar (rating, and the keywords in `dc:subject` less darktable's automatic tags) and the catalog. `PhotoIndex` keeps it in `~/Library/Caches/Darkslide/photo-index.json`, keyed to the file's and sidecar's dates, so only new or changed photos are read again (`SmartAlbums.swift`).
+
 The filmstrip (in the editor and under the map) resizes by dragging its top edge, and View › Hide Filmstrip (⌥⌘F) hides it.
 
 The search field finds places with Apple Maps (MKLocalSearch) near the area shown, and marks the one chosen.

@@ -319,6 +319,7 @@ struct LibraryGrid: View {
         case .edited: "Photos you edit and save appear here, from every folder."
         case .exported: "Photos you export appear here, from every folder."
         case .map: "Add folders to the library to see their photos on the map."
+        case .smart: "No photos in the library's folders match this smart album."
         case .photos, .photosPlaces: PhotosLibrary.authorised ? "No photos here." : "Allow Darkslide to use Photos in System Settings › Privacy & Security › Photos."
         case .folder: model.library.includeSubfolders ? "No raw files or images in this folder or its subfolders."
                                                       : "No raw files or images in this folder. Turn on Include Subfolders to look further down."

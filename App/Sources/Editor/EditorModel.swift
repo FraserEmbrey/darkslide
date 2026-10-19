@@ -58,6 +58,7 @@ final class EditorModel {
     private static var hdrMatchTested = false
     private static var decoderSwitchTested = false
     private static var versionsTested = false
+    private static var smartAlbumsTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -1662,6 +1663,23 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("committed")
                     await undo()
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
+                }
+            }
+            // TestSmartAlbums: launch argument (-TestSmartAlbums YES) for testing: shows
+            // each smart album in the catalog and logs what it gathers
+            if UserDefaults.standard.bool(forKey: "TestSmartAlbums"), !Self.smartAlbumsTested {
+                Self.smartAlbumsTested = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    for album in catalog.smartAlbums {
+                        let start = ContinuousClock.now
+                        showSource(.smart(album.id))
+                        try? await Task.sleep(for: .milliseconds(200))
+                        while library.isScanning { try? await Task.sleep(for: .milliseconds(50)) }
+                        FileHandle.standardError.write("Darkslide smart album \(album.name): \(library.items.map(\.name)) in \(ContinuousClock.now - start)\n".data(using: .utf8)!)
+                    }
+                    // the editing sheet, in a window of its own to look at
+                    if let album = catalog.smartAlbums.last { SmartAlbumSheet.showForTesting(album) }
                 }
             }
             // TestVersions: launch argument (-TestVersions YES) for testing: duplicates the

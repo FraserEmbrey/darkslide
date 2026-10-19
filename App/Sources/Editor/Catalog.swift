@@ -28,10 +28,14 @@ final class Catalog {
     /// by photo path
     private(set) var records: [String: Record] = [:]
 
+    /// saved searches over the library's folders
+    var smartAlbums: [SmartAlbum] = [] { didSet { scheduleSave() } }
+
     private struct Stored: Codable {
         var folders: [String]
         var records: [String: Record]
         var remount: [String: String]?
+        var smartAlbums: [SmartAlbum]?
     }
 
     // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone
@@ -46,6 +50,7 @@ final class Catalog {
         folders = stored.folders.map { URL(fileURLWithPath: $0, isDirectory: true) }
         records = stored.records
         remount = stored.remount ?? [:]
+        smartAlbums = stored.smartAlbums ?? []
     }
 
     // MARK: Folders
@@ -182,7 +187,7 @@ final class Catalog {
 
     func save() {
         guard let file else { return }
-        let stored = Stored(folders: folders.map(\.path), records: records, remount: remount)
+        let stored = Stored(folders: folders.map(\.path), records: records, remount: remount, smartAlbums: smartAlbums)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(stored) { try? data.write(to: file, options: .atomic) }
     }

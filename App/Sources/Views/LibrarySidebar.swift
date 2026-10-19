@@ -46,6 +46,7 @@ final class FolderCache {
 struct LibrarySidebar: View {
     @Environment(EditorModel.self) private var model
     @AppStorage("LibrarySidebarSide") private var side = Side.mac
+    @State private var editingAlbum: SmartAlbum?
 
     enum Side: String, CaseIterable, Identifiable {
         case mac, photos
@@ -77,6 +78,9 @@ struct LibrarySidebar: View {
             .padding(.vertical, 6)
         }
         .onAppear { if showing == .photos { model.loadPhotosAlbums() } }
+        .sheet(item: $editingAlbum) { album in
+            SmartAlbumSheet(album: album) { saveAlbum($0) }
+        }
         .overlay {
             if showing == .mac, model.catalog.folders.isEmpty && model.library.lastFolder == nil {
                 ContentUnavailableView("No Folders", systemImage: "folder.badge.plus",
@@ -140,6 +144,25 @@ struct LibrarySidebar: View {
                 .help("Every photo in the library's folders, where it was taken")
         }
 
+        Section {
+            ForEach(model.catalog.smartAlbums) { album in
+                Label(album.name, systemImage: "gearshape.2")
+                    .tag(LibrarySource.smart(album.id))
+                    .contextMenu {
+                        Button("Edit Smart Album…") { editingAlbum = album }
+                        Button("Delete Smart Album", role: .destructive) { deleteAlbum(album) }
+                    }
+            }
+        } header: {
+            HStack {
+                Text("Smart Albums")
+                Spacer()
+                Button { editingAlbum = SmartAlbum() } label: { Image(systemName: "plus") }
+                    .buttonStyle(.borderless)
+                    .help("A smart album: photos in the library's folders that match rules you choose")
+            }
+        }
+
         // the folder being shown, when it hasn't been added
         if let folder = model.library.lastFolder, !model.catalog.isInLibrary(folder) {
             Section("Current Folder") {
@@ -189,6 +212,20 @@ struct LibrarySidebar: View {
                     .help("Add folders to the library")
             }
         }
+    }
+
+    private func saveAlbum(_ album: SmartAlbum) {
+        if let i = model.catalog.smartAlbums.firstIndex(where: { $0.id == album.id }) {
+            model.catalog.smartAlbums[i] = album
+        } else {
+            model.catalog.smartAlbums.append(album)
+        }
+        if model.library.source == .smart(album.id) { model.library.rescan() } else { model.showSource(.smart(album.id)) }
+    }
+
+    private func deleteAlbum(_ album: SmartAlbum) {
+        model.catalog.smartAlbums.removeAll { $0.id == album.id }
+        if model.library.source == .smart(album.id) { model.showSource(.edited) }
     }
 
     private func addFolders() {

@@ -37,6 +37,8 @@ enum LibrarySource: Hashable {
     case photos(album: String?, title: String)
     /// every photo in Apple Photos, on a map
     case photosPlaces
+    /// a saved search over the library's folders (SmartAlbum)
+    case smart(UUID)
 
     /// from Apple Photos rather than the folders on this Mac
     var isPhotos: Bool {
@@ -54,6 +56,7 @@ enum LibrarySource: Hashable {
         case .map: "Places"
         case .photos(_, let title): title
         case .photosPlaces: "Places"
+        case .smart: "Smart Album"
         }
     }
 }
@@ -173,7 +176,7 @@ final class Library {
     private var loading: Set<URL> = []
     private var scanGeneration = 0
     /// a folder with more photos than this beneath it stops there
-    nonisolated private static let scanLimit = 5000
+    nonisolated static let scanLimit = 5000
     nonisolated private static let thumbnailPixels = 360
     /// whether a file is a camera raw: by its type, or by extension for raws
     /// macOS doesn't know, such as Nikon's pixel shift merges (.nefx)
@@ -268,7 +271,7 @@ final class Library {
     private func watchSource() {
         let folders: [URL] = switch source {
         case .folder(let f): [f]
-        case .map: catalog.folders + (lastFolder.map { [$0] } ?? [])
+        case .map, .smart: catalog.folders + (lastFolder.map { [$0] } ?? [])
         // a collection's photos are spread across folders: watch those
         case .edited, .exported: Array(Set(items.map { $0.url.deletingLastPathComponent() }))
         case .photos, .photosPlaces: []
@@ -362,6 +365,12 @@ final class Library {
         rescan()
     }
 
+    /// the source's name, a smart album's as it's called now
+    var sourceTitle: String? {
+        if case .smart(let id) = source { return catalog.smartAlbums.first { $0.id == id }?.name ?? "Smart Album" }
+        return source?.title
+    }
+
     func show(folder: URL) { show(.folder(folder.standardizedFileURL)) }
 
     func contains(_ url: URL) -> Bool { index(of: url) != nil }
@@ -391,13 +400,16 @@ final class Library {
             return
         }
         let collection: [URL]? = switch source {
-        case .folder, .map, .photos, .photosPlaces: nil
+        case .folder, .map, .photos, .photosPlaces, .smart: nil
         case .edited: catalog.editedPhotos
         case .exported: catalog.exportedPhotos
         }
         // the map covers the library's folders, and the folder open now
         var mapFolders = catalog.folders
         if let current = lastFolder, !catalog.isInLibrary(current) { mapFolders.append(current) }
+        var album: SmartAlbum?
+        if case .smart(let id) = source { album = catalog.smartAlbums.first { $0.id == id } }
+        let edited = Set(catalog.editedPhotos.map(\.path)), exported = Set(catalog.exportedPhotos.map(\.path))
         Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
             var urls: [URL]
@@ -419,6 +431,24 @@ final class Library {
                     }
                 }
                 urls = Array(urls.prefix(Self.scanLimit))
+            case .smart:
+                // the library's folders, as for the map, less what the album's rules leave out
+                var seen = Set<String>()
+                var all: [URL] = []
+                for folder in mapFolders where all.count < Self.scanLimit {
+                    for url in Self.photos(beneath: folder) where seen.insert(url.standardizedFileURL.path).inserted {
+                        all.append(url)
+                    }
+                }
+                let facts = await PhotoIndex.shared.facts(for: Array(all.prefix(Self.scanLimit)))
+                urls = facts.compactMap { url, f in
+                    var f = f
+                    f.edited = edited.contains(url.path)
+                    f.exported = exported.contains(url.path)
+                    return album?.matches(f) ?? false ? url : nil
+                }
+                // newest first, as Photos' smart albums
+                urls.sort { (facts[$0]?.taken ?? .distantPast, $1.path) > (facts[$1]?.taken ?? .distantPast, $0.path) }
             default:
                 // a version is there while its sidecar is
                 urls = (collection ?? []).filter { fm.fileExists(atPath: $0.isVersion ? $0.path + ".xmp" : $0.path) }

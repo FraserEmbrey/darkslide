@@ -52,6 +52,8 @@ rsync -a --exclude 'pixmaps' --exclude 'themes' --exclude 'pswp' --exclude 'late
 python3 "$ROOT/Scripts/stub-gui-libs.py" "$APP/Contents/Resources/engine"
 # and the libraries it does use go into the app, so it runs without Homebrew
 python3 "$ROOT/Scripts/bundle-libs.py" "$APP/Contents/Resources/engine"
+# and every part that isn't Darkslide's own, with its licence (Help › Acknowledgements, and the About panel)
+python3 "$ROOT/Scripts/notices.py" "$APP"
 
 # the app and MetalCL keep a debug map naming their build paths; drop it
 strip -S "$APP/Contents/MacOS/Darkslide" "$APP/Contents/Resources/engine/lib/libMetalCL.dylib"

@@ -281,7 +281,24 @@ For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` 
 
 ## Licence
 
-GPL-3.0-or-later, the same as darktable. The engine links against darktable, `Engine/patches` modifies it, and the Metal kernels are translated from darktable's OpenCL code, so the app is distributed under darktable's terms. The full text is in `LICENSE`. The libraries darktable brings in keep their own licences: rawspeed and LibRaw (LGPL) and Lensfun (LGPL, with its lens database under CC BY-SA).
+Darkslide is free software under the GNU General Public License, version 3 or later (`LICENSE`). It has to be: the engine links against darktable (GPL-3.0-or-later), `Engine/patches` modifies it, and the Metal kernels are translated from darktable's OpenCL code. Anyone may use, change and share it, and anything built from it and shared must be GPL too, with its source.
+
+The built app also contains code under other licences, all compatible with the GPL. `Scripts/notices.py` lists every part in the app's acknowledgements (Help › Acknowledgements) with its licence text in full, and the build fails if the engine picks up a library that isn't listed.
+
+| Part | Licence |
+| --- | --- |
+| darktable 5.6.2, with rawspeed, LibRaw and whereami inside it | GPL-3.0-or-later; LGPL-2.1-or-later; LGPL-2.1 or CDDL-1.0; MIT |
+| GLib, JSON-GLib, libintl | LGPL-2.1-or-later |
+| Lensfun, and its lens database | LGPL-3.0; CC BY-SA 3.0 |
+| Exiv2, Potrace | GPL-2.0-or-later |
+| Little CMS, pugixml, Brotli, libjpeg-turbo, LibTIFF, libpng, Imath, inih, PCRE2, Zstandard, liblzma | MIT, BSD and similar permissive licences |
+| LLVM's OpenMP runtime | Apache-2.0 with the LLVM exception |
+| Raw denoise model (RawNIND, from darktable-ai) | GPL-3.0 |
+| Rescue Focus models (Restormer) | MIT |
+
+The LGPL libraries are separate dynamic libraries in `Contents/Resources/engine/lib/darktable`, so they can be replaced. `Licences/` holds the texts the build can't find in the libraries' own files.
+
+A binary release must come with its source: each release is built from a tag (`Scripts/release.sh`), and that tag, with darktable 5.6.2 and the patches here, is its source.
 
 ## A slimmer engine
 

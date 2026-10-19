@@ -26,6 +26,8 @@
 	<string>public.app-category.photography</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Darkslide reads the locations of photos in your Photos library, such as your iPhone's, to place your camera's photos on the map.</string>
+	<key>DarkslideSourceURL</key>
+	<string>https://github.com/FraserEmbrey/darkroom-native</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>UTImportedTypeDeclarations</key>

@@ -198,6 +198,20 @@ struct AppCommands: Commands {
                 .keyboardShortcut("f", modifiers: [.command, .option])
             Divider()
         }
+        CommandGroup(replacing: .help) {
+            // the licences of darktable and everything else built in (Scripts/notices.py)
+            Button("Acknowledgements") {
+                if let url = Bundle.main.url(forResource: "Acknowledgements", withExtension: "txt") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            Button("Darkslide Source Code") {
+                if let text = Bundle.main.object(forInfoDictionaryKey: "DarkslideSourceURL") as? String,
+                   let url = URL(string: text) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
         CommandGroup(after: .toolbar) {
             Button("Zoom to Fit") { model.zoom = .fit }
                 .keyboardShortcut("0")

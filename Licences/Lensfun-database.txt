@@ -1,0 +1,5 @@
+Lensfun's lens database (in Contents/Resources/engine/share/lensfun) is
+licensed under the Creative Commons Attribution-Share Alike 3.0 licence
+(CC BY-SA 3.0), by the Lensfun contributors: https://lensfun.github.io
+
+The licence: https://creativecommons.org/licenses/by-sa/3.0/

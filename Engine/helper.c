@@ -1264,6 +1264,7 @@ static void _shape_changed(dt_iop_module_t *m)
 }
 
 // {"cmd":"add_local","module":"exposure:0","shape":"gradient"|"ellipse","name":"Local 1"}
+// or, for another module in the same adjustment, "shareWith":"exposure:1" in place of "shape"
 // -> the new instance's key and the module list. The shape starts across the
 // middle (gradient) or centred (ellipse); set_shape places it.
 static void _cmd_add_local(JsonObject *o)
@@ -1275,9 +1276,18 @@ static void _cmd_add_local(JsonObject *o)
   const char *shape = json_object_get_string_member_with_default(o, "shape", "gradient");
   const gboolean ellipse = !g_strcmp0(shape, "ellipse");
   const gboolean subject = !g_strcmp0(shape, "subject");
+  // another local adjustment's shape, shared, as darktable's "use same shapes as"
+  dt_masks_form_t *share = NULL;
+  const char *share_key = json_object_get_string_member_with_default(o, "shareWith", "");
+  if(*share_key)
+  {
+    dt_iop_module_t *src = _find_module(share_key);
+    share = src && src->blend_params ? dt_masks_get_from_id(&H.edit.dev, src->blend_params->mask_id) : NULL;
+    if(!share || !(share->type & DT_MASKS_GROUP)) return _error("no shape to share");
+  }
   // a subject's mask: 8-bit, one byte a pixel, over the photo as processed
   GList *traced = NULL, *signs = NULL;
-  if(subject)
+  if(subject && !share)
   {
     const char *path = json_object_get_string_member_with_default(o, "mask", "");
     const int mw = json_object_get_int_member_with_default(o, "maskWidth", 0);
@@ -1347,6 +1357,29 @@ static void _cmd_add_local(JsonObject *o)
   }
   dt_dev_add_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
 
+  if(share)
+  {
+    // darktable's dt_masks_iop_use_same_as, on this edit's develop state
+    // rather than the GUI's: a group of the module's own, referring to the
+    // same shapes, so moving them moves every instance's mask
+    dt_masks_form_t *grp = dt_masks_create(DT_MASKS_GROUP);
+    snprintf(grp->name, sizeof(grp->name), "group `%s'", name);
+    for(GList *l = H.edit.dev.forms; l;)
+      if(((dt_masks_form_t *)l->data)->formid == grp->formid) { grp->formid++; l = H.edit.dev.forms; }
+      else l = g_list_next(l);
+    H.edit.dev.forms = g_list_append(H.edit.dev.forms, grp);
+    m->blend_params->mask_id = grp->formid;
+    for(GList *l = share->points; l; l = g_list_next(l))
+    {
+      const dt_masks_point_group_t *pt = l->data;
+      const dt_masks_form_t *f = dt_masks_get_from_id(&H.edit.dev, pt->formid);
+      dt_masks_point_group_t *gp = f ? dt_masks_group_add_form(grp, f) : NULL;
+      if(gp) { gp->state = pt->state; gp->opacity = pt->opacity; }
+    }
+    dt_dev_add_masks_history_item_ext(&H.edit.dev, m, TRUE, TRUE);
+  }
+  else
+  {
   dt_masks_form_t *form = dt_masks_create(subject ? DT_MASKS_GROUP : ellipse ? DT_MASKS_ELLIPSE : DT_MASKS_GRADIENT);
   if(subject)
   {
@@ -1387,6 +1420,7 @@ static void _cmd_add_local(JsonObject *o)
     form->points = g_list_append(form->points, g);
   }
   dt_masks_gui_form_save_creation(&H.edit.dev, m, form, NULL);
+  }
   m->blend_params->mask_mode = DEVELOP_MASK_ENABLED | DEVELOP_MASK_MASK;
   _commit(m, TRUE);
 

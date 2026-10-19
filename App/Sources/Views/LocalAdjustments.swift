@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The local adjustments card: linear and radial gradients and the subject,
-/// each its own masked exposure instance. Selecting one shows its shape on the photo.
+/// each a masked exposure instance, with colour balance rgb and local
+/// contrast instances sharing its shape for the other sliders. Selecting one shows its shape on the photo.
 struct LocalAdjustmentsCard: View {
     @Environment(EditorModel.self) private var model
     @State private var expanded = true
@@ -23,11 +24,11 @@ struct LocalAdjustmentsCard: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .disabled(model.isFindingSubject)
-                .help("Brighten or darken the subject, or part of the photo with a linear or radial gradient")
+                .help("Adjust the subject, or part of the photo with a linear or radial gradient")
             }
             if expanded {
                 if model.localAdjustments.isEmpty {
-                    Text("Brighten or darken the subject (found by macOS), or part of the photo with a linear or radial gradient.")
+                    Text("Adjust the light, colour and clarity of the subject (found by macOS), or of part of the photo with a linear or radial gradient.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -71,10 +72,13 @@ struct LocalAdjustmentsCard: View {
                     .controlSize(.mini)
                     .labelsHidden()
             }
-            if selected, let ev = m.fields.first(where: { $0.name == "exposure" }) {
-                ParamSlider(label: "Exposure", value: ev.value.number, defaultValue: 0, range: -3...3,
-                            isInteger: false, unit: "EV", trackColors: nil, clipping: true) {
-                    model.setValue(.number(($0 * 100).rounded() / 100), module: m.key, field: "exposure")
+            if selected {
+                ForEach(LocalControl.allCases) { c in
+                    ParamSlider(label: c.label, value: model.localValue(c, of: m), defaultValue: 0, range: c.range,
+                                isInteger: c != .exposure, unit: c.unit,
+                                trackColors: c == .warmth ? [.blue, .yellow] : nil, clipping: c == .exposure) {
+                        model.setLocal(c, to: $0, of: m)
+                    }
                 }
                 HStack {
                     Spacer()

@@ -251,7 +251,7 @@ The engine reads and writes `data.presets` in Darkslide's darktable database. It
 
 ### Local adjustments
 
-The Local adjustments card adds the subject, and linear and radial gradients, to brighten or darken part of the photo. Each is its own exposure instance, named "Local n", masked by one darktable drawn shape (a gradient or an ellipse), so the sidecar carries it as darktable would. Select one to show its shape on the photo:
+The Local adjustments card adds the subject, and linear and radial gradients, to adjust part of the photo: exposure, contrast, highlights, shadows, clarity, saturation, vibrance and warmth. Each is its own exposure instance, named "Local n", masked by one darktable drawn shape (a gradient or an ellipse), so the sidecar carries it as darktable would. Select one to show its shape on the photo:
 - **Linear:** drag the centre to move it, the arrow to turn it (the side it points to gets the adjustment), and the dashed line to soften it.
 - **Radial:** drag the centre, the two radius handles, and the outer handle for the softness.
 - **Subject:** Apple's Vision finds the subject (`VNGenerateForegroundInstanceMaskRequest`, the subject lifting in Photos and Preview: people, animals and objects that stand out) in a render of the photo as it looks, in about half a second. The engine traces the mask into darktable path shapes with darktable's own `ras2forms` (potrace), as darktable's AI masks do, holes included, so the edit is darktable's and exports anywhere. Its outline shows on the photo. The [mask lab](Tools/masklab) compared Vision with SAM and darktable's AI models.
@@ -261,7 +261,7 @@ The engine does what darktable's mask tools do, without the interface:
 - `set_shape` and `shape` take and give points in the photo as processed. They move them through the pipe's distortions (lens, perspective, crop, flip) with `dt_dev_distort_backtransform_plus` and `dt_dev_distort_transform_plus`, because shapes are stored in input coordinates.
 - Two traps. The pipe cache's key doesn't cover a shape, so a moved shape invalidates the cache from its module on. And each node's input size is only set when the pipe's dimensions are worked out, which happens at load, so a module switched on since (lens correction) transformed points with a zero size until the engine started working them out again first.
 - darktable's instance removal is interface code, so Delete switches the instance off and renames it out of sight, and undo brings it back.
-- For now each adjustment is exposure only; other adjustments would be other modules masked the same way.
+- Each adjustment is its exposure instance plus, once one of their sliders moves, a colour balance rgb instance (contrast, highlights, shadows, saturation, vibrance, and warmth as a mid-tone tint) and a local contrast one (clarity), all named alike. The engine's `add_local` with `shareWith` gives each a mask group of its own referring to the exposure instance's shapes, as darktable's "use same shapes as" does (`dt_masks_iop_use_same_as`, which works on the GUI's develop state, so the helper does the same on the edit's). Moving the shape moves every mask, and darktable shows them as shared shapes. Exposure comes first in the pipe, so invalidating the cache from it covers the others. Local contrast starts at its neutral 100%, not darktable's 125%.
 
 ### Hue curves
 
@@ -331,7 +331,7 @@ For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` 
 - **Development builds aren't notarised:** `build-app.sh` signs with a development identity, so on another Mac Gatekeeper blocks the app until it's allowed in System Settings › Privacy & Security. Releases are notarised.
 - **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
 - **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
-- **Not supported yet:** masks other than linear and radial gradients (paths, brushes, parametric masks), and local adjustments other than exposure.
+- **Not supported yet:** masks other than the subject and linear and radial gradients (paths, brushes, parametric masks).
 
 ## Licence
 

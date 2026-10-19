@@ -24,6 +24,9 @@ final class EditorModel {
     private(set) var sensor = "bayer"
     /// raws: the camera's matrices, for white balance in temperature and tint
     private(set) var cameraWhite: CameraWhite?
+    /// local sliders moved before their module's instance was added
+    private var pendingLocalValues: [String: (LocalControl, Double)] = [:]
+    private var addingLocalPart: Set<String> = []
     /// the white balance module being picked for (WhitePicker), and what went wrong
     var whitePickTarget: String?
     var whitePickNote: String?
@@ -1660,6 +1663,35 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
                 }
             }
+            // TestLocalControls: launch argument (-TestLocalControls YES) for testing: a
+            // radial gradient, warmed then cooled, logging the centre's colour and the instances
+            if UserDefaults.standard.bool(forKey: "TestLocalControls") {
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide local controls: \(s)\n".data(using: .utf8)!) }
+                    @MainActor func rgb() -> String {
+                        guard let img = image else { return "-" }
+                        let ci = CIImage(cgImage: img), box = CGRect(x: img.width / 2 - 20, y: img.height / 2 - 20, width: 40, height: 40)
+                        var px = [Float](repeating: 0, count: 4)
+                        CIContext().render(ci.cropped(to: box).applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: box)]),
+                                           toBitmap: &px, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
+                                           colorSpace: CGColorSpace(name: CGColorSpace.linearSRGB))
+                        return String(format: "r %.3f g %.3f b %.3f", px[0], px[1], px[2])
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    log("start \(rgb())")
+                    addLocal(.ellipse)
+                    try? await Task.sleep(for: .seconds(3))
+                    guard let a = localAdjustments.first else { return log("no adjustment") }
+                    for (c, v) in [(LocalControl.warmth, 100.0), (.warmth, -100), (.saturation, -100), (.clarity, 50)] {
+                        setLocal(c, to: v, of: a)
+                        try? await Task.sleep(for: .seconds(3))
+                        log("\(c.label) \(v): \(rgb()), read back \(localValue(c, of: a)), parts \(localParts(a).map(\.key))")
+                    }
+                    setEnabled(false, module: a.key)
+                    try? await Task.sleep(for: .seconds(3))
+                    log("off: \(rgb()), parts on \(localParts(a).map(\.enabled))")
+                }
+            }
             // TestWhitePick: launch argument (-TestWhitePick 0.5,0.5) for testing, logs the
             // raw white balance as temperature and tint, then picks white at that point
             if let spec = UserDefaults.standard.string(forKey: "TestWhitePick") {
@@ -2063,13 +2095,15 @@ final class EditorModel {
         hasUnsavedChanges = true
         recordUndoStep(label: "\(on ? "Turn On" : "Turn Off") \(Presentation.title(of: modules[m]))")
         // the RGB curve card switches its colour curves with it
-        let channels = modules[m].op == "rgbcurve" ? channelCurveModule?.key : nil
-        if let channels, let c = modules.firstIndex(where: { $0.key == channels }) { modules[c].enabled = on }
+        // and a local adjustment its other modules
+        var partners = modules[m].op == "rgbcurve" ? channelCurveModule.map { [$0.key] } ?? [] : []
+        if Self.isLocal(modules[m]) { partners += localParts(modules[m]).map(\.key).filter { $0 != module } }
+        for p in partners { if let c = modules.firstIndex(where: { $0.key == p }) { modules[c].enabled = on } }
         // queued behind pending sets so the undo step resolves before it
         Task {
             await settleEdits()
             try? await engine?.enable(module: module, on: on)
-            if let channels { try? await engine?.enable(module: channels, on: on) }
+            for p in partners { try? await engine?.enable(module: p, on: on) }
             requestRender()
         }
     }
@@ -3700,8 +3734,52 @@ extension EditorModel {
     /// Local adjustments are instances of exposure named "Local n", each
     /// masked by one drawn shape (the engine's add_local). They're edited in
     /// their own card, not as modules.
+    /// An adjustment's exposure instance holds its shape; the other modules it
+    /// uses (colour balance rgb, local contrast) are instances of the same name
+    /// sharing that shape, added the first time one of their sliders moves.
     nonisolated static func isLocal(_ m: EngineModule) -> Bool { m.instanceName.hasPrefix("Local ") }
-    var localAdjustments: [EngineModule] { modules.filter(Self.isLocal).sorted { $0.instanceName < $1.instanceName } }
+    var localAdjustments: [EngineModule] {
+        modules.filter { Self.isLocal($0) && $0.op == "exposure" }.sorted { $0.instanceName < $1.instanceName }
+    }
+    /// the instances making up the adjustment that `anchor` holds the shape of
+    func localParts(_ anchor: EngineModule) -> [EngineModule] {
+        modules.filter { Self.isLocal($0) && $0.instanceName == anchor.instanceName }
+    }
+
+    /// A local slider's value, from whichever instance holds it (or neutral).
+    func localValue(_ control: LocalControl, of anchor: EngineModule) -> Double {
+        guard let m = localParts(anchor).first(where: { $0.op == control.op }) else { return 0 }
+        return control.value(from: m)
+    }
+
+    func setLocal(_ control: LocalControl, to value: Double, of anchor: EngineModule) {
+        if let m = localParts(anchor).first(where: { $0.op == control.op }) {
+            for (field, v) in control.fields(for: value) { setValue(.number(v), module: m.key, field: field) }
+            return
+        }
+        // the module's first slider moved: add its instance, sharing the shape,
+        // and hold the latest value until it's there
+        pendingLocalValues[anchor.instanceName + "|" + control.op] = (control, value)
+        guard let engine, !addingLocalPart.contains(anchor.instanceName + "|" + control.op),
+              let base = modules.first(where: { $0.op == control.op && !Self.isLocal($0) }) else { return }
+        let id = anchor.instanceName + "|" + control.op
+        addingLocalPart.insert(id)
+        Task {
+            defer { addingLocalPart.remove(id) }
+            await settleEdits()
+            do {
+                let reply = try await engine.addLocal(base: base.key, shareWith: anchor.key, name: anchor.instanceName)
+                modules = reply.modules
+                // instances start at the module's defaults, which aren't all neutral
+                for (field, v) in control.neutral { setValue(.number(v), module: reply.added, field: field) }
+                if let (c, v) = pendingLocalValues.removeValue(forKey: id) {
+                    for (field, x) in c.fields(for: v) { setValue(.number(x), module: reply.added, field: field) }
+                }
+            } catch {
+                errorMessage = "Couldn't add to the adjustment: \(error.localizedDescription)"
+            }
+        }
+    }
 
     func addLocal(_ kind: LocalShape.Kind) {
         guard let engine, url != nil,
@@ -3783,8 +3861,11 @@ extension EditorModel {
             await settleEdits()
             recordUndoStep(label: "Delete Local Adjustment")
             do {
-                try await engine.enable(module: key, on: false)
-                modules = try await engine.renameInstance(key, to: Self.deletedLocalName)
+                let parts = modules.first { $0.key == key }.map(localParts)?.map(\.key) ?? [key]
+                for k in parts {
+                    try await engine.enable(module: k, on: false)
+                    modules = try await engine.renameInstance(k, to: Self.deletedLocalName)
+                }
                 hasUnsavedChanges = true
                 requestRender()
             } catch {

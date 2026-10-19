@@ -338,6 +338,11 @@ actor Engine {
         try await request(["cmd": "add_local", "module": base, "shape": shape, "name": name], as: InstanceReply.self)
     }
 
+    /// another module for a local adjustment, masked by the same shape as `shareWith`
+    func addLocal(base: String, shareWith: String, name: String) async throws -> InstanceReply {
+        try await request(["cmd": "add_local", "module": base, "shareWith": shareWith, "name": name], as: InstanceReply.self)
+    }
+
     func setGradient(module: String, anchor: CGPoint, toward: CGPoint, compression: Double?) async throws {
         var body: [String: Any] = ["cmd": "set_shape", "module": module,
                                    "anchor": [anchor.x, anchor.y], "toward": [toward.x, toward.y]]

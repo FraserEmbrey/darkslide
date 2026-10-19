@@ -97,7 +97,7 @@ if unlisted:
     sys.exit("no acknowledgement for " + ", ".join(unlisted) + ": add it to LIBRARIES in Scripts/notices.py")
 
 sections = []
-sections.append(("Darkslide", None, "GPL-3.0-or-later", "https://github.com/FraserEmbrey/darkroom-native",
+sections.append(("Darkslide", None, "GPL-3.0-or-later", "https://github.com/FraserEmbrey/darkslide",
                  [os.path.join(ROOT, "LICENSE")],
                  "Copyright (C) 2026 Fraser Embrey and contributors.\n\n"
                  "This program is free software: you can redistribute it and/or modify it under the terms of the "

@@ -27,7 +27,7 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Darkslide adds your exports to Photos when you ask, opens and saves edits of photos in your Photos library, and reads the locations of photos such as your iPhone's to place your camera's photos on the map.</string>
 	<key>DarkslideSourceURL</key>
-	<string>https://github.com/FraserEmbrey/darkroom-native</string>
+	<string>https://github.com/FraserEmbrey/darkslide</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>UTImportedTypeDeclarations</key>

@@ -6,7 +6,7 @@
 
 darktable has one of the best raw engines around. On a Mac its interface is GTK, and it feels like it. Apple stopped making Aperture in 2015 and nothing has felt quite as at home on the Mac since. Darkslide is my go at the app I want: darktable doing the processing, in something that works like Aperture 3. That means one window for the library and the editor, nicer to use, faster, and built on the Mac's own technologies. John Gruber's name for that is a Mac-assed Mac app.
 
-**[Download the latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest).** It needs an Apple silicon Mac and macOS 26. It's version 0.1, so expect rough edges.
+**[Download the latest release](https://github.com/FraserEmbrey/darkslide/releases/latest).** It needs an Apple silicon Mac and macOS 26. It's version 0.1, so expect rough edges.
 
 ## Contents
 
@@ -38,7 +38,7 @@ It needs Apple silicon and macOS 26. I've built it around Metal, Core ML and mac
 
 ## Getting started
 
-1. Download `Darkslide-<version>.zip` from the [latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest), unzip it and drag Darkslide to Applications. It's notarised, so it opens without a warning.
+1. Download `Darkslide-<version>.zip` from the [latest release](https://github.com/FraserEmbrey/darkslide/releases/latest), unzip it and drag Darkslide to Applications. It's notarised, so it opens without a warning.
 2. Drag a raw onto the window or the Dock icon, or use File › Open. Drag a folder in to browse it as a library, or switch the sidebar to Apple Photos (it asks for access the first time).
 3. Edit in the inspector on the right. Essentials has the main controls, Active shows what's switched on and All lists every darktable module. The HDR button in the toolbar shows the photo in HDR.
 4. Export with File › Export (⌘E). Moving to another photo saves your edit to its sidecar, as darktable and Lightroom do.

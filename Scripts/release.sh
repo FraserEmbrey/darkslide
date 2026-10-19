@@ -80,7 +80,7 @@ darktable's raw engine in a Mac-assed Mac app. I wanted something that works lik
 
 ## Install
 
-Download **Darkslide-$VERSION.zip** below, unzip it and drag Darkslide to Applications. It's notarised, so it opens without a warning. The [README](https://github.com/FraserEmbrey/darkroom-native#getting-started) has a short getting started guide.
+Download **Darkslide-$VERSION.zip** below, unzip it and drag Darkslide to Applications. It's notarised, so it opens without a warning. The [README](https://github.com/FraserEmbrey/darkslide#getting-started) has a short getting started guide.
 
 It needs an Apple silicon Mac and macOS 26. I've built it around Metal, Core ML and macOS 26's HDR and toolbar APIs, and the engine is built for arm64 only.
 

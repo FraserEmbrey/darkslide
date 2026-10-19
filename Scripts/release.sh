@@ -76,24 +76,19 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 
 git push origin "$TAG"
 cat > "$OUT/notes.md" <<EOF
-darktable's raw engine, in a Mac-assed Mac app: nicer to use, faster, and built on Metal, Core Image, Core ML and the rest of the Mac's own technologies. Open a raw, drag a slider, and watch darktable re-render on the GPU before you've let go. Turn on HDR and see your highlights the way an XDR display can show them, then export them as HEIC or a gain map JPEG that looks right on a phone.
+darktable's raw engine in a Mac-assed Mac app. I wanted something that works like Aperture 3 did, with darktable doing the processing.
 
 ## Install
 
-Download **Darkslide-$VERSION.zip** below, unzip it and drag Darkslide to Applications. It's signed and notarised by Apple, so it opens without a warning. The [README](https://github.com/FraserEmbrey/darkroom-native#getting-started) has a short getting started guide.
+Download **Darkslide-$VERSION.zip** below, unzip it and drag Darkslide to Applications. It's notarised, so it opens without a warning. The [README](https://github.com/FraserEmbrey/darkroom-native#getting-started) has a short getting started guide.
 
-## Made for new Macs
-
-Darkslide needs a Mac with **Apple silicon** (M1 or later) and **macOS 26** or later. It won't open on an Intel Mac or an older macOS, and that's on purpose.
-
-- **Apple silicon:** darktable's GPU code runs here on Metal, through a layer written for Apple's GPUs and the memory they share with the CPU. The engine and its libraries are built for arm64 only, and the AI models run through Core ML. An Intel version would be a second engine to build and test, for Macs Apple no longer makes.
-- **macOS 26:** the toolbar is built with macOS 26's APIs and takes on its look, and the HDR view uses its newer HDR APIs to track your display's headroom as the brightness changes. Supporting older versions would mean two of each, and less time on the editor.
+It needs an Apple silicon Mac and macOS 26. I've built it around Metal, Core ML and macOS 26's HDR and toolbar APIs, and the engine is built for arm64 only.
 
 ## Good to know
 
-- It's version $VERSION. darktable does the processing, so the results are solid, but the app around it is young. Issues are welcome.
-- Edits are saved as darktable XMP sidecars next to your photos, so you can open them in darktable at any time.
-- The download is small because the AI models aren't in it. Denoise and Rescue Focus each ask before downloading their model (30 to 50 MB) the first time you use them.
+- It's version $VERSION, so expect rough edges. darktable does the processing, so the results should be solid. Issues are welcome.
+- Edits are saved as darktable XMP sidecars next to your photos, so you can open them in darktable.
+- Denoise and Rescue Focus ask before downloading their models (30 to 50 MB each) the first time you use them. That's why the download is only 16 MB.
 
 Darkslide is free software under the GNU GPL, version 3 or later, built on darktable 5.6.2. Its source is this tag. Help › Acknowledgements in the app lists everything else inside it, with their licences.
 EOF

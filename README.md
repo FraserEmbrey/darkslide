@@ -1,17 +1,17 @@
 # Darkslide
 
-**darktable's raw engine, in a Mac-assed Mac app.**
+**darktable's raw engine in a Mac-assed Mac app.**
 
-![Darkslide editing a raw of Brighton's Royal Pavilion at night in HDR](docs/screenshot.jpg)
+![Darkslide editing a sunset over Brighton's West Pier in HDR](docs/screenshot.jpg)
 
-darktable is one of the best raw processors there is: scene-referred, colour-managed, free, and fussy in all the right ways. Its interface is also GTK on a Mac, which is a bit like wearing walking boots to a wedding. Darkslide keeps the engine and replaces the boots. The aim is what John Gruber calls a Mac-assed Mac app: one that's nicer to use, faster, and built on the Mac's own technologies rather than painted to look like them. You get darktable's processing, sliders that behave like macOS sliders, and HDR you can actually see while you edit.
+darktable has one of the best raw engines around. On a Mac its interface is GTK, and it feels like it. Apple stopped making Aperture in 2015 and nothing has felt quite as at home on the Mac since. Darkslide is my go at the app I want: darktable doing the processing, in something that works like Aperture 3. That means one window for the library and the editor, nicer to use, faster, and built on the Mac's own technologies. John Gruber's name for that is a Mac-assed Mac app.
 
-**[Download the latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest)** for Apple silicon Macs on macOS 26 or later. It's version 0.1, so expect some rough edges.
+**[Download the latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest).** It needs an Apple silicon Mac and macOS 26. It's version 0.1, so expect rough edges.
 
 ## Contents
 
-- [What it's for](#what-its-for)
-- [Made for new Macs](#made-for-new-macs)
+- [What I want it to be](#what-i-want-it-to-be)
+- [Why only new Macs](#why-only-new-macs)
 - [Getting started](#getting-started)
 - [How darktable fits in](#how-darktable-fits-in)
 - [Architecture](#architecture)
@@ -23,44 +23,35 @@ darktable is one of the best raw processors there is: scene-referred, colour-man
 - [Licence](#licence)
 - [A slimmer engine](#a-slimmer-engine)
 
-## What it's for
+## What I want it to be
 
-The goals, in order:
+- **darktable's results.** Every raw goes through darktable 5.6.2, and the edit is saved as darktable's own history, so it opens the same in darktable.
+- **Aperture 3, more or less.** Library, culling, a map and the editor in one app. Apple Photos works as a library too, and Revert to Original still works on anything I save back to it.
+- **A Mac-assed Mac app.** The standard toolbar, sidebar and inspector, shortcuts you'd guess, and the save panel you already know. Underneath it's Metal, Core Image, Core ML, PhotoKit and MapKit wherever they fit.
+- **HDR I can see while I edit.** On an XDR display the photo shows in HDR, with how much sits above white. It exports HEIC, HLG, PQ, or JPEGs with a gain map that look right on a phone.
+- **Fast.** darktable's GPU code runs on Metal, and moving a slider only reruns the part of the pipeline it affects.
+- **No import.** Edits are XMP sidecars next to the photo, so there's no database to get stuck in.
 
-- **darktable's results.** Every raw is processed by darktable 5.6.2, and an edit is darktable's own history, so it opens the same in darktable.
-- **A Mac-assed Mac app.** SwiftUI, the standard toolbar, sidebar and inspector, keyboard shortcuts you'd guess, and the save panel you already know. Underneath, the Mac's own technologies wherever they fit: Metal for the GPU, Core Image for HDR and gain maps, Core ML for the AI models, PhotoKit for Apple Photos, MapKit for places.
-- **HDR, properly.** Edit in HDR on an XDR or other EDR display, see how much of the image sits above white, and export HEIC, HLG or PQ, or JPEGs with an ISO 21496-1 gain map that look right on phones too.
-- **Fast on Apple silicon.** darktable's GPU code runs on Metal, and moving a slider reruns only the part of the pipeline it affects.
-- **Your files stay yours.** Edits live in darktable's own XMP sidecars beside the photo. There's no import step, and no database holding your edits hostage.
+## Why only new Macs
 
-Along the way it picked up a library with a grid, a map and a cull view, Apple Photos editing that Revert to Original can undo, film looks from LUT packs, frames and watermarks, and on-device Core ML for raw denoise and rescuing slightly soft photos.
-
-## Made for new Macs
-
-Darkslide needs a Mac with Apple silicon (M1 or later) and macOS 26 Tahoe or later. That's on purpose.
-
-- **Apple silicon only.** darktable's GPU code runs here through MetalCL, a Metal layer written for Apple's GPUs, where the CPU and GPU share memory so pixels aren't copied back and forth. The engine and the libraries bundled with it are built for arm64 only, and the denoise and Rescue Focus models run through Core ML. An Intel build would mean a second engine, a second set of libraries and an Intel Mac to test them on, for Macs Apple no longer makes.
-- **macOS 26 only.** The toolbar is built with macOS 26's toolbar APIs, and the app takes on its look. The HDR view uses macOS 26's newer HDR layer APIs to follow the display's headroom as brightness changes. Older versions would mean keeping a second path for each of those and testing on systems the app isn't built for. That effort goes into the editor instead.
+It needs Apple silicon and macOS 26. I've built it around Metal, Core ML and macOS 26's HDR and toolbar APIs, and the engine is built for arm64 only. I'd rather spend the time on the editor than on keeping older Macs going.
 
 ## Getting started
 
-1. **Download** `Darkslide-<version>.zip` from the [latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest).
-2. **Unzip it** and drag Darkslide to Applications. It's signed and notarised, so it opens without a warning.
-3. **Open a photo.** Drag a raw onto the window or the Dock icon, or use File › Open. Drag a folder in to browse it as a library, or switch the sidebar to Apple Photos (it asks for access the first time).
-4. **Edit.** The inspector on the right starts with Essentials. Active shows what's switched on, and All lists every darktable module. Press the HDR button in the toolbar to see the photo in HDR.
-5. **Export** with File › Export (⌘E). Moving to another photo saves your edit to the sidecar, as darktable and Lightroom do.
+1. Download `Darkslide-<version>.zip` from the [latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest), unzip it and drag Darkslide to Applications. It's notarised, so it opens without a warning.
+2. Drag a raw onto the window or the Dock icon, or use File › Open. Drag a folder in to browse it as a library, or switch the sidebar to Apple Photos (it asks for access the first time).
+3. Edit in the inspector on the right. Essentials has the main controls, Active shows what's switched on and All lists every darktable module. The HDR button in the toolbar shows the photo in HDR.
+4. Export with File › Export (⌘E). Moving to another photo saves your edit to its sidecar, as darktable and Lightroom do.
 
-The download is about 16 MB. The denoise and Rescue Focus models (30 to 50 MB each) aren't in it. The app asks before downloading each one, the first time you use it, and checks it against a checksum built into the app.
+The download is about 16 MB because the AI models aren't in it. Denoise and Rescue Focus ask before downloading theirs (30 to 50 MB each) the first time you use them, and the app checks each against a checksum before using it.
 
-Help › Acknowledgements lists everything inside the app, with its licence. To build it yourself, see [Building](#building).
+Help › Acknowledgements lists everything inside the app with its licence. To build it yourself, see [Building](#building).
 
 ## How darktable fits in
 
-darktable does the processing. Darkslide does everything around it.
+darktable does the processing and Darkslide does everything around it. The app runs darktable as a separate process: libdarktable, headless, driven by a small C helper that keeps the pipeline warm between edits and sends frames back. darktable's modules describe their own settings, so most of the inspector is generated from them, and anything darktable can do is under All.
 
-The app runs darktable as a separate engine process: libdarktable, headless, with no GTK interface, driven by a small C helper. The helper opens one photo, keeps darktable's pipeline warm between edits, and sends finished frames back to the app. darktable's modules publish their settings, so most of the inspector is generated from them, and anything darktable can do is reachable under All.
-
-The engine is darktable 5.6.2 with a handful of small patches (`Engine/patches`), built with only what Darkslide uses. Its GPU code runs on Metal through MetalCL, and anything macOS already does well, such as decoding HEIC or writing gain maps, macOS does. Edits are darktable XMP sidecars, so a photo can move between Darkslide and darktable at any point. The details follow.
+The engine is darktable 5.6.2 with a few small patches (`Engine/patches`), built with only what Darkslide uses. Its GPU code runs on Metal through MetalCL. Where macOS already does something well, such as decoding HEIC or writing gain maps, macOS does it. The details are below.
 
 ## Architecture
 

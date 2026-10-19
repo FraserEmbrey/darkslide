@@ -13,10 +13,16 @@ struct LibraryItem: Identifiable, Hashable {
     var id: URL { url }
     /// a name for items that aren't files (Photos assets: their date)
     var title: String? = nil
-    var name: String { title ?? url.lastPathComponent }
+    var name: String {
+        if let title { return title }
+        // a version is named as Aperture named them; darktable's own number starts at 1 for the second
+        return version > 0 ? "\(url.photoFile.lastPathComponent) (Version \(version + 1))" : url.lastPathComponent
+    }
     var folderName: String { PhotosLibrary.assetID(url) != nil ? "Photos" : url.deletingLastPathComponent().lastPathComponent }
     /// its XMP sidecar holds an edit (here or in darktable), not only a rating
     var hasEdit: Bool
+    /// darktable's version number (PhotoVersion), 0 for the original
+    var version = 0
 }
 
 /// What the grid and filmstrip show: a folder, or a collection gathered
@@ -398,7 +404,12 @@ final class Library {
             switch source {
             case .folder(let folder):
                 urls = recursive ? Self.photos(beneath: folder) : Self.photos(in: folder)
-                urls.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+                // versions after their original (photo_01.NEF would otherwise come first)
+                let keys = Dictionary(urls.map { ($0, ($0.photoFile.path, $0.versionNumber)) }) { a, _ in a }
+                urls.sort {
+                    let a = keys[$0]!, b = keys[$1]!
+                    return a.0 == b.0 ? a.1 < b.1 : a.0.localizedStandardCompare(b.0) == .orderedAscending
+                }
             case .map:
                 var seen = Set<String>()
                 urls = []
@@ -409,14 +420,15 @@ final class Library {
                 }
                 urls = Array(urls.prefix(Self.scanLimit))
             default:
-                urls = (collection ?? []).filter { fm.fileExists(atPath: $0.path) }
+                // a version is there while its sidecar is
+                urls = (collection ?? []).filter { fm.fileExists(atPath: $0.isVersion ? $0.path + ".xmp" : $0.path) }
             }
             let found = urls.map { url -> (LibraryItem, Date?) in
                 let xmp = url.path + ".xmp"
                 // a sidecar that only rates or tags the photo isn't an edit
                 let date = ((try? fm.attributesOfItem(atPath: xmp)[.modificationDate]) as? Date)
                     .flatMap { Sidecar.hasEdit(url) ? $0 : nil }
-                return (LibraryItem(url: url, hasEdit: date != nil), date)
+                return (LibraryItem(url: url, hasEdit: date != nil, version: url.versionNumber), date)
             }
             await MainActor.run {
                 guard generation == self.scanGeneration else { return }
@@ -435,18 +447,22 @@ final class Library {
     nonisolated private static func photos(in folder: URL) -> [URL] {
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil,
                                                                  options: [.skipsHiddenFiles])) ?? []
-        return files.filter(isPhoto)
+        return files.filter(isPhoto) + PhotoVersion.versions(among: files)
     }
 
     nonisolated private static func photos(beneath folder: URL) -> [URL] {
         guard let walk = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
                                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
-        var found: [URL] = []
-        for case let url as URL in walk where isPhoto(url) {
-            found.append(url)
-            if found.count >= scanLimit { break }
+        var found: [URL] = [], sidecars: [URL] = []
+        for case let url as URL in walk {
+            if isPhoto(url) {
+                found.append(url)
+                if found.count >= scanLimit { break }
+            } else if url.pathExtension.lowercased() == "xmp" {
+                sidecars.append(url)
+            }
         }
-        return found
+        return found + PhotoVersion.versions(among: found + sidecars)
     }
 
     /// subfolders, for the sidebar
@@ -568,7 +584,7 @@ final class Library {
     }
 
     nonisolated private static func exifLocation(of url: URL) -> CLLocationCoordinate2D? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any],
               var lat = gps[kCGImagePropertyGPSLatitude] as? Double,
@@ -656,7 +672,7 @@ final class Library {
     nonisolated static func openingPreview(for url: URL, quick: Bool, maxPixels: Int) -> CGImage? {
         if let stored = cachedRender(for: url) { return quick ? stored : nil }
         if FileManager.default.fileExists(atPath: url.path + ".xmp") { return nil }
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             // the embedded preview only: decoding the raw itself is darktable's job
             kCGImageSourceCreateThumbnailFromImageIfAbsent: !rawExtensions.contains(url.pathExtension.lowercased()),
@@ -679,7 +695,7 @@ final class Library {
     }
 
     nonisolated private static func embeddedPreview(for url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
             kCGImageSourceCreateThumbnailWithTransform: true,   // camera orientation
@@ -700,7 +716,7 @@ final class Library {
 
     nonisolated private static func cachedRender(for url: URL) -> CGImage? {
         guard let file = cacheURL(for: url),
-              let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
+              let source = CGImageSourceCreateWithURL(file.photoFile as CFURL, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 

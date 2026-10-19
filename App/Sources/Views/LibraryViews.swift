@@ -82,7 +82,7 @@ struct ItemMenu: View {
     let item: LibraryItem
 
     var body: some View {
-        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url.photoFile]) }
         if let model {
             Divider()
             // on a selected photo, paste goes to every selected one

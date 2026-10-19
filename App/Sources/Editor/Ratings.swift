@@ -14,7 +14,7 @@ enum Sidecar {
         if let xmp = try? String(contentsOf: url(for: photo), encoding: .utf8) {
             return rating(inXMP: xmp) ?? 0
         }
-        guard let source = CGImageSourceCreateWithURL(photo as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        guard let source = CGImageSourceCreateWithURL(photo.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let meta = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
               let text = CGImageMetadataCopyStringValueWithPath(meta, nil, "xmp:Rating" as CFString) as String?,
               let value = Int(text) else { return 0 }

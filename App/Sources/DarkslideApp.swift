@@ -148,6 +148,17 @@ struct AppCommands: Commands {
             }
             .disabled(!model.canDenoise)
             .help(RawDenoise.isAvailable ? "" : "The denoise model isn't installed")
+            Divider()
+            // as Aperture's Photos menu had them
+            Button("Duplicate Version") { model.duplicateVersion() }
+                .keyboardShortcut("v", modifiers: [.option])
+                .disabled(!model.canMakeVersion)
+            Button("New Version from Original") { model.newVersionFromOriginal() }
+                .keyboardShortcut("g", modifiers: [.option])
+                .disabled(!model.canMakeVersion)
+            Button("Delete Version") { if let url = model.url { model.deleteVersion(url) } }
+                .disabled(!(model.url?.isVersion ?? false) || model.showingLibrary)
+            Divider()
             Button("Reset All Edits…") { model.confirmingReset = true }
                 .disabled(!model.canReset)
             Toggle("Compare with Original", isOn: Binding(get: { model.comparing }, set: { model.comparing = $0 }))

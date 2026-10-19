@@ -57,7 +57,7 @@ enum CullAnalysis {
     // MARK: Measuring
 
     static func analyse(_ url: URL) -> CullFacts? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         else { return nil }
         var facts = CullFacts()
         let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
@@ -144,14 +144,14 @@ enum CullAnalysis {
 
     /// the photo at full size, upright: a JPEG or HEIC itself, a raw's largest embedded preview
     static func fullSize(_ url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
         return fullSize(source, url: url)
     }
 
     /// The photo at about `pixels` on its long edge, upright, for looking at:
     /// the camera's JPEG, so it's quick.
     static func preview(_ url: URL, pixels: Int) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
         let raw = Library.isRaw(url)
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageIfAbsent: !raw,
@@ -475,7 +475,7 @@ enum CullAnalysis {
 
     /// the size and date a store entry is checked against
     static func stamp(_ url: URL) -> (size: Int, modified: Double)? {
-        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
+        guard let a = try? FileManager.default.attributesOfItem(atPath: url.photoFile.path),
               let size = a[.size] as? Int, let date = a[.modificationDate] as? Date else { return nil }
         return (size, date.timeIntervalSince1970)
     }

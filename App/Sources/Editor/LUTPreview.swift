@@ -52,7 +52,7 @@ enum LUTPreview {
 
     /// A Hald CLUT image: N³ entries (N = level²) in reading order, red fastest
     private static func hald(_ url: URL) -> ((Double, Double, Double) -> (Float, Float, Float))? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+        guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, nil),
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil), img.width == img.height else { return nil }
         let w = img.width
         let n = Int((pow(Double(w * w), 1.0 / 3)).rounded())

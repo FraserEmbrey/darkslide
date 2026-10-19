@@ -16,16 +16,16 @@ import UniformTypeIdentifiers
 enum AppleRawFallback {
     /// whether Apple's raw engine can read the file
     static func canDecode(_ url: URL) -> Bool {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+        guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, nil),
               let type = CGImageSourceGetType(src) as String? else { return false }
-        return type.contains("raw") && CIRAWFilter(imageURL: url) != nil
+        return type.contains("raw") && CIRAWFilter(imageURL: url.photoFile) != nil
     }
 
     /// Apple raw engine versions macOS offers for this file, newest first
     /// ("9", "8", …); empty when it decodes the file without a version
     /// choice (as for Nikon's High Efficiency raws)
     static func decoderVersions(_ url: URL) -> [String] {
-        guard let f = CIRAWFilter(imageURL: url) else { return [] }
+        guard let f = CIRAWFilter(imageURL: url.photoFile) else { return [] }
         return f.supportedDecoderVersions.map(\.rawValue).filter { $0 != "None" }
             .sorted { $0.localizedStandardCompare($1) == .orderedDescending }
     }
@@ -37,7 +37,7 @@ enum AppleRawFallback {
     /// the newest. `settings` are the photo's changes to those controls.
     static func decodedTIFF(for url: URL, version: String? = nil, settings: AppleRawSettings = AppleRawSettings())
         throws -> (url: URL, version: String, controls: [AppleRawControl], lensCorrection: Bool?) {
-        guard let filter = CIRAWFilter(imageURL: url) else {
+        guard let filter = CIRAWFilter(imageURL: url.photoFile) else {
             throw EngineError(message: "Neither darktable nor macOS can decode \(url.lastPathComponent).")
         }
         // Core Image's default isn't always the newest (a Nikon Z6 II file
@@ -95,7 +95,7 @@ enum AppleRawFallback {
     /// (Nikon's HLG HEIF, HDR AVIF). darktable reads only the SDR base of a
     /// gain map image, so these are opened through macOS's HDR decode.
     static func isHDR(_ url: URL) -> Bool {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return false }
+        guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return false }
         if hasGainMap(src) { return true }
         // decoding is lazy: creating the image reads its colour space, not its pixels
         if let image = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -108,7 +108,7 @@ enum AppleRawFallback {
     /// Whether a raw carries an HDR gain map, as an iPhone's ProRAW does (for
     /// its HDR rendering); a raw's colour space isn't checked, which would decode it.
     static func rawHasGainMap(_ url: URL) -> Bool {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return false }
+        guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return false }
         return hasGainMap(src)
     }
 
@@ -128,7 +128,7 @@ enum AppleRawFallback {
     static func decodedImage(for url: URL) throws -> URL {
         let tiff = try cacheURL(for: url, suffix: "sdr")
         if isFresh(tiff, for: url) { return tiff }
-        guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+        guard let image = CIImage(contentsOf: url.photoFile, options: [.applyOrientationProperty: true]) else {
             throw EngineError(message: "macOS couldn't decode \(url.lastPathComponent).")
         }
         let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
@@ -144,7 +144,7 @@ enum AppleRawFallback {
     static func decodedHDR(for url: URL) throws -> URL {
         let tiff = try cacheURL(for: url, suffix: "hdr")
         if isFresh(tiff, for: url) { return tiff }
-        guard let image = CIImage(contentsOf: url, options: [.expandToHDR: true, .applyOrientationProperty: true]) else {
+        guard let image = CIImage(contentsOf: url.photoFile, options: [.expandToHDR: true, .applyOrientationProperty: true]) else {
             throw EngineError(message: "macOS couldn't decode \(url.lastPathComponent).")
         }
         let space = CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!
@@ -232,7 +232,7 @@ enum AppleRawFallback {
     }
 
     private static func isFresh(_ tiff: URL, for url: URL) -> Bool {
-        let source = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+        let source = (try? url.photoFile.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
         let made = (try? tiff.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         guard let made, made >= source else { return false }
         // marked as used now, so the cache keeps the photos in use (trimCache)

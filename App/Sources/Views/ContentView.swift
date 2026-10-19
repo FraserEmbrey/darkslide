@@ -51,9 +51,9 @@ struct ContentView: View {
             // editing: the photo's name can be renamed from the title, and its
             // file icon dragged, as for any document
             .navigationTitle(Binding(
-                get: { model.showingLibrary ? (model.library.source?.title ?? "Library") : (model.url?.lastPathComponent ?? "Darkslide") },
+                get: { model.showingLibrary ? (model.library.source?.title ?? "Library") : (model.url.map { LibraryItem(url: $0, hasEdit: false, version: $0.versionNumber).name } ?? "Darkslide") },
                 set: { if !model.showingLibrary { model.renamePhoto(to: $0) } }))
-            .background(DocumentIcon(url: model.showingLibrary || model.photosAsset != nil ? nil : model.url))
+            .background(DocumentIcon(url: model.showingLibrary || model.photosAsset != nil ? nil : model.url?.photoFile))
             .sheet(isPresented: Binding(get: { model.choosingAdjustmentsToCopy }, set: { model.choosingAdjustmentsToCopy = $0 })) {
                 CopyAdjustmentsSheet()
             }

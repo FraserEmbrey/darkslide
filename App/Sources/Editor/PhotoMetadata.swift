@@ -64,7 +64,7 @@ struct PhotoMetadata: Sendable {
         var location: CLLocationCoordinate2D?
 
         let props: [CFString: Any] = {
-            guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+            guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
             else { return [:] }
             return CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] ?? [:]
         }()
@@ -168,7 +168,7 @@ struct PhotoMetadata: Sendable {
 
         // File
         var file = [Row(label: "Name", value: url.lastPathComponent), Row(label: "Folder", value: url.deletingLastPathComponent().path)]
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.photoFile.path) {
             if let size = attrs[.size] as? Int64 { file.append(Row(label: "Size", value: ByteCountFormatter.string(fromByteCount: size, countStyle: .file))) }
             if let d = attrs[.modificationDate] as? Date { file.append(Row(label: "Modified", value: d.formatted(date: .abbreviated, time: .shortened))) }
         }
@@ -208,7 +208,7 @@ struct PhotoMetadata: Sendable {
         f.bias = exif[kCGImagePropertyExifExposureBiasValue] as? Double
         f.width = props[kCGImagePropertyPixelWidth] as? Int
         f.height = props[kCGImagePropertyPixelHeight] as? Int
-        f.fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int64
+        f.fileSize = (try? FileManager.default.attributesOfItem(atPath: url.photoFile.path)[.size]) as? Int64
         // iPhones name the lens "iPhone 18 Pro Max back triple camera 16.891mm f/2.8";
         // say which camera, as Photos does, from the equivalent focal length
         if let lens = f.lens, (make ?? "").lowercased().hasPrefix("apple"), lens.lowercased().contains("camera") {

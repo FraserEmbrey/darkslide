@@ -158,7 +158,7 @@ actor Engine {
         defer { watchdog.cancel() }
         do {
             // the HDR limit caps the helper's HDR curve (see its _sync_hdr_white)
-            return try await request(["cmd": "open", "path": url.path, "hdrSource": hdrSource,
+            return try await request(["cmd": "open", "path": url.photoFile.path, "version": url.versionNumber, "hdrSource": hdrSource,
                                       "hdrLimitStops": UserDefaults.standard.double(forKey: SettingsKey.hdrLimitStops)],
                                      as: OpenReply.self)
         } catch where hungOnOpen {

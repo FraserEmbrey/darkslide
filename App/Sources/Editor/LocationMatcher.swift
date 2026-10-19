@@ -38,7 +38,7 @@ enum LocationMatcher {
     /// zone (OffsetTimeOriginal); then `zone` is assumed. `clockOffset` corrects
     /// a camera clock that's fast (negative) or slow (positive).
     static func captureDate(of url: URL, zone: TimeZone, clockOffset: TimeInterval) -> Date? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
               let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String else { return nil }

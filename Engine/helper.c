@@ -503,15 +503,22 @@ static gboolean _sidecar_has_history(const char *xmp)
   return found;
 }
 
+// {"cmd":"open","path":"/photo.NEF","version":1}: version is optional, 0 the original
 static void _cmd_open(JsonObject *o)
 {
   const char *path = json_object_get_string_member_with_default(o, "path", NULL);
   if(!path || !g_file_test(path, G_FILE_TEST_IS_REGULAR)) return _error("file not found");
   _close_image();
 
+  // a version (darktable's duplicate) has its own sidecar, photo_01.NEF.xmp
+  const int version = MAX(0, (int)json_object_get_int_member_with_default(o, "version", 0));
+  char versioned[PATH_MAX];
+  g_strlcpy(versioned, path, sizeof(versioned));
+  dt_image_path_append_version_no_db(version, versioned, sizeof(versioned));
+
   // the library is in memory, so the XMP sidecar is the only saved state:
   // an existing sidecar (from this app or from darktable) is read on import
-  gchar *xmp = g_strconcat(path, ".xmp", NULL);
+  gchar *xmp = g_strconcat(versioned, ".xmp", NULL);
   const gboolean had_sidecar = g_file_test(xmp, G_FILE_TEST_IS_REGULAR);
   // a sidecar that only rates or tags the photo isn't an edit: the app still
   // gives such a photo its new-photo defaults
@@ -522,8 +529,13 @@ static void _cmd_open(JsonObject *o)
   dt_film_t film;
   const dt_filmid_t filmid = dt_film_new(&film, dir);
   g_free(dir);
-  const dt_imgid_t imgid = dt_image_import(filmid, path, TRUE, FALSE);
+  dt_imgid_t imgid = dt_image_import(filmid, path, TRUE, FALSE);
   if(!dt_is_valid_imgid(imgid)) return _error("darktable could not import this file");
+  // importing reads the versions' sidecars too; one made since is added here,
+  // and either way its sidecar is read below. Saving writes to the version's
+  // sidecar, as darktable names it from the version in the library.
+  if(version > 0) imgid = dt_image_duplicate_with_version(imgid, version);
+  if(!dt_is_valid_imgid(imgid)) return _error("darktable could not make this version");
 
   // The sidecar is the edit. darktable only reads it the first time a file
   // is imported, so a file opened again this session (a decode whose sidecar
@@ -531,7 +543,7 @@ static void _cmd_open(JsonObject *o)
   // then: read it again, or clear the history when there's none.
   if(had_sidecar)
   {
-    gchar *xmp_path = g_strconcat(path, ".xmp", NULL);
+    gchar *xmp_path = g_strconcat(versioned, ".xmp", NULL);
     dt_image_t *img = dt_image_cache_get(imgid, 'w');
     if(img)
     {

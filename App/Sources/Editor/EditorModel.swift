@@ -57,6 +57,7 @@ final class EditorModel {
     private static var autoExportTested = false
     private static var hdrMatchTested = false
     private static var decoderSwitchTested = false
+    private static var versionsTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -1663,6 +1664,37 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
                 }
             }
+            // TestVersions: launch argument (-TestVersions YES) for testing: duplicates the
+            // photo, edits the version, goes back to the original, then deletes the version
+            if UserDefaults.standard.bool(forKey: "TestVersions"), !url.isVersion, !Self.versionsTested {
+                Self.versionsTested = true
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide versions: \(s)\n".data(using: .utf8)!) }
+                    @MainActor func ev() -> Double { modules.first { $0.op == "exposure" }?.fields.first { $0.name == "exposure" }?.value.number ?? -99 }
+                    @MainActor func sidecars() -> [String] {
+                        ((try? FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []).filter { $0.hasSuffix(".xmp") }.sorted()
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    log("original ev \(ev())")
+                    duplicateVersion()
+                    try? await Task.sleep(for: .seconds(6))
+                    log("now \(self.url?.lastPathComponent ?? "-") version \(self.url?.versionNumber ?? -1) ev \(ev()), items \(library.items.map(\.name)), sidecars \(sidecars())")
+                    if let key = modules.first(where: { $0.op == "exposure" })?.key { setValue(.number(ev() + 1.5), module: key, field: "exposure") }
+                    try? await Task.sleep(for: .seconds(2))
+                    await save()
+                    let versionEV = ev()
+                    await open(url)
+                    try? await Task.sleep(for: .seconds(4))
+                    log("back to \(self.url?.lastPathComponent ?? "-") ev \(ev()), version had \(versionEV)")
+                    let v = PhotoVersion.url(of: url, number: 1)
+                    await open(v)
+                    try? await Task.sleep(for: .seconds(4))
+                    log("reopened version ev \(ev())")
+                    deleteVersion(v)
+                    try? await Task.sleep(for: .seconds(6))
+                    log("after delete: \(self.url?.lastPathComponent ?? "-"), items \(library.items.map(\.name)), sidecars \(sidecars())")
+                }
+            }
             // TestLocalControls: launch argument (-TestLocalControls YES) for testing: a
             // radial gradient, warmed then cooled, logging the centre's colour and the instances
             if UserDefaults.standard.bool(forKey: "TestLocalControls") {
@@ -1867,7 +1899,7 @@ final class EditorModel {
     /// a DNG's BaselineExposure (EV), if it has one
     nonisolated static func dngBaselineExposure(_ url: URL) -> Double? {
         guard url.pathExtension.lowercased() == "dng",
-              let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
               let dng = props[kCGImagePropertyDNGDictionary] as? [CFString: Any] else { return nil }
         return (dng[kCGImagePropertyDNGBaselineExposure] as? NSNumber)?.doubleValue
@@ -1933,7 +1965,7 @@ final class EditorModel {
 
     /// the photo's ISO from its EXIF, if it has one
     nonisolated static func isoSpeed(_ url: URL) -> Int? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
               let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any],
               let iso = (exif[kCGImagePropertyExifISOSpeedRatings] as? [Int])?.first else { return nil }
@@ -2628,7 +2660,7 @@ final class EditorModel {
     /// A photo's camera metadata (time, camera and lens, exposure, location)
     /// and rating, for a file written from renders, which are already upright.
     nonisolated static func exportMetadata(of photo: URL) -> [String: Any] {
-        guard let source = CGImageSourceCreateWithURL(photo as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        guard let source = CGImageSourceCreateWithURL(photo.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let all = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else { return [:] }
         var props: [String: Any] = [:]
         for key in [kCGImagePropertyExifDictionary, kCGImagePropertyExifAuxDictionary, kCGImagePropertyTIFFDictionary,
@@ -2847,8 +2879,8 @@ final class EditorModel {
     /// The raw denoised at full strength, as uint16 sensor values: from the
     /// cache, keyed to the file's path, size and date, or from the model.
     private func denoisedMosaic(for url: URL, engine: Engine) async throws -> URL {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let stamp = "\(url.path)|\((attributes?[.size] as? Int) ?? 0)|\((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.photoFile.path)
+        let stamp = "\(url.photoFile.path)|\((attributes?[.size] as? Int) ?? 0)|\((attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"
         let digest = SHA256.hash(data: Data(stamp.utf8)).map { String(format: "%02x", $0) }.joined().prefix(32)
         let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Darkslide/denoised", isDirectory: true)
@@ -3692,7 +3724,7 @@ extension EditorModel {
 
 extension EditorModel {
     nonisolated static func readLens(_ url: URL) -> LensInfo {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+        guard let src = CGImageSourceCreateWithURL(url.photoFile as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { return LensInfo() }
         let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
         let aux = props[kCGImagePropertyExifAuxDictionary] as? [CFString: Any] ?? [:]
@@ -4122,7 +4154,8 @@ extension EditorModel {
     /// The extension stays if it's left off.
     func renamePhoto(to newName: String) {
         // a Photos original is a cache copy; Photos keeps its own name
-        guard let current = url, photosAsset == nil else { return }
+        // a version's name is its original's, so it's renamed with that
+        guard let current = url, photosAsset == nil, !current.isVersion else { return }
         var name = newName.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "/", with: ":")
         guard !name.isEmpty, name != current.lastPathComponent else { return }
         if (name as NSString).pathExtension.lowercased() != current.pathExtension.lowercased() {
@@ -4135,8 +4168,15 @@ extension EditorModel {
         }
         Task {
             await leaveCurrentPhoto()
+            // numbered now: once the original has moved, their names no longer parse
+            let versions = PhotoVersion.all(of: current).dropFirst().map { ($0, $0.versionNumber) }
             do {
                 try FileManager.default.moveItem(at: current, to: target)
+                // darktable finds versions by their sidecars' names
+                for (v, n) in versions where n > 0 {
+                    try? FileManager.default.moveItem(atPath: v.path + ".xmp",
+                                                      toPath: PhotoVersion.url(of: target, number: n).path + ".xmp")
+                }
                 for suffix in [".xmp", ".apple.xmp"] {
                     let side = URL(fileURLWithPath: current.path + suffix)
                     if FileManager.default.fileExists(atPath: side.path) {

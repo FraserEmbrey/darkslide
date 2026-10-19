@@ -40,13 +40,27 @@ done
 # modules (lib/darktable) and data (share/darktable) relative to the binary
 cp "$ENGINE_SRC/bin/darkroom-helper" "$APP/Contents/Resources/engine/bin/"
 # without darktable's interface parts: lighttable and view modules
-rsync -a --exclude 'plugins/lighttable' --exclude 'views' "$ENGINE_SRC/lib" "$APP/Contents/Resources/engine/"
+# and without the export formats and destinations Darkslide doesn't use: it
+# exports JPEG, PNG and TIFF to disk (anything else goes through Core Image)
+rsync -a --exclude 'plugins/lighttable' --exclude 'views' \
+  --exclude 'imageio/format/libcopy.so' --exclude 'imageio/format/libpdf.so' --exclude 'imageio/format/libpfm.so' \
+  --exclude 'imageio/format/libppm.so' --exclude 'imageio/storage/libemail.so' --exclude 'imageio/storage/libgallery.so' \
+  --exclude 'imageio/storage/liblatex.so' --exclude 'imageio/storage/libpiwigo.so' \
+  "$ENGINE_SRC/lib" "$APP/Contents/Resources/engine/"
 # MetalCL: darktable's GPU code on Metal (Engine/metalcl); kernels are in share/darktable/metal-kernels
 "$ROOT/Engine/metalcl/build.sh" > /dev/null
 cp "$ROOT/vendor/metalcl/libMetalCL.dylib" "$APP/Contents/Resources/engine/lib/"
-# and without its interface art (pixmaps, themes, the slideshow) or its LaTeX and tools
+# and without its interface art (pixmaps, themes, the slideshow), its LaTeX
+# and tools, keyboard shortcuts, shell completion and debugger commands
 rsync -a --exclude 'pixmaps' --exclude 'themes' --exclude 'pswp' --exclude 'latex' --exclude 'tools' \
+  --exclude 'shortcutsrc*' --exclude 'darktable.bash' --exclude 'gdb_commands' \
   "$ENGINE_SRC/share/darktable" "$APP/Contents/Resources/engine/share/"
+# white balance presets and noise profiles, read by darktable's JSON parser,
+# without their indentation: 4.4 MB of the presets is spaces
+for json in wb_presets noiseprofiles; do
+  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); json.dump(d, open(sys.argv[1], "w"), separators=(",", ":"), ensure_ascii=False)' \
+    "$APP/Contents/Resources/engine/share/darktable/$json.json"
+done
 
 # darktable's interface libraries (GTK and those under it) are never run:
 # point the engine at stand-ins, so they aren't loaded (Scripts/stub-gui-libs.py)

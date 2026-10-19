@@ -177,13 +177,14 @@ struct ContentView: View {
                     // orange when part of the photo is brighter than this display can show
                     let beyond = model.viewHDR ? model.hdrAnalysis?.fractionAboveDisplay ?? 0 : 0
                     let warn = beyond >= HDRAnalysis.beyondDisplayShown
-                    Toggle("Beyond Display", systemImage: warn ? "exclamationmark.triangle.fill" : "exclamationmark.triangle",
+                    Toggle("Beyond Display", systemImage: warn ? "sun.max.trianglebadge.exclamationmark.fill" : "sun.max.trianglebadge.exclamationmark",
                            isOn: $model.showHeadroomOverlay)
                         .foregroundStyle(warn && !model.showHeadroomOverlay ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
-                        .disabled(!model.viewHDR)
-                        .help(warn
-                              ? "\(beyond.formatted(.percent.precision(.fractionLength(1)))) of the photo is brighter than this display can show. Click to highlight it."
-                              : "Highlight areas brighter than this display can show")
+                        // with nothing beyond the display there's nothing to highlight
+                        .disabled(!model.viewHDR || !(warn || model.showHeadroomOverlay))
+                        .help(!model.viewHDR ? "Switch to HDR to see what's brighter than this display can show"
+                              : warn ? "\(beyond.formatted(.percent.precision(.fractionLength(1)))) of the photo is brighter than this display can show. Click to highlight it."
+                              : "Nothing in the photo is brighter than this display can show right now")
                 }
                 .hidden(model.showingLibrary)
     }

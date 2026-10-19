@@ -1,10 +1,66 @@
 # Darkslide
 
-A native macOS front end for the darktable raw engine. Proof of concept.
+**darktable's raw engine, in a Mac app that feels like a Mac app.**
 
-SwiftUI interface, darktable 5.6.2 doing all the processing, and edits stored in darktable's own XMP sidecars, so a photo can move between this app and darktable at any point.
+![Darkslide editing a raw of Brighton's Royal Pavilion at night in HDR](docs/screenshot.jpg)
 
-It was called Develop until October 2026. On its first launch as Darkslide it brings over Develop's settings, its support folder and its caches (`FormerName.swift`), and Photos edits saved under the old name still open.
+darktable is one of the best raw processors there is: scene-referred, colour-managed, free, and fussy in all the right ways. Its interface is also GTK on a Mac, which is a bit like wearing walking boots to a wedding. Darkslide keeps the engine and replaces the boots. You get darktable's processing, sliders that behave like macOS sliders, and HDR you can actually see while you edit.
+
+**[Download the latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest)** for Apple silicon Macs on macOS 26 or later. It's version 0.1, so expect some rough edges.
+
+## Contents
+
+- [What it's for](#what-its-for)
+- [Made for new Macs](#made-for-new-macs)
+- [Getting started](#getting-started)
+- [How darktable fits in](#how-darktable-fits-in)
+- [Architecture](#architecture)
+- [Features in detail](#features-in-detail): [HDR preview](#hdr-preview), [Export](#export), [Library and filmstrip](#library-and-filmstrip), [Crop and straighten](#crop-and-straighten), [Film looks](#film-looks), [Apple Photos](#apple-photos), [Frames and watermarks](#frames-and-watermarks), [Local adjustments](#local-adjustments), [Looks](#looks)
+- [Building](#building)
+- [Releasing](#releasing)
+- [Layout](#layout)
+- [Known limits](#known-limits)
+- [Licence](#licence)
+- [A slimmer engine](#a-slimmer-engine)
+
+## What it's for
+
+The goals, in order:
+
+- **darktable's results.** Every raw is processed by darktable 5.6.2, and an edit is darktable's own history, so it opens the same in darktable.
+- **A native Mac app.** SwiftUI, the standard toolbar, sidebar and inspector, keyboard shortcuts you'd guess, and the save panel you already know.
+- **HDR, properly.** Edit in HDR on an XDR or other EDR display, see how much of the image sits above white, and export HEIC, HLG or PQ, or JPEGs with an ISO 21496-1 gain map that look right on phones too.
+- **Fast on Apple silicon.** darktable's GPU code runs on Metal, and moving a slider reruns only the part of the pipeline it affects.
+- **Your files stay yours.** Edits live in darktable's own XMP sidecars beside the photo. There's no import step, and no database holding your edits hostage.
+
+Along the way it picked up a library with a grid, a map and a cull view, Apple Photos editing that Revert to Original can undo, film looks from LUT packs, frames and watermarks, and on-device Core ML for raw denoise and rescuing slightly soft photos.
+
+## Made for new Macs
+
+Darkslide needs a Mac with Apple silicon (M1 or later) and macOS 26 Tahoe or later. That's on purpose.
+
+- **Apple silicon only.** darktable's GPU code runs here through MetalCL, a Metal layer written for Apple's GPUs, where the CPU and GPU share memory so pixels aren't copied back and forth. The engine and the libraries bundled with it are built for arm64 only, and the denoise and Rescue Focus models run through Core ML. An Intel build would mean a second engine, a second set of libraries and an Intel Mac to test them on, for Macs Apple no longer makes.
+- **macOS 26 only.** The toolbar is built with macOS 26's toolbar APIs, and the app takes on its look. The HDR view uses macOS 26's newer HDR layer APIs to follow the display's headroom as brightness changes. Older versions would mean keeping a second path for each of those and testing on systems the app isn't built for. That effort goes into the editor instead.
+
+## Getting started
+
+1. **Download** `Darkslide-<version>.zip` from the [latest release](https://github.com/FraserEmbrey/darkroom-native/releases/latest).
+2. **Unzip it** and drag Darkslide to Applications. It's signed and notarised, so it opens without a warning.
+3. **Open a photo.** Drag a raw onto the window or the Dock icon, or use File › Open. Drag a folder in to browse it as a library, or switch the sidebar to Apple Photos (it asks for access the first time).
+4. **Edit.** The inspector on the right starts with Essentials. Active shows what's switched on, and All lists every darktable module. Press the HDR button in the toolbar to see the photo in HDR.
+5. **Export** with File › Export (⌘E). Moving to another photo saves your edit to the sidecar, as darktable and Lightroom do.
+
+The download is about 16 MB. The denoise and Rescue Focus models (30 to 50 MB each) aren't in it. The app asks before downloading each one, the first time you use it, and checks it against a checksum built into the app.
+
+Help › Acknowledgements lists everything inside the app, with its licence. To build it yourself, see [Building](#building).
+
+## How darktable fits in
+
+darktable does the processing. Darkslide does everything around it.
+
+The app runs darktable as a separate engine process: libdarktable, headless, with no GTK interface, driven by a small C helper. The helper opens one photo, keeps darktable's pipeline warm between edits, and sends finished frames back to the app. darktable's modules publish their settings, so most of the inspector is generated from them, and anything darktable can do is reachable under All.
+
+The engine is darktable 5.6.2 with a handful of small patches (`Engine/patches`), built with only what Darkslide uses. Its GPU code runs on Metal through MetalCL, and anything macOS already does well, such as decoding HEIC or writing gain maps, macOS does. Edits are darktable XMP sidecars, so a photo can move between Darkslide and darktable at any point. The details follow.
 
 ## Architecture
 
@@ -22,6 +78,8 @@ Darkslide.app (Swift, SwiftUI)              darkroom-helper (C, links libdarktab
 - **Warm pipeline.** The helper keeps the image and pipeline open between edits, and darktable's pipe cache means moving a slider only reruns the pipe from that module: about 50 ms per exposure change on a 24 MP raw at 2120 px, against 175 ms when the whole pipe reruns. On the GPU this needs Engine/patches/0003: darktable only copies GPU results back into the cache for the module focused in its interface, so headless nothing was cached until the helper started naming the module being edited.
 - **Generated controls.** Every darktable module publishes metadata for its settings (names, ranges, defaults, enum values). The helper sends that to the app, which builds sliders, pickers and toggles from it. Curves, masks and other array-valued settings are counted and listed as "needs a custom editor".
 - **XMP is the save format.** The helper's library is in memory. Opening a photo reads any existing sidecar (from this app or from darktable), and Save writes it back. darktable's own sidecar writing is set to "never" after start-up (a `--conf` override would also block Save) and switched to "always" only while saving. Real darktable reads it without changes (checked with darktable-cli 5.6.2).
+
+## Features in detail
 
 ### HDR preview
 
@@ -277,7 +335,7 @@ For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` 
 
 ## Known limits
 
-- **Development builds aren't notarised:** `build-app.sh` signs with a development identity, so on another Mac Gatekeeper blocks the app until it's allowed in System Settings › Privacy & Security. Releases (below) are notarised.
+- **Development builds aren't notarised:** `build-app.sh` signs with a development identity, so on another Mac Gatekeeper blocks the app until it's allowed in System Settings › Privacy & Security. Releases are notarised.
 - **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
 - **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
 - **White balance:** The temperature module stores RGB multipliers. Kelvin and tint are worked out in darktable's GUI code, so they need a custom editor.

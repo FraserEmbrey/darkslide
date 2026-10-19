@@ -610,6 +610,19 @@ final class EditorModel {
             failedStarts = 0
             watchHeadroom()
             styles = (try? await engine.styles())?.map(StyleInfo.init(name:)) ?? []
+            // TestModelDownload: launch argument (-TestModelDownload RescueMotion) for testing,
+            // downloads a model as on first use, without asking
+            if let name = UserDefaults.standard.string(forKey: "TestModelDownload"), let m = ModelStore.Model(rawValue: name) {
+                Task.detached {
+                    let started = Date()
+                    do {
+                        let url = try await ModelStore.download(m) { _ in }
+                        FileHandle.standardError.write("Darkslide model test: \(url.path) in \(Int(Date().timeIntervalSince(started))) s, installed \(ModelStore.installedURL(m) != nil)\n".data(using: .utf8)!)
+                    } catch {
+                        FileHandle.standardError.write("Darkslide model test: \(error.localizedDescription)\n".data(using: .utf8)!)
+                    }
+                }
+            }
             if let url = openWhenReady {
                 openWhenReady = nil
                 await open(url)
@@ -2658,6 +2671,7 @@ final class EditorModel {
     func setAIDenoise(_ amount: Double?, restoring: Bool = false) async {
         guard canAIDenoise, !isDenoising, let engine, let url else { return }
         let on = (amount ?? 0) > 0
+        if on, !denoiseSent, !restoring, await !ensureModel(.rawDenoise) { return }
         do {
             if on && !denoiseSent {
                 isDenoising = true
@@ -4278,6 +4292,40 @@ extension EditorModel {
             n += 1
         }
         return candidate
+    }
+}
+
+// MARK: - Models
+
+extension EditorModel {
+    /// Makes sure a model is here before it's used: if it isn't, asks to
+    /// download it (ModelStore) and does, with its progress in the status
+    /// line. False if it isn't here at the end: declined, or it failed.
+    func ensureModel(_ model: ModelStore.Model) async -> Bool {
+        if ModelStore.installedURL(model) != nil { return true }
+        guard ModelStore.isOffered(model) else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Download the \(model.title) model?"
+        let size = ModelStore.downloadSize(model).map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+        alert.informativeText = "\(model.title) uses a machine learning model\(size.map { " of \($0)" } ?? "") that isn't built into Darkslide. "
+            + "It's downloaded once from Darkslide's GitHub releases and kept for next time."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        let title = model.title
+        statusNote = "Downloading the \(title) model…"
+        defer { statusNote = nil }
+        do {
+            _ = try await ModelStore.download(model) { p in
+                Task { @MainActor [weak self] in
+                    self?.statusNote = "Downloading the \(title) model… \(Int(p * 100))%"
+                }
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 }
 

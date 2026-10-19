@@ -12,8 +12,8 @@ import Vision
 /// against the sharp photo; on slight softness it does less than
 /// sharpening, so it's for clear misses. Detail that's gone entirely comes
 /// back smoothed rather than invented. Tiles overlap by 48 px and are
-/// cross-faded. The model is converted by Scripts/fetch-models.sh; without
-/// it, Rescue Focus isn't offered.
+/// cross-faded. The model is converted by Scripts/fetch-models.sh, and
+/// downloaded when first used (ModelStore).
 ///
 /// For camera shake, the same network trained on GoPro's motion blur. On
 /// RealBlur's real shaken photos it gained 0.6 dB on average, up to 3 dB on
@@ -24,10 +24,8 @@ enum RescueFocus {
         case focus, shake
         var id: String { rawValue }
         var title: String { self == .focus ? "Missed Focus" : "Camera Shake" }
-        fileprivate var resource: String { self == .focus ? "RescueFocus" : "RescueMotion" }
-        var modelURL: URL? {
-            Bundle.main.url(forResource: resource, withExtension: "mlmodelc", subdirectory: "Models")
-        }
+        var model: ModelStore.Model { self == .focus ? .rescueFocus : .rescueMotion }
+        var modelURL: URL? { ModelStore.installedURL(model) }
     }
 
     struct Failure: LocalizedError {
@@ -35,9 +33,10 @@ enum RescueFocus {
         var errorDescription: String? { message }
     }
 
-    static var isAvailable: Bool { Kind.focus.modelURL != nil }
-    /// the kinds of blur whose models are installed
-    static var kinds: [Kind] { Kind.allCases.filter { $0.modelURL != nil } }
+    /// installed, or to be downloaded when first used (ModelStore)
+    static var isAvailable: Bool { ModelStore.isOffered(.rescueFocus) }
+    /// the kinds of blur whose models are installed or can be downloaded
+    static var kinds: [Kind] { Kind.allCases.filter { ModelStore.isOffered($0.model) } }
 
     private static let tile = 512
     private static let margin = 48

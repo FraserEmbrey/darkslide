@@ -251,12 +251,12 @@ Then:
 
 ```fish
 Engine/fetch-engine.sh     # darktable source + patches -> vendor/dt-install (~5 min)
-Scripts/fetch-models.sh    # optional: darktable's raw denoise model -> Models/, as Core ML (needs uv)
+Scripts/fetch-models.sh    # optional: the denoise and Rescue Focus models -> Models/, as Core ML (needs uv)
 Scripts/build-app.sh       # helper + app -> build/Darkslide.app, signed
 open build/Darkslide.app
 ```
 
-Without the model, Image › Denoise to New DNG is greyed out. The model is darktable 5.6's RawNIND raw denoiser (GPL-3.0), downloaded from darktable-ai's release and converted, so it isn't kept in git.
+The models are darktable 5.6's RawNIND raw denoiser (GPL-3.0), from darktable-ai's release, and Restormer's defocus and motion deblurring models (MIT) for Rescue Focus, downloaded and converted, so they aren't kept in git. A build with `Models/` has them inside. Without it, the app downloads each the first time Denoise or Rescue Focus is used (`ModelStore.swift`), from the GitHub release named in `ModelManifest.swift`, after asking. `Scripts/publish-models.sh <tag>` uploads them to a new release and writes that manifest. A published tag is never replaced, since apps already released check downloads against its checksums.
 
 For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` points at `vendor/dt-install/bin/darkroom-helper`.
 

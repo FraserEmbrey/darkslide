@@ -27,9 +27,10 @@ xcrun actool "$ROOT/Design/AppIcon.icon" --compile "$APP/Contents/Resources" --p
   --output-partial-info-plist "$ROOT/.build/icon-partial.plist" > /dev/null
 
 # Core ML models, when Scripts/fetch-models.sh has made them: raw denoise
-# and Rescue Focus (defocus and motion)
+# and Rescue Focus (defocus and motion). Releases leave them out
+# (DARKSLIDE_NO_MODELS=1), and they're downloaded when first used.
 for model in RawDenoise RescueFocus RescueMotion; do
-  if [ -d "$ROOT/Models/$model.mlpackage" ]; then
+  if [ -d "$ROOT/Models/$model.mlpackage" ] && [ -z "${DARKSLIDE_NO_MODELS:-}" ]; then
     mkdir -p "$APP/Contents/Resources/Models"
     xcrun coremlcompiler compile "$ROOT/Models/$model.mlpackage" "$APP/Contents/Resources/Models" > /dev/null
   fi

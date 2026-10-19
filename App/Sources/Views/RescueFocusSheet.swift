@@ -133,6 +133,8 @@ struct RescueFocusSheet: View {
         // after that, again when the square moves or the amount settles
         .task(id: Request(centre: centre, amount: settled, subjectOnly: subjectOnly, kind: kind)) {
             guard overview != nil else { return }
+            // camera shake's model is downloaded the first time it's chosen
+            if await !model.ensureModel(kind.model) { kind = .focus; return }
             await refresh()
         }
     }

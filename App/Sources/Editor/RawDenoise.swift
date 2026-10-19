@@ -13,7 +13,7 @@ import Foundation
 /// and once in the output, which left its result about 15% brighter and a
 /// little magenta on a Sony A7C at ISO 12800; per channel it's within 0.1%.
 /// The model comes from darktable-ai's release, converted by
-/// Scripts/fetch-models.sh; without it, Denoise isn't offered.
+/// Scripts/fetch-models.sh, and downloaded when first used (ModelStore).
 enum RawDenoise {
     struct Layout: Decodable, Sendable {
         let width: Int
@@ -34,11 +34,10 @@ enum RawDenoise {
         var errorDescription: String? { message }
     }
 
-    static var modelURL: URL? {
-        Bundle.main.url(forResource: "RawDenoise", withExtension: "mlmodelc", subdirectory: "Models")
-    }
+    static var modelURL: URL? { ModelStore.installedURL(.rawDenoise) }
 
-    static var isAvailable: Bool { modelURL != nil }
+    /// installed, or to be downloaded when first used (ModelStore)
+    static var isAvailable: Bool { ModelStore.isOffered(.rawDenoise) }
 
     /// tile size and overlap in packed (half-size) pixels, as darktable's
     private static let tile = 512

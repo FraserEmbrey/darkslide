@@ -138,12 +138,16 @@ struct AppCommands: Commands {
             if model.compositeRecipe != nil {
                 Button("Edit Composite…") { model.editComposite() }
             }
-            Button("Rescue Focus…") { model.rescueFocusPhoto = model.url }
-                .disabled(!model.canRescueFocus)
-                .help(RescueFocus.isAvailable ? "" : "The Rescue Focus model isn't installed")
-            Button("Denoise to New DNG…") { model.choosingDenoise = true }
-                .disabled(!model.canDenoise)
-                .help(RawDenoise.isAvailable ? "" : "The denoise model isn't installed")
+            Button("Rescue Focus…") {
+                Task { if await model.ensureModel(.rescueFocus) { model.rescueFocusPhoto = model.url } }
+            }
+            .disabled(!model.canRescueFocus)
+            .help(RescueFocus.isAvailable ? "" : "The Rescue Focus model isn't installed")
+            Button("Denoise to New DNG…") {
+                Task { if await model.ensureModel(.rawDenoise) { model.choosingDenoise = true } }
+            }
+            .disabled(!model.canDenoise)
+            .help(RawDenoise.isAvailable ? "" : "The denoise model isn't installed")
             Button("Reset All Edits…") { model.confirmingReset = true }
                 .disabled(!model.canReset)
             Toggle("Compare with Original", isOn: Binding(get: { model.comparing }, set: { model.comparing = $0 }))

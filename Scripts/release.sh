@@ -88,9 +88,9 @@ It needs an Apple silicon Mac and macOS 26. I've built it around Metal, Core ML 
 
 - It's version $VERSION, so expect rough edges. darktable does the processing, so the results should be solid. Issues are welcome.
 - Edits are saved as darktable XMP sidecars next to your photos, so you can open them in darktable.
-- Denoise and Rescue Focus ask before downloading their models (30 to 50 MB each) the first time you use them. That's why the download is only 16 MB.
+- The AI models for Denoise and Rescue Focus aren't included. I'd rather keep the download small and not make anyone install AI they might never use. The first time you use one, it asks before downloading its model (30 to 50 MB).
 
-Darkslide is free software under the GNU GPL, version 3 or later, built on darktable 5.6.2. Its source is this tag. Help › Acknowledgements in the app lists everything else inside it, with their licences.
+Darkslide is free software under the GNU GPL, version 3 or later, built on darktable 5.6.2. This release is built from the v$VERSION tag, so the code at that tag is its source. Help › Acknowledgements in the app lists everything else inside it, with their licences.
 EOF
 gh release create "$TAG" "$ZIP" --draft --verify-tag --title "Darkslide $VERSION" --notes-file "$OUT/notes.md"
 echo "drafted $TAG: check it on GitHub, then publish it"

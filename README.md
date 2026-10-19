@@ -43,7 +43,7 @@ It needs Apple silicon and macOS 26. I've built it around Metal, Core ML and mac
 3. Edit in the inspector on the right. Essentials has the main controls, Active shows what's switched on and All lists every darktable module. The HDR button in the toolbar shows the photo in HDR.
 4. Export with File › Export (⌘E). Moving to another photo saves your edit to its sidecar, as darktable and Lightroom do.
 
-The download is about 16 MB because the AI models aren't in it. Denoise and Rescue Focus ask before downloading theirs (30 to 50 MB each) the first time you use them, and the app checks each against a checksum before using it.
+The AI models for Denoise and Rescue Focus aren't in the download. I'd rather keep it small (about 16 MB) and not make anyone install AI they might never use. The first time you use one, it asks before downloading its model (30 to 50 MB) and checks it against a checksum before using it.
 
 Help › Acknowledgements lists everything inside the app with its licence. To build it yourself, see [Building](#building).
 

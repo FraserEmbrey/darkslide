@@ -74,3 +74,58 @@ enum LocalControl: String, CaseIterable, Identifiable {
     /// aren't neutral: local contrast starts at 125% detail
     var neutral: [(String, Double)] { op == "bilat" ? [("detail", 0)] : [] }
 }
+
+/// Aperture's Quick Brushes: a brushed local adjustment with its sliders set
+/// for one job. Any of them can be changed after, as for any local adjustment.
+enum QuickBrush: String, CaseIterable, Identifiable {
+    case dodge, burn, contrast, clarity, soften, saturate, desaturate, warm, cool, plain
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dodge: "Dodge"
+        case .burn: "Burn"
+        case .contrast: "Contrast"
+        case .clarity: "Definition"
+        case .soften: "Smooth Skin"
+        case .saturate: "Intensify"
+        case .desaturate: "Desaturate"
+        case .warm: "Warm"
+        case .cool: "Cool"
+        case .plain: "Brush"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .dodge: "sun.max"
+        case .burn: "moon"
+        case .contrast: "circle.lefthalf.filled"
+        case .clarity: "sparkle"
+        case .soften: "face.smiling"
+        case .saturate: "drop.fill"
+        case .desaturate: "drop"
+        case .warm: "thermometer.sun"
+        case .cool: "thermometer.snowflake"
+        case .plain: "paintbrush"
+        }
+    }
+
+    /// the sliders it sets, on a fresh adjustment
+    var values: [(LocalControl, Double)] {
+        switch self {
+        case .dodge: [(.exposure, 0.7)]
+        case .burn: [(.exposure, -0.7)]
+        case .contrast: [(.contrast, 40)]
+        case .clarity: [(.clarity, 40)]
+        // negative local contrast softens texture and keeps edges, as skin smoothing wants
+        case .soften: [(.clarity, -60)]
+        case .saturate: [(.saturation, 40)]
+        case .desaturate: [(.saturation, -100)]
+        case .warm: [(.warmth, 50)]
+        case .cool: [(.warmth, -50)]
+        case .plain: []
+        }
+    }
+}

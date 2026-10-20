@@ -65,6 +65,7 @@ final class EditorModel {
     private static var stacksTested = false
     private static var removeObjectsTested = false
     private static var autoStackTested = false
+    private static var brushTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -150,6 +151,17 @@ final class EditorModel {
     private(set) var canShowFocusPoint = false
     /// Vision is looking for the subject
     var isFindingSubject = false
+    /// a Quick Brush chosen, waiting for its first stroke to make its adjustment
+    var pendingBrush: QuickBrush?
+    /// the brush, as a fraction of the photo's shorter side, and how soft its edge is
+    var brushSize = UserDefaults.standard.object(forKey: "BrushSize") as? Double ?? 0.04 {
+        didSet { UserDefaults.standard.set(brushSize, forKey: "BrushSize") }
+    }
+    var brushSoftness = UserDefaults.standard.object(forKey: "BrushSoftness") as? Double ?? 0.5 {
+        didSet { UserDefaults.standard.set(brushSoftness, forKey: "BrushSoftness") }
+    }
+    /// strokes take the adjustment away (Option does it for one stroke)
+    var brushErases = false
     var pendingShape: ShapeEdit?
     var sendingShape = false
     /// Spot removal (darktable's retouch): on while its tool is, the spots on
@@ -1764,6 +1776,35 @@ final class EditorModel {
                     await undo()
                     await undo()
                     log("undone twice: \(cleanUpMarks.count) marks, next undo \(undoTitle ?? "-"), redo \(redoTitle ?? "-")")
+                }
+            }
+            // TestBrush: launch argument (-TestBrush YES) for testing: a Dodge brush,
+            // a second stroke, an erasing one, then undo, logging the strokes
+            if UserDefaults.standard.bool(forKey: "TestBrush"), !Self.brushTested {
+                Self.brushTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let anchor = localAdjustments.first
+                        let ev = anchor.map { localValue(.exposure, of: $0) } ?? -99
+                        FileHandle.standardError.write("Darkslide brush: \(s): locals \(localAdjustments.map(\.key)), exposure \(ev), strokes \(localShape?.strokes.map { "\($0.points.count)\($0.erase ? " erase" : "")" } ?? []), undo \(undoTitle ?? "-")\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    let w = imageSize.width, h = imageSize.height
+                    let line = { (y: Double) in stride(from: 0.3, through: 0.6, by: 0.01).map { CGPoint(x: w * $0, y: h * y) } }
+                    startBrush(.dodge)
+                    paintStroke(line(0.5), erase: false)
+                    try? await Task.sleep(for: .seconds(3))
+                    log("dodged")
+                    paintStroke(line(0.3), erase: false)
+                    try? await Task.sleep(for: .seconds(3))
+                    log("second stroke")
+                    paintStroke([CGPoint(x: w * 0.45, y: h * 0.5)], erase: true)
+                    try? await Task.sleep(for: .seconds(3))
+                    log("erased")
+                    await undo()
+                    try? await Task.sleep(for: .seconds(2))
+                    await fetchLocalShape()
+                    log("undone")
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the
@@ -4042,8 +4083,10 @@ extension EditorModel {
 /// A local adjustment's shape in output pixels (the photo as processed, at
 /// full size): see LocalAdjustments.swift for how it's drawn and edited.
 struct LocalShape: Equatable {
-    enum Kind { case gradient, ellipse, subject }
+    enum Kind { case gradient, ellipse, subject, brush }
     let kind: Kind
+    /// a brush's strokes, painting or erasing
+    var strokes: [BrushStroke] = []
     /// a subject's outlines, traced from Vision's mask (it has no handles)
     var outlines: [[CGPoint]] = []
     /// gradient: anchor, a point along the line, the side it fades in toward,
@@ -4053,6 +4096,13 @@ struct LocalShape: Equatable {
     var points: [CGPoint]
     var compression = 0.3
     var border = 0.5
+}
+
+/// A brush stroke in output pixels.
+struct BrushStroke: Equatable {
+    var points: [CGPoint]
+    var radius: Double
+    var erase = false
 }
 
 /// A move of a shape, in output pixels, waiting to go to the engine.
@@ -4137,8 +4187,8 @@ extension EditorModel {
                     let r = min(w, h) * 0.25
                     try await engine.setEllipse(module: reply.added, center: c, a: CGPoint(x: c.x + r, y: c.y),
                                                 b: CGPoint(x: c.x, y: c.y + r), border: 0.5)
-                case .subject:
-                    break   // addSubject
+                case .subject, .brush:
+                    break   // addSubject, paintStroke
                 }
                 selectedLocal = reply.added
                 requestRender()
@@ -4228,10 +4278,88 @@ extension EditorModel {
         guard let engine, let key = selectedLocal, let r = try? await engine.shape(module: key) else { return }
         let pts = stride(from: 0, to: r.points.count - 1, by: 2).map { CGPoint(x: r.points[$0], y: r.points[$0 + 1]) }
         guard selectedLocal == key, pendingShape == nil, !sendingShape else { return }
-        let kind: LocalShape.Kind = switch r.kind { case "ellipse": .ellipse; case "subject": .subject; default: .gradient }
+        let kind: LocalShape.Kind = switch r.kind {
+        case "ellipse": .ellipse
+        case "subject": .subject
+        case "brush": .brush
+        default: .gradient
+        }
+        if kind == .brush {
+            // each stroke: x, y, … then its radius and 1 if it erases
+            let strokes = (r.outlines ?? []).compactMap { o -> BrushStroke? in
+                guard o.count >= 4 else { return nil }
+                let xy = o.dropLast(2)
+                let points = stride(from: xy.startIndex, to: xy.endIndex - 1, by: 2).map { CGPoint(x: o[$0], y: o[$0 + 1]) }
+                return BrushStroke(points: points, radius: o[o.count - 2], erase: o[o.count - 1] > 0.5)
+            }
+            localShape = LocalShape(kind: .brush, strokes: strokes, points: [])
+            return
+        }
         let outlines = (r.outlines ?? []).map { o in stride(from: 0, to: o.count - 1, by: 2).map { CGPoint(x: o[$0], y: o[$0 + 1]) } }
         localShape = LocalShape(kind: kind, outlines: outlines, points: pts,
                                 compression: r.compression ?? 0.3, border: r.border ?? 0.5)
+    }
+
+    /// whether the photo is being painted: a Quick Brush waiting, or a brushed adjustment selected
+    var isBrushing: Bool { pendingBrush != nil || localShape?.kind == .brush }
+
+    /// Chooses a Quick Brush: its adjustment is made by the first stroke.
+    func startBrush(_ brush: QuickBrush) {
+        selectedLocal = nil
+        brushErases = false
+        pendingBrush = brush
+    }
+
+    /// A stroke, in output pixels: the first of a Quick Brush makes its
+    /// adjustment (an exposure instance masked by darktable's brush, its
+    /// values set as the brush has them); the rest paint more of the
+    /// selected one in, or erase it.
+    func paintStroke(_ points: [CGPoint], erase: Bool) {
+        guard let engine, url != nil, !points.isEmpty else { return }
+        let radius = brushSize * min(imageSize.width, imageSize.height)
+        let hardness = 1 - brushSoftness
+        if let brush = pendingBrush {
+            guard !erase, let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
+            pendingBrush = nil
+            let used = Set(localAdjustments.map(\.instanceName))
+            let name = (1...).lazy.map { "Local \($0)" }.first { !used.contains($0) }!
+            Task {
+                await settleEdits()
+                recordUndoStep(label: brush.title)
+                // its history position, before the engine moves on from it
+                await settleEdits()
+                do {
+                    let reply = try await engine.addBrush(base: base.key, name: name, points: points, radius: radius, hardness: hardness)
+                    modules = reply.modules
+                    hasUnsavedChanges = true
+                    selectedLocal = reply.added
+                    if let anchor = modules.first(where: { $0.key == reply.added }) {
+                        for (control, value) in brush.values { setLocal(control, to: value, of: anchor) }
+                    }
+                    requestRender()
+                } catch {
+                    errorMessage = "Couldn't make the brush: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
+        guard let key = selectedLocal, let anchor = modules.first(where: { $0.key == key }) else { return }
+        let others = localParts(anchor).map(\.key).filter { $0 != key }
+        Task {
+            await settleEdits()
+            recordUndoStep(label: erase ? "Erase Brush" : "Brush")
+            // its history position, before the engine moves on from it
+            await settleEdits()
+            do {
+                try await engine.addStroke(module: key, also: others, points: points, radius: radius,
+                                           hardness: hardness, erase: erase)
+                hasUnsavedChanges = true
+                await fetchLocalShape()
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't paint: \(error.localizedDescription)"
+            }
+        }
     }
 
     /// A drag on the shape: only the latest goes to the engine, then a render.

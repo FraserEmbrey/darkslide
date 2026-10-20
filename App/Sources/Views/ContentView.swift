@@ -452,6 +452,9 @@ struct ZoomableImage: View {
                     } else if model.isRemovingSpots {
                         SpotOverlay(toView: { toView($0, in: geo.size, frame: size) },
                                     toImage: { toImage($0, in: geo.size, frame: size) })
+                    } else if model.isBrushing {
+                        BrushOverlay(toView: { toView($0, in: geo.size, frame: size) },
+                                     toImage: { toImage($0, in: geo.size, frame: size) })
                     } else if model.selectedLocal != nil {
                         LocalShapeOverlay(toView: { toView($0, in: geo.size, frame: size) },
                                           toImage: { toImage($0, in: geo.size, frame: size) })

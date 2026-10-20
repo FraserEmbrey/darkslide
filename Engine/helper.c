@@ -1275,6 +1275,82 @@ static void _shape_changed(dt_iop_module_t *m)
   dt_dev_pixelpipe_cache_invalidate_later(&H.edit.pipe, m->iop_order, "shape moved: ");
 }
 
+// A brush stroke from output pixels: {"points":[x,y,...],"radius":r,"hardness":h}.
+// Straight segments between the points (their control points on the corners),
+// which, sent every few pixels as they are, follow the stroke closely.
+static dt_masks_form_t *_brush_stroke(JsonObject *o)
+{
+  JsonArray *a = json_object_has_member(o, "points") ? json_object_get_array_member(o, "points") : NULL;
+  int n = a ? json_array_get_length(a) / 2 : 0;
+  if(n <= 0) return NULL;
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight, mind = fminf(iw, ih);
+  const float r = json_object_get_double_member_with_default(o, "radius", 20.0);
+  const float hardness = CLAMP((float)json_object_get_double_member_with_default(o, "hardness", 0.5), 0.0f, 1.0f);
+  // a click is a stroke of one point; darktable's brush needs two
+  const int count = MAX(n, 2);
+  float *pts = g_new(float, 2 * (count + 1));
+  for(int i = 0; i < n; i++)
+  {
+    pts[2 * i] = json_array_get_double_element(a, 2 * i);
+    pts[2 * i + 1] = json_array_get_double_element(a, 2 * i + 1);
+  }
+  if(n == 1) { pts[2] = pts[0] + 0.5f; pts[3] = pts[1]; }
+  // and the radius, as a point beside the first, through the same distortions
+  pts[2 * count] = pts[0] + r;
+  pts[2 * count + 1] = pts[1];
+  _to_input(pts, count + 1);
+  const float radius = CLAMP(hypotf(pts[2 * count] - pts[0], pts[2 * count + 1] - pts[1]) / mind, 0.0005f, 0.5f);
+  dt_masks_form_t *form = dt_masks_create(DT_MASKS_BRUSH);
+  for(int i = 0; i < count; i++)
+  {
+    dt_masks_point_brush_t *b = calloc(1, sizeof(dt_masks_point_brush_t));
+    b->corner[0] = b->ctrl1[0] = b->ctrl2[0] = pts[2 * i] / iw;
+    b->corner[1] = b->ctrl1[1] = b->ctrl2[1] = pts[2 * i + 1] / ih;
+    b->border[0] = b->border[1] = radius;
+    b->density = 1.0f;
+    b->hardness = hardness;
+    b->state = DT_MASKS_POINT_STATE_NORMAL;
+    form->points = g_list_append(form->points, b);
+  }
+  g_free(pts);
+  return form;
+}
+
+// {"cmd":"add_stroke","module":"exposure:1","also":["colorbalancergb:1"],
+//  "points":[...],"radius":r,"hardness":h,"erase":false}: another stroke on a
+// brushed local adjustment, painting more of it in or, erasing, out; "also"
+// are the adjustment's other instances, which share its strokes
+static void _cmd_add_stroke(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  dt_iop_module_t *m = _find_module(json_object_get_string_member_with_default(o, "module", ""));
+  dt_masks_form_t *grp = m && m->blend_params ? dt_masks_get_from_id(&H.edit.dev, m->blend_params->mask_id) : NULL;
+  if(!grp || !(grp->type & DT_MASKS_GROUP)) return _error("not a local adjustment");
+  dt_masks_form_t *form = _brush_stroke(o);
+  if(!form) return _error("no points");
+  const gboolean erase = json_object_get_boolean_member_with_default(o, "erase", FALSE);
+  dt_masks_gui_form_save_creation(&H.edit.dev, m, form, NULL);
+  // painting adds to the mask (darktable's sum, as its brush does); erasing takes away
+  const dt_masks_state_t mode = erase ? DT_MASKS_STATE_DIFFERENCE : DT_MASKS_STATE_SUM;
+  for(GList *l = grp->points; l; l = g_list_next(l))
+  {
+    dt_masks_point_group_t *gp = l->data;
+    if(gp->formid == form->formid)
+      gp->state = (gp->state & ~(DT_MASKS_STATE_UNION | DT_MASKS_STATE_SUM | DT_MASKS_STATE_DIFFERENCE)) | mode;
+  }
+  JsonArray *also = json_object_has_member(o, "also") ? json_object_get_array_member(o, "also") : NULL;
+  for(guint i = 0; also && i < json_array_get_length(also); i++)
+  {
+    dt_iop_module_t *other = _find_module(json_array_get_string_element(also, i));
+    dt_masks_form_t *g = other && other->blend_params ? dt_masks_get_from_id(&H.edit.dev, other->blend_params->mask_id) : NULL;
+    dt_masks_point_group_t *gp = g ? dt_masks_group_add_form(g, form) : NULL;
+    if(gp) gp->state = (gp->state & ~(DT_MASKS_STATE_UNION | DT_MASKS_STATE_SUM | DT_MASKS_STATE_DIFFERENCE)) | mode;
+    if(other) { dt_dev_add_masks_history_item_ext(&H.edit.dev, other, TRUE, TRUE); _commit(other, TRUE); }
+  }
+  _shape_changed(m);
+  _ok_done(_ok());
+}
+
 // {"cmd":"add_local","module":"exposure:0","shape":"gradient"|"ellipse","name":"Local 1"}
 // or, for another module in the same adjustment, "shareWith":"exposure:1" in place of "shape"
 // -> the new instance's key and the module list. The shape starts across the
@@ -1288,6 +1364,7 @@ static void _cmd_add_local(JsonObject *o)
   const char *shape = json_object_get_string_member_with_default(o, "shape", "gradient");
   const gboolean ellipse = !g_strcmp0(shape, "ellipse");
   const gboolean subject = !g_strcmp0(shape, "subject");
+  const gboolean brush = !g_strcmp0(shape, "brush");
   // another local adjustment's shape, shared, as darktable's "use same shapes as"
   dt_masks_form_t *share = NULL;
   const char *share_key = json_object_get_string_member_with_default(o, "shareWith", "");
@@ -1392,8 +1469,14 @@ static void _cmd_add_local(JsonObject *o)
   }
   else
   {
-  dt_masks_form_t *form = dt_masks_create(subject ? DT_MASKS_GROUP : ellipse ? DT_MASKS_ELLIPSE : DT_MASKS_GRADIENT);
-  if(subject)
+  dt_masks_form_t *form = brush ? _brush_stroke(o)
+                         : dt_masks_create(subject ? DT_MASKS_GROUP : ellipse ? DT_MASKS_ELLIPSE : DT_MASKS_GRADIENT);
+  if(!form) return _error("no points for the brush");
+  if(brush)
+  {
+    // the first stroke; add_stroke paints more
+  }
+  else if(subject)
   {
     // as darktable's AI masks: the traced paths in a group of their own,
     // holes taken away, and that group the module's one shape
@@ -1516,6 +1599,47 @@ static void _cmd_shape(JsonObject *o)
   const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
   const float mind = fminf(iw, ih), diag = hypotf(iw, ih);
   JsonBuilder *b = _ok();
+  if(form->type & DT_MASKS_BRUSH)
+  {
+    // a brush: each stroke as x, y, … and its radius at the end, erasing ones marked
+    dt_masks_form_t *grp = dt_masks_get_from_id(&H.edit.dev, m->blend_params->mask_id);
+    json_builder_set_member_name(b, "kind");
+    json_builder_add_string_value(b, "brush");
+    json_builder_set_member_name(b, "points");
+    json_builder_begin_array(b);
+    json_builder_end_array(b);
+    json_builder_set_member_name(b, "outlines");
+    json_builder_begin_array(b);
+    for(GList *l = grp ? grp->points : NULL; l; l = g_list_next(l))
+    {
+      const dt_masks_point_group_t *gp = l->data;
+      dt_masks_form_t *f = dt_masks_get_from_id(&H.edit.dev, gp->formid);
+      if(!f || !(f->type & DT_MASKS_BRUSH) || !f->points) continue;
+      const int n = g_list_length(f->points);
+      float *pts = g_new(float, 2 * (n + 1));
+      int i = 0;
+      for(GList *p = f->points; p; p = g_list_next(p))
+      {
+        const dt_masks_point_brush_t *pt = p->data;
+        pts[i++] = pt->corner[0] * iw;
+        pts[i++] = pt->corner[1] * ih;
+      }
+      const dt_masks_point_brush_t *first = f->points->data;
+      pts[i++] = first->corner[0] * iw + first->border[0] * mind;
+      pts[i++] = first->corner[1] * ih;
+      _to_output(pts, n + 1);
+      json_builder_begin_array(b);
+      for(int k = 0; k < 2 * n; k++) json_builder_add_double_value(b, pts[k]);
+      // the radius, then 1 for an erasing stroke
+      json_builder_add_double_value(b, hypotf(pts[2 * n] - pts[0], pts[2 * n + 1] - pts[1]));
+      json_builder_add_double_value(b, (gp->state & DT_MASKS_STATE_DIFFERENCE) ? 1 : 0);
+      json_builder_end_array(b);
+      g_free(pts);
+    }
+    json_builder_end_array(b);
+    _ok_done(b);
+    return;
+  }
   if(form->type & DT_MASKS_GROUP)
   {
     // a subject: its traced outlines, each as corner points
@@ -3382,6 +3506,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "lens_lenses")) _cmd_lens_lenses(o);
     else if(!strcmp(cmd, "set_text")) _cmd_set_text(o);
     else if(!strcmp(cmd, "add_local")) _cmd_add_local(o);
+    else if(!strcmp(cmd, "add_stroke")) _cmd_add_stroke(o);
     else if(!strcmp(cmd, "new_step")) _cmd_new_step();
     else if(!strcmp(cmd, "spots")) _cmd_spots();
     else if(!strcmp(cmd, "add_spot")) _cmd_add_spot(o);

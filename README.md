@@ -186,7 +186,7 @@ Window › Show Info (⌘I) is laid out as Photos' Info window and behaves like 
 
 ### Undo
 
-Edit › Undo and Redo (⌘Z, ⇧⌘Z) step darktable's history position back and forward, as darktable's own history stack does, so each step is mostly a pipe cache hit. The app keeps the stack: each step records the history position plus what isn't in darktable's history (the SDR version, applied styles). A slider drag is one step however long it takes, and a second drag is a new step. Other changes to one module less than a second apart are one step, so a tone equalizer macro or a white balance pick undoes in one go. Steps for slider edits are resolved as their queued settings reach the engine, so a step always lands exactly between two edits. Auto is one step. Opening a photo and Reset All clear the stack.
+Edit › Undo and Redo (⌘Z, ⇧⌘Z) step darktable's history position back and forward, as darktable's own history stack does, so each step is mostly a pipe cache hit. darktable merges a change into the last history item when it's for the same module unless its focus hash has changed, which its GUI does as modules gain focus; headless, nothing did, so the engine's `new_step` changes it at each undo step, or a second change to one module couldn't be undone apart from the first. The app keeps the stack: each step records the history position plus what isn't in darktable's history (the SDR version, applied styles). A slider drag is one step however long it takes, and a second drag is a new step. Other changes to one module less than a second apart are one step, so a tone equalizer macro or a white balance pick undoes in one go. Steps for slider edits are resolved as their queued settings reach the engine, so a step always lands exactly between two edits. Auto is one step. Opening a photo and Reset All clear the stack.
 
 ### Sliders
 
@@ -277,6 +277,8 @@ The Local adjustments card adds the subject, and linear and radial gradients, to
 - **Linear:** drag the centre to move it, the arrow to turn it (the side it points to gets the adjustment), and the dashed line to soften it.
 - **Radial:** drag the centre, the two radius handles, and the outer handle for the softness.
 - **Subject:** Apple's Vision finds the subject (`VNGenerateForegroundInstanceMaskRequest`, the subject lifting in Photos and Preview: people, animals and objects that stand out) in a render of the photo as it looks, in about half a second. The engine traces the mask into darktable path shapes with darktable's own `ras2forms` (potrace), as darktable's AI masks do, holes included, so the edit is darktable's and exports anywhere. Its outline shows on the photo. The [mask lab](Tools/masklab) compared Vision with SAM and darktable's AI models.
+
+**Brushes.** + › Brushes paints an adjustment on, as Aperture's Quick Brushes did: Dodge, Burn, Contrast, Definition, Smooth Skin, Intensify, Desaturate, Warm, Cool, or a plain Brush with nothing set. The first stroke makes the adjustment, its sliders set for the job and changeable after, like any other. With it selected, strokes paint more of it in; hold Option, or tick Erase, to take it away. Size and Softness are under the card, and the strokes show tinted on the photo while it's selected. Each stroke is a darktable brush shape in the adjustment's mask group (the engine's `add_stroke`), painting in darktable's sum mode and erasing in its difference mode, and shared with the adjustment's other instances, so darktable shows and keeps them.
 
 The engine does what darktable's mask tools do, without the interface:
 - `add_local` duplicates the module, creates the shape, saves it with `dt_masks_gui_form_save_creation` (which makes the module's mask group and links it), turns on the drawn mask, and rebuilds the pipe.
@@ -374,7 +376,7 @@ For faster iteration on the Swift side, `swift run` works if `DARKSLIDE_ENGINE` 
 - **Development builds aren't notarised:** `build-app.sh` signs with a development identity, so on another Mac Gatekeeper blocks the app until it's allowed in System Settings › Privacy & Security. Releases are notarised.
 - **HDR preview untested against real files:** The HDR view hasn't yet been compared side by side with an actual PQ/HLG file exported from darktable on the same display.
 - **Slider ranges:** These come from darktable's hard limits unless overridden in `Presentation.swift`. darktable's GTK interface narrows them per module in code we can't see, so the useful modules need hand-tuning.
-- **Not supported yet:** masks other than the subject and linear and radial gradients (paths, brushes, parametric masks).
+- **Not supported yet:** drawn paths and parametric masks.
 
 ## Licence
 

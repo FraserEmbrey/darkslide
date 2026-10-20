@@ -17,6 +17,13 @@ struct LocalAdjustmentsCard: View {
                     Divider()
                     Button("Linear Gradient", systemImage: "square.tophalf.filled") { model.addLocal(.gradient) }
                     Button("Radial Gradient", systemImage: "circle.dashed") { model.addLocal(.ellipse) }
+                    Divider()
+                    // Aperture's Quick Brushes
+                    Section("Brushes") {
+                        ForEach(QuickBrush.allCases) { b in
+                            Button(b.title, systemImage: b.symbol) { model.startBrush(b) }
+                        }
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -24,10 +31,20 @@ struct LocalAdjustmentsCard: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .disabled(model.isFindingSubject)
-                .help("Adjust the subject, or part of the photo with a linear or radial gradient")
+                .help("Adjust the subject, part of the photo with a gradient, or paint it in with a brush")
             }
             if expanded {
-                if model.localAdjustments.isEmpty {
+                if let brush = model.pendingBrush {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Paint where you want \(brush.title.lowercased()).", systemImage: brush.symbol)
+                            .font(.callout)
+                        brushControls
+                        Button("Cancel") { model.pendingBrush = nil }
+                    }
+                    .padding(8)
+                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
+                if model.localAdjustments.isEmpty && model.pendingBrush == nil {
                     Text("Adjust the light, colour and clarity of the subject (found by macOS), or of part of the photo with a linear or radial gradient.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -40,10 +57,25 @@ struct LocalAdjustmentsCard: View {
         .cardStyle()
     }
 
+    /// the brush's size and edge, and painting or erasing
+    @ViewBuilder private var brushControls: some View {
+        @Bindable var model = model
+        ParamSlider(label: "Brush Size", value: model.brushSize * 100, defaultValue: 4, range: 0.5...20,
+                    isInteger: false, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSize = $0 / 100 }
+        ParamSlider(label: "Softness", value: model.brushSoftness * 100, defaultValue: 50, range: 0...100,
+                    isInteger: true, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSoftness = $0 / 100 }
+        if model.pendingBrush == nil {
+            Toggle("Erase", isOn: $model.brushErases)
+                .toggleStyle(.checkbox)
+                .help("Strokes take the adjustment away; Option does it for one stroke")
+        }
+    }
+
     private var hint: String {
         switch model.localShape?.kind {
         case .ellipse: "Drag the centre to move it, the side handles to size it, the outer handle for a softer edge."
         case .subject: "The subject as macOS found it, outlined on the photo."
+        case .brush: "Paint to add to it; hold Option, or turn on Erase, to take it away."
         default: "Drag the centre to move it, the arrow to turn it, the dashed line for a softer edge."
         }
     }
@@ -86,6 +118,7 @@ struct LocalAdjustmentsCard: View {
                         .buttonStyle(.link)
                         .font(.caption)
                 }
+                if model.localShape?.kind == .brush { brushControls }
                 Text(hint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -115,6 +148,7 @@ struct LocalShapeOverlay: View {
                     case .gradient: drawGradient(shape, in: &ctx, size: size)
                     case .ellipse: drawEllipse(shape, in: &ctx)
                     case .subject: drawOutlines(shape, in: &ctx)
+                    case .brush: break   // BrushOverlay
                     }
                 }
                 .allowsHitTesting(false)
@@ -191,7 +225,7 @@ struct LocalShapeOverlay: View {
             let k = 1 + s.border
             let outer = CGPoint(x: c.x + (a.x - c.x) * k, y: c.y + (a.y - c.y) * k)
             return [c, a, s.points[130], outer]
-        case .subject:
+        case .subject, .brush:
             return []
         }
     }
@@ -256,7 +290,7 @@ struct LocalShapeOverlay: View {
                 s.points = ellipsePoints(c: c, a: a, b: b, border: border)
                 model.moveShape(.ellipse(center: c, a: a, b: b, border: border))
             }
-        case .subject:
+        case .subject, .brush:
             return
         }
         live = s
@@ -276,5 +310,76 @@ struct LocalShapeOverlay: View {
             }
         }
         return out + [c, a, b]
+    }
+}
+
+
+/// Painting a brushed local adjustment: its strokes tinted on the photo (as
+/// Aperture's brush overlay showed them), the stroke being drawn, and the
+/// brush under the pointer. Option-drag erases.
+struct BrushOverlay: View {
+    @Environment(EditorModel.self) private var model
+    let toView: (CGPoint) -> CGPoint
+    let toImage: (CGPoint) -> CGPoint
+
+    @State private var stroke: [CGPoint] = []
+    @State private var erasing = false
+    @State private var hover: CGPoint?
+
+    private var radius: Double { model.brushSize * min(model.imageSize.width, model.imageSize.height) }
+
+    var body: some View {
+        Canvas { ctx, _ in
+            // painted strokes, then erasing ones cut out of them
+            ctx.drawLayer { layer in
+                for s in model.localShape?.strokes ?? [] {
+                    layer.blendMode = s.erase ? .destinationOut : .normal
+                    layer.stroke(path(s.points.map(toView)), with: .color(.red.opacity(s.erase ? 1 : 0.35)),
+                                 style: StrokeStyle(lineWidth: 2 * viewRadius(s.radius, at: s.points[0]), lineCap: .round, lineJoin: .round))
+                }
+            }
+            if !stroke.isEmpty {
+                let colour: Color = erasing ? .white.opacity(0.4) : .red.opacity(0.45)
+                ctx.stroke(path(stroke), with: .color(colour),
+                           style: StrokeStyle(lineWidth: 2 * viewRadius(radius, at: toImage(stroke[0])), lineCap: .round, lineJoin: .round))
+            } else if let h = hover {
+                let r = viewRadius(radius, at: toImage(h))
+                let inner = r * (1 - model.brushSoftness)
+                ctx.stroke(Path(ellipseIn: CGRect(x: h.x - r, y: h.y - r, width: 2 * r, height: 2 * r)), with: .color(.white.opacity(0.8)), lineWidth: 1)
+                if inner > 2 {
+                    ctx.stroke(Path(ellipseIn: CGRect(x: h.x - inner, y: h.y - inner, width: 2 * inner, height: 2 * inner)),
+                               with: .color(.white.opacity(0.4)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            if case .active(let p) = phase { hover = p } else { hover = nil }
+        }
+        .gesture(DragGesture(minimumDistance: 0)
+            .onChanged { g in
+                if stroke.isEmpty {
+                    stroke = [g.startLocation]
+                    erasing = model.brushErases || NSEvent.modifierFlags.contains(.option)
+                }
+                if let last = stroke.last, hypot(g.location.x - last.x, g.location.y - last.y) > 3 { stroke.append(g.location) }
+            }
+            .onEnded { _ in
+                let points = stroke.map(toImage)
+                stroke = []
+                model.paintStroke(points, erase: erasing)
+            })
+    }
+
+    private func path(_ pts: [CGPoint]) -> Path {
+        var p = Path()
+        p.addLines(pts)
+        if pts.count == 1 { p.addLine(to: pts[0]) }
+        return p
+    }
+
+    private func viewRadius(_ r: Double, at p: CGPoint) -> Double {
+        let a = toView(p), b = toView(CGPoint(x: p.x + r, y: p.y))
+        return hypot(b.x - a.x, b.y - a.y)
     }
 }

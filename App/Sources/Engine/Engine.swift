@@ -348,6 +348,18 @@ actor Engine {
         try await request(["cmd": "add_local", "module": base, "shareWith": shareWith, "name": name], as: InstanceReply.self)
     }
 
+    /// a local adjustment masked by a brush stroke, in output pixels
+    func addBrush(base: String, name: String, points: [CGPoint], radius: Double, hardness: Double) async throws -> InstanceReply {
+        try await request(["cmd": "add_local", "module": base, "shape": "brush", "name": name,
+                           "points": points.flatMap { [$0.x, $0.y] }, "radius": radius, "hardness": hardness], as: InstanceReply.self)
+    }
+
+    /// another stroke on a brushed adjustment; `also` are its other instances, sharing its strokes
+    func addStroke(module: String, also: [String], points: [CGPoint], radius: Double, hardness: Double, erase: Bool) async throws {
+        _ = try await request(["cmd": "add_stroke", "module": module, "also": also, "points": points.flatMap { [$0.x, $0.y] },
+                               "radius": radius, "hardness": hardness, "erase": erase])
+    }
+
     func setGradient(module: String, anchor: CGPoint, toward: CGPoint, compression: Double?) async throws {
         var body: [String: Any] = ["cmd": "set_shape", "module": module,
                                    "anchor": [anchor.x, anchor.y], "toward": [toward.x, toward.y]]

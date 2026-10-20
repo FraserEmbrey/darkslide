@@ -12,9 +12,6 @@ struct RetouchPanel: View {
                 Text("Retouch").font(.headline)
                 if model.isFillingObjects { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("Done") { Task { await model.setRetouching(false) } }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
             }
             Picker("Mode", selection: Binding(get: { model.retouchMode },
                                               set: { m in Task { await model.chooseRetouchMode(m) } })) {
@@ -27,6 +24,18 @@ struct RetouchPanel: View {
             .labelsHidden()
             .help("Heal blends a nearby patch in, Clone copies it as it is, Remove fills in what was behind with machine learning")
             if model.isRemovingObjects { ObjectControls() } else { SpotControls() }
+            Spacer()
+            // as the crop panel's
+            HStack {
+                // the label fills, so the buttons share the width
+                Button { Task { await model.cancelRetouching() } } label: { Text("Cancel").frame(maxWidth: .infinity) }
+                    .keyboardShortcut(.cancelAction)
+                    .help("Undo what was retouched since the tool was opened")
+                Button { Task { await model.setRetouching(false) } } label: { Text("Done").frame(maxWidth: .infinity) }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.large)
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)

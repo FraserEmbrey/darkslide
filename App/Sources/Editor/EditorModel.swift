@@ -85,6 +85,7 @@ final class EditorModel {
     private static var localNamesTested = false
     private static var brushPreviewTested = false
     private static var healStrokeTested = false
+    private static var retouchCancelTested = false
     private static var loupeTested = false
 
     /// for testing: how far apart two frames are, as the largest difference
@@ -268,13 +269,28 @@ final class EditorModel {
         didSet { UserDefaults.standard.set(retouchMode.rawValue, forKey: "RetouchMode") }
     }
     var spotClones: Bool { retouchMode == .clone }
+    /// how many undo steps there were when Retouch opened, for Cancel
+    private var retouchStart: Int?
     /// the Retouch tool is on, in any mode
     var isRetouching: Bool { isRemovingSpots || isRemovingObjects }
 
-    /// Turns the Retouch tool on, in its mode, or off.
+    /// Turns the Retouch tool on, in its mode, or off (Done).
     func setRetouching(_ on: Bool) async {
-        guard on else { isRemovingSpots = false; isRemovingObjects = false; return }
+        guard on else { isRemovingSpots = false; isRemovingObjects = false; retouchStart = nil; return }
+        if !isRetouching { retouchStart = undoStack.count }
         await chooseRetouchMode(retouchMode)
+    }
+
+    /// Cancel: what was done since the tool was opened is undone, then it closes.
+    func cancelRetouching() async {
+        if let start = retouchStart {
+            while undoStack.count > start, !restoringUndo {
+                let before = undoStack.count
+                await undo()
+                if undoStack.count >= before { break }   // nothing undone: stop rather than spin
+            }
+        }
+        await setRetouching(false)
     }
 
     /// Changes the Retouch tool's mode; Remove downloads its model the first time, after asking.
@@ -2166,6 +2182,31 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(2))
                     await fetchSpots()
                     log("undone twice")
+                }
+            }
+            // TestRetouchCancel: launch argument (-TestRetouchCancel YES) for testing: opens
+            // Retouch, heals two spots, then cancels, and opens it again for one kept with Done
+            if UserDefaults.standard.bool(forKey: "TestRetouchCancel"), !Self.retouchCancelTested {
+                Self.retouchCancelTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) { FileHandle.standardError.write("Darkslide retouch cancel: \(s): spots \(spots.count), retouching \(isRetouching), undo \(undoTitle ?? "-")\n".data(using: .utf8)!) }
+                    try? await Task.sleep(for: .seconds(4))
+                    await setRetouching(true)
+                    addSpot(at: CGPoint(x: imageSize.width * 0.4, y: imageSize.height * 0.5))
+                    try? await Task.sleep(for: .seconds(2))
+                    addSpot(at: CGPoint(x: imageSize.width * 0.6, y: imageSize.height * 0.5))
+                    try? await Task.sleep(for: .seconds(2))
+                    log("two spots")
+                    await cancelRetouching()
+                    try? await Task.sleep(for: .seconds(2))
+                    await fetchSpots()
+                    log("cancelled")
+                    await setRetouching(true)
+                    addSpot(at: CGPoint(x: imageSize.width * 0.5, y: imageSize.height * 0.5))
+                    try? await Task.sleep(for: .seconds(2))
+                    await setRetouching(false)
+                    await fetchSpots()
+                    log("one spot, done")
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the

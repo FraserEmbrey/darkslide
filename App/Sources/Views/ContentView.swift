@@ -160,6 +160,16 @@ struct ContentView: View {
                 ToolbarItem(id: "tools") {
                     @Bindable var model = model
                     ControlGroup {
+                        // adjusting is where crop and retouch come back to, so
+                        // choosing it ends either, as Done would
+                        Toggle("Adjust", systemImage: "slider.horizontal.3", isOn: Binding(
+                            get: { !model.isCropping && !model.isRetouching },
+                            set: { on in
+                                guard on else { return }
+                                if model.isCropping { model.commitCrop() }
+                                if model.isRetouching { Task { await model.setRetouching(false) } }
+                            }))
+                            .help("Adjust the photo with the inspector's modules")
                         Toggle("Crop", systemImage: "crop.rotate", isOn: Binding(
                             get: { model.isCropping },
                             set: { $0 ? model.beginCrop() : model.commitCrop() }))

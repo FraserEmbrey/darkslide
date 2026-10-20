@@ -115,7 +115,23 @@ struct EDRImageView: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+            scrollMonitor = nil
             guard let window else { return }
+            // Scrolling over the photo pans it while zoomed. A monitor rather
+            // than scrollWheel, as the brush and shape overlays sit on top and
+            // would otherwise take the events (two-finger drags on a trackpad,
+            // or on an iPad used as a Sidecar display)
+            scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, self.canPan, event.window === self.window, !self.isHiddenOrHasHiddenAncestor,
+                      self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+                // something scrollable over the photo (the full-screen HUD) scrolls itself
+                if let content = self.window?.contentView,
+                   content.hitTest(content.convert(event.locationInWindow, from: nil))?.enclosingScrollView != nil { return event }
+                let k: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+                self.onPan?(CGSize(width: event.scrollingDeltaX * k, height: event.scrollingDeltaY * k))
+                return nil
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, window.firstResponder is NSTextView || window.firstResponder === window else { return }
                 window.makeFirstResponder(self)
@@ -169,12 +185,7 @@ struct EDRImageView: NSViewRepresentable {
             onClick?(convert(event.locationInWindow, from: nil))
         }
 
-        // two-finger trackpad scrolling (and the mouse wheel) pan while zoomed
-        override func scrollWheel(with event: NSEvent) {
-            guard canPan else { return super.scrollWheel(with: event) }
-            let k: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
-            onPan?(CGSize(width: event.scrollingDeltaX * k, height: event.scrollingDeltaY * k))
-        }
+        private var scrollMonitor: Any?
 
         private var pixelExact = false
 

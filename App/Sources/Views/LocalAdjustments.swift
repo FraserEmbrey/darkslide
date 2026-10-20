@@ -368,27 +368,58 @@ struct BrushOverlay: View {
     @State private var pressures: [Double]?
     @State private var erasing = false
     @State private var hover: CGPoint?
+    /// the stroke just painted, shown until darktable's render of it arrives
+    @State private var landing: MaskStroke?
 
     private var radius: Double { model.brushSize * min(model.imageSize.width, model.imageSize.height) }
 
+    /// a stroke as the mask draws it, in this view's points
+    struct MaskStroke {
+        var points: [CGPoint]
+        var width: Double
+        var sizes: [Double]? = nil
+        var opacities: [Double]? = nil
+        var erase = false
+    }
+
+    private var liveStroke: MaskStroke? {
+        guard !stroke.isEmpty else { return landing }
+        let pen = model.penPressure == .off ? nil : pressures
+        return MaskStroke(points: stroke, width: 2 * viewRadius(radius, at: toImage(stroke[0])),
+                          sizes: model.penPressure == .size ? pen?.map { max($0, 0.1) } : nil,
+                          opacities: model.penPressure == .opacity ? pen?.map { max($0, 0.05) } : nil, erase: erasing)
+    }
+
+    private var savedStrokes: [MaskStroke] {
+        (model.localShape?.strokes ?? []).map {
+            MaskStroke(points: $0.points.map(toView), width: 2 * viewRadius($0.radius, at: $0.points[0]),
+                       sizes: $0.sizes, opacities: $0.opacities, erase: $0.erase)
+        }
+    }
+
     var body: some View {
-        Canvas { ctx, _ in
-            // painted strokes, then erasing ones cut out of them
-            if model.showBrushMask { ctx.drawLayer { layer in
-                for s in model.localShape?.strokes ?? [] {
-                    layer.blendMode = s.erase ? .destinationOut : .normal
-                    draw(s.points.map(toView), width: 2 * viewRadius(s.radius, at: s.points[0]), sizes: s.sizes,
-                         opacities: s.opacities, colour: .red, opacity: s.erase ? 1 : 0.35, in: &layer)
+        let live = liveStroke
+        ZStack {
+            if !model.showBrushMask, let live {
+                if let p = model.brushPreview {
+                    // the adjustment's look, through the stroke
+                    let a = toView(p.origin), b = toView(CGPoint(x: p.origin.x + p.size.width, y: p.origin.y + p.size.height))
+                    Image(decorative: p.image, scale: 1)
+                        .resizable()
+                        .allowedDynamicRange(.high)
+                        .frame(width: b.x - a.x, height: b.y - a.y)
+                        .position(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+                        .mask { mask([live]) }
+                } else {
+                    // a brush with nothing set yet: a faint trace
+                    Color.white.opacity(0.25).mask { mask([live]) }
                 }
-            } }
-            if !stroke.isEmpty {
-                let pen = pressures.map { p in model.penPressure == .off ? nil : p } ?? nil
-                draw(stroke, width: 2 * viewRadius(radius, at: toImage(stroke[0])),
-                     sizes: model.penPressure == .size ? pen.map { $0.map { max($0, 0.1) } } : nil,
-                     opacities: model.penPressure == .opacity ? pen.map { $0.map { max($0, 0.05) } } : nil,
-                     colour: erasing || !model.showBrushMask ? .white : .red,
-                     opacity: erasing ? 0.4 : model.showBrushMask ? 0.45 : 0.25, in: &ctx)
-            } else if let h = hover {
+            }
+            if model.showBrushMask {
+                Color.red.opacity(0.4).mask { mask(savedStrokes + (live.map { [$0] } ?? [])) }
+            }
+            Canvas { ctx, _ in
+                guard stroke.isEmpty, let h = hover else { return }
                 let r = viewRadius(radius, at: toImage(h))
                 let inner = r * (1 - model.brushSoftness)
                 ctx.stroke(Path(ellipseIn: CGRect(x: h.x - r, y: h.y - r, width: 2 * r, height: 2 * r)), with: .color(.white.opacity(0.8)), lineWidth: 1)
@@ -404,6 +435,12 @@ struct BrushOverlay: View {
         .onContinuousHover { phase in
             if case .active(let p) = phase { hover = p } else { hover = nil }
         }
+        // darktable's render of the stroke has arrived
+        .onChange(of: model.frameID) { _, _ in
+            guard stroke.isEmpty, landing != nil else { return }
+            landing = nil
+            model.endBrushPreview()
+        }
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { g in
                 let pen = PenInput.shared
@@ -411,6 +448,8 @@ struct BrushOverlay: View {
                     stroke = [g.startLocation]
                     pressures = pen.pressure.map { [$0] }
                     erasing = model.brushErases || NSEvent.modifierFlags.contains(.option) || pen.eraser
+                    landing = nil
+                    model.startBrushPreview(erase: erasing)
                 }
                 if let last = stroke.last, hypot(g.location.x - last.x, g.location.y - last.y) > 3 {
                     stroke.append(g.location)
@@ -421,26 +460,40 @@ struct BrushOverlay: View {
             .onEnded { _ in
                 let points = stroke.map(toImage)
                 let pen = pressures?.count == points.count ? pressures : nil
+                landing = liveStroke
                 stroke = []
                 pressures = nil
                 model.paintStroke(points, erase: erasing, pressure: pen)
             })
     }
 
-    /// A stroke `width` wide, or, for a pen's, each segment as wide and as
-    /// opaque as its points say.
-    private func draw(_ pts: [CGPoint], width: Double, sizes: [Double]?, opacities: [Double]?,
-                      colour: Color, opacity: Double, in ctx: inout GraphicsContext) {
-        let style = { (w: Double) in StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round) }
-        guard sizes?.count == pts.count || opacities?.count == pts.count, pts.count > 1 else {
-            ctx.stroke(path(pts), with: .color(colour.opacity(opacity)), style: style(width))
-            return
+    /// The strokes as one soft mask (white where painted), so a pen's pieces
+    /// and overlapping strokes don't pile up: each piece is drawn lightening,
+    /// keeping the stronger where they meet, and erasing ones in black.
+    private func mask(_ strokes: [MaskStroke]) -> some View {
+        let soft = model.brushSoftness
+        return Canvas { ctx, _ in
+            let blur = (strokes.first?.width ?? 0) / 2 * soft * 0.5
+            if blur > 0.5 { ctx.addFilter(.blur(radius: blur)) }
+            for s in strokes where !s.points.isEmpty {
+                var c = ctx
+                c.blendMode = s.erase ? .normal : .lighten
+                let w = s.width * (1 - soft * 0.5)
+                let style = { (w: Double) in StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round) }
+                guard s.points.count > 1, s.sizes?.count == s.points.count || s.opacities?.count == s.points.count else {
+                    c.stroke(path(s.points), with: .color(s.erase ? .black : .white), style: style(w))
+                    continue
+                }
+                for i in 1..<s.points.count {
+                    let size = s.sizes.map { ($0[i - 1] + $0[i]) / 2 } ?? 1
+                    let alpha = s.opacities.map { ($0[i - 1] + $0[i]) / 2 } ?? 1
+                    c.stroke(path([s.points[i - 1], s.points[i]]), with: .color(s.erase ? .black : Color(white: alpha)),
+                             style: style(w * size))
+                }
+            }
         }
-        for i in 1..<pts.count {
-            let size = sizes.map { ($0[i - 1] + $0[i]) / 2 } ?? 1
-            let alpha = opacities.map { ($0[i - 1] + $0[i]) / 2 } ?? 1
-            ctx.stroke(path([pts[i - 1], pts[i]]), with: .color(colour.opacity(opacity * alpha)), style: style(width * size))
-        }
+        .luminanceToAlpha()
+        .allowsHitTesting(false)
     }
 
     private func path(_ pts: [CGPoint]) -> Path {

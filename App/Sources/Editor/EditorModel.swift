@@ -83,6 +83,7 @@ final class EditorModel {
     private static var compareTested = false
     private static var penBrushTested = false
     private static var localNamesTested = false
+    private static var brushPreviewTested = false
     private static var loupeTested = false
 
     /// for testing: how far apart two frames are, as the largest difference
@@ -225,6 +226,9 @@ final class EditorModel {
     }
     /// strokes take the adjustment away (Option does it for one stroke)
     var brushErases = false
+    /// the frame as the stroke being painted will make it, and where it sits
+    /// on the output (see BrushPreview)
+    private(set) var brushPreview: (image: CGImage, origin: CGPoint, size: CGSize)?
     /// the brushed adjustment's strokes tinted red on the photo, as Aperture's
     /// overlay could; off, the photo shows only the adjustment
     var showBrushMask = UserDefaults.standard.bool(forKey: "ShowBrushMask") {
@@ -2023,6 +2027,27 @@ final class EditorModel {
                     await resetAll()
                     try? await Task.sleep(for: .seconds(2))
                     log("reset")
+                }
+            }
+            // TestBrushPreview: launch argument (-TestBrushPreview /folder) for testing:
+            // the live look of a Dodge stroke and a Cool one, written as PNGs with the frame
+            if let folder = UserDefaults.standard.string(forKey: "TestBrushPreview"), !folder.isEmpty, !Self.brushPreviewTested {
+                Self.brushPreviewTested = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    func write(_ img: CGImage?, _ name: String) {
+                        guard let img, let d = CGImageDestinationCreateWithURL(URL(fileURLWithPath: folder + "/" + name) as CFURL, "public.png" as CFString, 1, nil) else { return }
+                        CGImageDestinationAddImage(d, img, nil); CGImageDestinationFinalize(d)
+                    }
+                    write(image, "frame.png")
+                    for brush in [QuickBrush.dodge, .cool] {
+                        startBrush(brush)
+                        startBrushPreview(erase: false)
+                        write(brushPreview?.image, "\(brush.rawValue).png")
+                        FileHandle.standardError.write("Darkslide brush preview: \(brush.title) \(brushPreview.map { "\($0.image.width)x\($0.image.height) at \($0.origin) size \($0.size)" } ?? "none")\n".data(using: .utf8)!)
+                        endBrushPreview()
+                    }
+                    pendingBrush = nil
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the
@@ -4601,6 +4626,25 @@ extension EditorModel {
         localShape = LocalShape(kind: kind, outlines: outlines, points: pts,
                                 compression: r.compression ?? 0.3, border: r.border ?? 0.5)
     }
+
+    /// Makes the live look of a stroke about to be painted, from the frame on
+    /// screen and the adjustment's settings (a Quick Brush's, before its first stroke).
+    func startBrushPreview(erase: Bool) {
+        brushPreview = nil
+        guard let frame = image else { return }
+        let values: [(LocalControl, Double)]
+        if let brush = pendingBrush {
+            values = brush.values
+        } else if let key = selectedLocal, let anchor = modules.first(where: { $0.key == key }) {
+            values = LocalControl.allCases.map { ($0, localValue($0, of: anchor)) }
+        } else { return }
+        guard let made = BrushPreview.image(of: frame, values: values, erase: erase) else { return }
+        let m = frameMapping(frame, crop: currentCrop)
+        brushPreview = (made, CGPoint(x: m.x / m.scale, y: m.y / m.scale),
+                        CGSize(width: Double(frame.width) / m.scale, height: Double(frame.height) / m.scale))
+    }
+
+    func endBrushPreview() { brushPreview = nil }
 
     /// whether the photo is being painted: a Quick Brush waiting, or a brushed adjustment selected
     var isBrushing: Bool { pendingBrush != nil || localShape?.kind == .brush }

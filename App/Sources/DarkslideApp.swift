@@ -239,6 +239,14 @@ struct AppCommands: Commands {
                 set: { model.library.ratingFilter = $0 ? .notRejected : .all }))
                 .keyboardShortcut("r", modifiers: [.command, .option])
             Divider()
+            // ` alone does it too, outside text fields (see AppDelegate)
+            Toggle("Show Loupe", isOn: Binding(get: { model.showLoupe }, set: { model.showLoupe = $0 }))
+            Picker("Loupe Zoom", selection: Binding(get: { model.loupeZoom }, set: { model.loupeZoom = $0 })) {
+                Text("100%").tag(1.0)
+                Text("200%").tag(2.0)
+                Text("400%").tag(4.0)
+            }
+            Divider()
             Button(filmstripVisible ? "Hide Filmstrip" : "Show Filmstrip") { filmstripVisible.toggle() }
                 .keyboardShortcut("f", modifiers: [.command, .option])
             Divider()
@@ -342,6 +350,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch event.keyCode {
             case 5:   // G
                 model.toggleLibrary()
+                return nil
+            case 50:   // `: the loupe, as in Aperture
+                model.showLoupe.toggle()
                 return nil
             case 40 where event.modifierFlags.contains(.shift):   // ⇧K: open or close a stack, as in Aperture
                 guard model.showingLibrary, let sel = model.library.selection, model.library.isStacked(sel) else { return event }

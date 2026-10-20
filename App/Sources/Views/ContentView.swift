@@ -407,6 +407,7 @@ struct ZoomableImage: View {
     @State private var pinchPoint: CGPoint?      // the photo point under the fingers, 0...1
     @State private var pinchScreen: CGPoint = .zero
     @State private var waitingForFrame = false
+    @State private var loupePointer: CGPoint?
 
     var body: some View {
         GeometryReader { geo in
@@ -486,6 +487,24 @@ struct ZoomableImage: View {
                 .onChange(of: model.frameID) { _, _ in
                     // the sharp render has arrived: drop the live scaling
                     if waitingForFrame { pinch = 1; waitingForFrame = false }
+                }
+                .overlay {
+                    if model.showLoupe, let p = loupePointer {
+                        EditorLoupe(pointer: p, toImage: { toImage($0, in: geo.size, frame: size) })
+                            .allowsHitTesting(false)
+                    }
+                }
+                .onContinuousHover { phase in
+                    guard model.showLoupe else { return }
+                    if case .active(let p) = phase {
+                        loupePointer = p
+                        let o = toImage(p, in: geo.size, frame: size)
+                        let on = o.x >= 0 && o.y >= 0 && o.x <= model.imageSize.width && o.y <= model.imageSize.height
+                        model.pointLoupe(at: on ? o : nil)
+                    } else {
+                        loupePointer = nil
+                        model.pointLoupe(at: nil)
+                    }
                 }
                 .onHover { inside in
                     if model.whitePickTarget != nil {

@@ -376,6 +376,7 @@ struct LibraryGrid: View {
             Thumbnail(item: item)
                 .frame(height: 140)
                 .frame(maxWidth: .infinity)
+                .modifier(GridLoupe(item: item))
                 .opacity(model.library.rating(of: item.url) < 0 ? 0.4 : 1)
                 .overlay(alignment: .bottomTrailing) { ItemBadges(item: item).padding(4) }
                 .overlay(alignment: .topLeading) { StackBadge(item: item).padding(4) }
@@ -398,6 +399,8 @@ struct LibraryGrid: View {
             }
         }
         .contextMenu { ItemMenu(item: item) }
+        // the loupe's cell above its neighbours, so the lens isn't under them
+        .zIndex(model.loupeItem == item.url ? 1 : 0)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { open(item.url) }
         .simultaneousGesture(TapGesture().onEnded {

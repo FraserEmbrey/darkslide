@@ -66,6 +66,7 @@ final class EditorModel {
     private static var removeObjectsTested = false
     private static var autoStackTested = false
     private static var brushTested = false
+    private static var loupeTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -151,6 +152,23 @@ final class EditorModel {
     private(set) var canShowFocusPoint = false
     /// Vision is looking for the subject
     var isFindingSubject = false
+    /// The loupe (`), as Aperture's: a lens following the pointer, at 100%
+    /// (or `loupeZoom`) of the photo as edited. Its centre is in output pixels.
+    var showLoupe = false {
+        didSet { if !showLoupe { loupeCenter = nil; loupeImage = nil } }
+    }
+    var loupeZoom = UserDefaults.standard.object(forKey: "LoupeZoom") as? Double ?? 1 {
+        didSet { UserDefaults.standard.set(loupeZoom, forKey: "LoupeZoom"); if loupeCenter != nil { loupeDirty = true; pump() } }
+    }
+    static let loupeSide = 360   // pixels rendered for it
+    private(set) var loupeCenter: CGPoint?
+    /// the grid thumbnail the loupe is over
+    var loupeItem: URL?
+    private(set) var loupeImage: CGImage?
+    /// where the loupe's image starts on the output, so the lens lines up as the pointer moves
+    private(set) var loupeOrigin: CGPoint = .zero
+    private var loupeDirty = false
+
     /// a Quick Brush chosen, waiting for its first stroke to make its adjustment
     var pendingBrush: QuickBrush?
     /// the brush, as a fraction of the photo's shorter side, and how soft its edge is
@@ -1778,6 +1796,32 @@ final class EditorModel {
                     log("undone twice: \(cleanUpMarks.count) marks, next undo \(undoTitle ?? "-"), redo \(redoTitle ?? "-")")
                 }
             }
+            // TestLoupe: launch argument (-TestLoupe YES) for testing: the loupe at the
+            // middle, at 100% and 200%, and after an edit
+            if UserDefaults.standard.bool(forKey: "TestLoupe"), !Self.loupeTested {
+                Self.loupeTested = true
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide loupe: \(s)\n".data(using: .utf8)!) }
+                    try? await Task.sleep(for: .seconds(4))
+                    showLoupe = true
+                    pointLoupe(at: CGPoint(x: imageSize.width / 2, y: imageSize.height / 2))
+                    try? await Task.sleep(for: .seconds(2))
+                    log("100%: \(loupeImage.map { "\($0.width)x\($0.height)" } ?? "-") from \(loupeOrigin), canvas frame \(image?.width ?? 0)")
+                    let first = loupeImage
+                    loupeZoom = 2
+                    try? await Task.sleep(for: .seconds(2))
+                    log("200%: \(loupeImage.map { "\($0.width)x\($0.height)" } ?? "-") from \(loupeOrigin), new \(loupeImage !== first)")
+                    let second = loupeImage
+                    if let key = modules.first(where: { $0.op == "exposure" })?.key {
+                        let ev = modules.first { $0.key == key }?.fields.first { $0.name == "exposure" }?.value.number ?? 0
+                        setValue(.number(ev + 1), module: key, field: "exposure")
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    log("after an edit: new \(loupeImage !== second)")
+                    loupeZoom = 1
+                    showLoupe = false
+                }
+            }
             // TestBrush: launch argument (-TestBrush YES) for testing: a Dodge brush,
             // a second stroke, an erasing one, then undo, logging the strokes
             if UserDefaults.standard.bool(forKey: "TestBrush"), !Self.brushTested {
@@ -2519,7 +2563,13 @@ final class EditorModel {
         pumping = true
         Task {
             defer { pumping = false }
-            while !pendingSets.isEmpty || !pendingCheckpoints.isEmpty || pendingCurve != nil || renderRequested {
+            while !pendingSets.isEmpty || !pendingCheckpoints.isEmpty || pendingCurve != nil || renderRequested || loupeDirty {
+                // only the loupe wants a frame: a small one, at its zoom
+                if pendingSets.isEmpty, pendingCheckpoints.isEmpty, pendingCurve == nil, !renderRequested {
+                    loupeDirty = false
+                    await renderLoupe(engine)
+                    continue
+                }
                 let sets = pendingSets
                 let checkpoints = pendingCheckpoints
                 pendingSets.removeAll()
@@ -2637,6 +2687,8 @@ final class EditorModel {
                         FileHandle.standardError.write("Darkslide frame \(lastRenderMs ?? 0) ms (engine \(frame.ms) ms) at \(pixels) px\(draft ? " draft" : ""), mean \(String(format: "%.3f", mean))\n".data(using: .utf8)!)
                     }
                     framesSinceOpen += 1
+                    // the loupe shows the edit as it is now
+                    if showLoupe, loupeCenter != nil, !draft { loupeDirty = true }
                     // the first frame after opening fills the cache and is always slow
                     if !draft, crop == nil, framesSinceOpen > 1 {
                         // smoothed, so one slow frame doesn't flip the mode
@@ -4384,6 +4436,36 @@ extension EditorModel {
                 requestRender()
             }
         }
+    }
+}
+
+// MARK: - Loupe
+
+extension EditorModel {
+    /// The loupe over a point of the photo (output pixels), or off it.
+    func pointLoupe(at p: CGPoint?) {
+        guard showLoupe else { return }
+        loupeCenter = p
+        guard p != nil else { return }
+        loupeDirty = true
+        pump()
+    }
+
+    /// renders the square around the loupe's centre at its zoom, as the canvas renders a zoomed view
+    fileprivate func renderLoupe(_ engine: Engine) async {
+        guard showLoupe, let c = loupeCenter, url != nil else { return }
+        let s = loupeZoom, side = Self.loupeSide
+        let iw = Int(imageSize.width * s), ih = Int(imageSize.height * s)
+        let w = min(side, iw), h = min(side, ih)
+        let crop = Engine.Crop(scale: s, x: max(0, min(Int(c.x * s) - w / 2, iw - w)),
+                               y: max(0, min(Int(c.y * s) - h / 2, ih - h)), w: w, h: h)
+        guard let frame = try? await engine.render(maxPixels: side, hdr: viewHDR, displayHeadroom: displayHeadroom,
+                                                   wantOverlay: false, crop: crop,
+                                                   overrides: (showsSDRVersion ? sdrOverrides : []) + cropOverrides + curveOverrides,
+                                                   hdrLimit: viewHDR ? hdrLimit : nil),
+              showLoupe else { return }
+        loupeImage = frame.image
+        loupeOrigin = CGPoint(x: Double(crop.x) / s, y: Double(crop.y) / s)
     }
 }
 

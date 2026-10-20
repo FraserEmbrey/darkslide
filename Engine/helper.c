@@ -526,11 +526,23 @@ static gboolean _sidecar_has_history(const char *xmp)
 // Drops a photo's decoded raw from darktable's cache. darktable keeps the
 // last few for its lighttable; the app edits one photo at a time and has its
 // own thumbnails, so each one kept was only memory (about 50 MB for 24 MP).
+// Only when nothing holds it: darktable's own eviction waits for a held entry
+// without end, and one left held (by a job still running, or never released)
+// hung the helper there; a held one goes when the cache needs the room.
+static void _forget_at_size(const dt_imgid_t imgid, const dt_mipmap_size_t mip)
+{
+  dt_mipmap_buffer_t buf;
+  dt_mipmap_cache_get(&buf, imgid, mip, DT_MIPMAP_TESTLOCK, 'w');
+  if(!buf.cache_entry) return;
+  dt_mipmap_cache_release(&buf);
+  dt_mipmap_cache_evict_at_size(imgid, mip);
+}
+
 static void _forget_raw(const dt_imgid_t imgid)
 {
   if(!dt_is_valid_imgid(imgid)) return;
-  dt_mipmap_cache_evict_at_size(imgid, DT_MIPMAP_FULL);
-  dt_mipmap_cache_evict_at_size(imgid, DT_MIPMAP_F);
+  _forget_at_size(imgid, DT_MIPMAP_FULL);
+  _forget_at_size(imgid, DT_MIPMAP_F);
 }
 
 // {"cmd":"open","path":"/photo.NEF","version":1}: version is optional, 0 the original
@@ -3524,6 +3536,18 @@ static void _cmd_save(void)
 
 // ------------------------------------------------------------------ main
 
+// Ends the helper once the app that started it has gone. Closing the pipe
+// ends it too, but only when it's back reading requests: one stuck in a
+// command would otherwise stay, holding the library lock against the app's
+// next launch.
+static gpointer _watch_parent(gpointer data)
+{
+  const pid_t parent = GPOINTER_TO_INT(data);
+  while(getppid() == parent) g_usleep(2 * G_USEC_PER_SEC);
+  _exit(0);
+  return NULL;
+}
+
 int main(int argc, char *argv[])
 {
   const char *frame = NULL, *config = NULL, *cache = NULL;
@@ -3556,6 +3580,7 @@ int main(int argc, char *argv[])
   H.frame_path = frame;
   H.frame_fd = open(frame, O_RDWR | O_CREAT, 0600);
   if(H.frame_fd < 0) { perror("frame file"); return 1; }
+  g_thread_unref(g_thread_new("parent watch", _watch_parent, GINT_TO_POINTER(getppid())));
 
   gchar *workflow_conf = g_strdup_printf("plugins/darkroom/workflow=%s", workflow);
   char *base_argv[] = { "darkroom-helper",

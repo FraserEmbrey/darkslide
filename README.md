@@ -300,7 +300,8 @@ darktable has no way to hold pixels a model made, so this is Darkslide's own lay
 - **Marks.** Each stroke is kept in the catalog in darktable's input coordinates (the engine's `to_input`, the inverse of `to_output`), so a crop or rotation leaves it on its object.
 - **On screen.** After each full render the marks are filled again in the background, around each one, so the fill follows the edit beneath. Until it's done, and while a slider is dragged, the last fill is laid over the new frame, so objects don't flash back.
 - **Exports.** A photo with marks exports through Core Image, filled at the export's own resolution. A gain map's HDR and SDR renderings are each filled.
-- **What it's good at.** Small and medium things with plenty around them. LaMa needs about three times an object's size as context, so a large one is filled from a scaled-down square and comes out softer (`Tools/inpaintlab/README.md`). darktable doesn't see the layer, and it isn't in the undo history yet: Delete or Remove All take marks away.
+- **What it's good at.** Small and medium things with plenty around them. LaMa needs about three times an object's size as context, so a large one is filled from a scaled-down square and comes out softer (`Tools/inpaintlab/README.md`). darktable doesn't see the layer.
+- **Undo.** Each undo step holds the marks as they were, beside darktable's history position, as it holds the SDR version, so ⌘Z takes a removal back in turn with the rest of the edit. Reset All Edits clears them too.
 
 ### Hue curves
 

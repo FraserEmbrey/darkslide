@@ -74,7 +74,7 @@ final class EditorModel {
     private var openedWithEdit = false
     /// Reset is for photos with something to reset: an edit from the sidecar,
     /// or edits since opening (the new-photo defaults don't count)
-    var canReset: Bool { url != nil && (openedWithEdit || !undoStack.isEmpty) }
+    var canReset: Bool { url != nil && (openedWithEdit || !undoStack.isEmpty || !cleanUpMarks.isEmpty) }
     fileprivate var reopening = false
 
     /// opens the same photo again, as when its decoder changes
@@ -1752,6 +1752,15 @@ final class EditorModel {
                         log("exported without")
                     }
                     removeAllObjectMarks()
+                    try? await Task.sleep(for: .seconds(1))
+                    log("removed all: \(cleanUpMarks.count), undo \(undoTitle ?? "-")")
+                    await undo()
+                    log("undone: \(cleanUpMarks.count) marks, catalog \(catalog.cleanUp(of: url).count), next undo \(undoTitle ?? "-")")
+                    await redo()
+                    log("redone: \(cleanUpMarks.count) marks, catalog \(catalog.cleanUp(of: url).count)")
+                    await undo()
+                    await undo()
+                    log("undone twice: \(cleanUpMarks.count) marks, next undo \(undoTitle ?? "-"), redo \(redoTitle ?? "-")")
                 }
             }
             // TestStacks: launch argument (-TestStacks YES) for testing: two versions of the
@@ -2222,6 +2231,8 @@ final class EditorModel {
             pendingCheckpoints.removeAll()
             undoGroupDepth += 1
             sdrVersion = SDRVersion()
+            // objects removed are part of the edit too
+            if !cleanUpMarks.isEmpty { restoreObjectMarks([]) }
             await applyNewPhotoDefaults()
             undoGroupDepth -= 1
             clearUndo()
@@ -3333,6 +3344,7 @@ struct UndoStep {
     let styles: [String]
     let styleEnds: [Int]
     let editsSinceStyle: Int
+    let cleanUp: [CleanUpMark]
 }
 
 /// Undo and redo step darktable's history position back and forward, as its
@@ -3382,7 +3394,7 @@ extension EditorModel {
 
     private func snapshot(id: Int, label: String, end: Int?, sdr: SDRVersion) -> UndoStep {
         UndoStep(id: id, label: label, end: end, sdr: sdr, styles: appliedStyles,
-                 styleEnds: styleHistoryEnds, editsSinceStyle: editsSinceStyle)
+                 styleEnds: styleHistoryEnds, editsSinceStyle: editsSinceStyle, cleanUp: cleanUpMarks)
     }
 
     func undo() async { await step(back: true) }
@@ -3413,6 +3425,7 @@ extension EditorModel {
         appliedStyles = target.styles
         styleHistoryEnds = target.styleEnds
         editsSinceStyle = target.editsSinceStyle
+        if target.cleanUp != cleanUpMarks { restoreObjectMarks(target.cleanUp) }
         lastGesture = nil
         hasUnsavedChanges = true
         editedSinceOpen = true
@@ -4233,6 +4246,8 @@ extension EditorModel {
         Task {
             if !Inpainter.isAvailable { guard await ensureModel(.removeObjects) else { return } }
             guard let input = try? await engine.toInput(points), photo == url else { return }
+            // the step holds the marks as they were, so undo takes this one away
+            recordUndoStep(label: "Remove Object")
             let shorter = min(imageSize.width, imageSize.height)
             let mark = CleanUpMark(points: input, radius: radius / max(shorter, 1))
             cleanUpMarks.append(mark)
@@ -4245,7 +4260,8 @@ extension EditorModel {
     }
 
     func removeObjectMark(_ id: UUID) {
-        guard let photo = url else { return }
+        guard let photo = url, cleanUpMarks.contains(where: { $0.id == id }) else { return }
+        recordUndoStep(label: "Restore Object")
         cleanUpMarks.removeAll { $0.id == id }
         placedMarks[id] = nil
         if selectedMark == id { selectedMark = nil }
@@ -4256,7 +4272,8 @@ extension EditorModel {
     }
 
     func removeAllObjectMarks() {
-        guard let photo = url else { return }
+        guard let photo = url, !cleanUpMarks.isEmpty else { return }
+        recordUndoStep(label: "Restore All Objects")
         cleanUpMarks = []
         placedMarks = [:]
         selectedMark = nil
@@ -4264,6 +4281,18 @@ extension EditorModel {
         catalog.setCleanUp([], for: photo)
         editedSinceOpen = true
         requestRender()
+    }
+
+    /// The marks an undo or redo goes back to.
+    fileprivate func restoreObjectMarks(_ marks: [CleanUpMark]) {
+        guard let photo = url else { return }
+        cleanUpMarks = marks
+        placedMarks = placedMarks.filter { id, _ in marks.contains { $0.id == id } }
+        if let sel = selectedMark, !marks.contains(where: { $0.id == sel }) { selectedMark = nil }
+        if marks.isEmpty { lastFill = nil }
+        catalog.setCleanUp(marks, for: photo)
+        // where the marks brought back fall comes with the next render's fill
+        Task { await placeObjectMarks() }
     }
 
     /// the marks on the output now, from darktable's input through the edit's crop and distortions

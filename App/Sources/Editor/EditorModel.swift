@@ -194,7 +194,8 @@ final class EditorModel {
 
     /// The loupe (`), as Aperture's: a lens following the pointer, at 100%
     /// (or `loupeZoom`) of the photo as edited. Its centre is in output pixels.
-    var showLoupe = false {
+    // StartLoupe: launch argument (-StartLoupe YES) for testing: opens with the loupe on
+    var showLoupe = UserDefaults.standard.bool(forKey: "StartLoupe") {
         didSet { if !showLoupe { loupeCenter = nil; loupeImage = nil; loupeCovers = nil } }
     }
     var loupeZoom = UserDefaults.standard.object(forKey: "LoupeZoom") as? Double ?? 1 {

@@ -514,7 +514,7 @@ struct ZoomableImage: View {
                 }
                 // TestLoupeAt: launch argument (-TestLoupeAt 0.5,0.4) for testing: the
                 // loupe at that fraction of the canvas, without a pointer
-                .task(id: model.showLoupe) {
+                .task(id: "\(model.showLoupe) \(model.imageSize)") {
                     guard model.showLoupe, let at = UserDefaults.standard.string(forKey: "TestLoupeAt") else { return }
                     let f = at.split(separator: ",").compactMap { Double($0) }
                     guard f.count == 2 else { return }

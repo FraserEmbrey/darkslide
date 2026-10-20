@@ -84,6 +84,7 @@ final class EditorModel {
     private static var penBrushTested = false
     private static var localNamesTested = false
     private static var brushPreviewTested = false
+    private static var healStrokeTested = false
     private static var loupeTested = false
 
     /// for testing: how far apart two frames are, as the largest difference
@@ -2095,6 +2096,51 @@ final class EditorModel {
                         endBrushPreview()
                     }
                     pendingBrush = nil
+                }
+            }
+            // TestHealStroke: launch argument (-TestHealStroke YES) for testing: heals a
+            // painted stroke, moves it, then undoes the move and the stroke
+            if UserDefaults.standard.bool(forKey: "TestHealStroke"), !Self.healStrokeTested {
+                Self.healStrokeTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Darkslide heal stroke: \(s): \(spots.map { "\($0.id) \($0.stroke.map { "stroke of \($0.count)" } ?? "circle") at (\(Int($0.x)),\(Int($0.y))) r \(Int($0.r)) from (\(Int($0.sx)),\(Int($0.sy)))" })\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    isRemovingSpots = true
+                    let w = imageSize.width, h = imageSize.height
+                    /// the frame's mean brightness over the stroke's area, and how much it varies
+                    @MainActor func region() -> String {
+                        guard let f = image else { return "-" }
+                        let k = Double(f.width) / w
+                        // CGImage cropping counts from the top
+                        let rect = CGRect(x: w * 0.40 * k, y: h * 0.60 * k, width: w * 0.15 * k, height: h * 0.04 * k).integral
+                        guard let crop = f.cropping(to: rect) else { return "-" }
+                        var px = [UInt8](repeating: 0, count: crop.width * crop.height * 4)
+                        let ctx = CGContext(data: &px, width: crop.width, height: crop.height, bitsPerComponent: 8, bytesPerRow: crop.width * 4,
+                                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                        ctx.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+                        let lum = stride(from: 0, to: px.count, by: 4).map { (Double(px[$0]) + Double(px[$0 + 1]) + Double(px[$0 + 2])) / 3 }
+                        let mean = lum.reduce(0, +) / Double(lum.count)
+                        let sd = (lum.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(lum.count)).squareRoot()
+                        return String(format: "mean %.1f sd %.1f", mean, sd)
+                    }
+                    FileHandle.standardError.write("Darkslide heal stroke: area before \(region())\n".data(using: .utf8)!)
+                    addHealStroke(stride(from: 0.40, through: 0.55, by: 0.01).map { CGPoint(x: w * $0, y: h * (0.62 + 0.1 * ($0 - 0.4))) })
+                    try? await Task.sleep(for: .seconds(3))
+                    log("healed, area \(region())")
+                    if let s = spots.first { moveSpot(s.moved(dx: 100, dy: 0, sourceOnly: false)) }
+                    try? await Task.sleep(for: .seconds(2))
+                    await fetchSpots()
+                    log("moved")
+                    await undo()
+                    try? await Task.sleep(for: .seconds(2))
+                    await fetchSpots()
+                    log("undone once")
+                    await undo()
+                    try? await Task.sleep(for: .seconds(2))
+                    await fetchSpots()
+                    log("undone twice")
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the
@@ -4999,6 +5045,35 @@ extension EditorModel {
                 requestRender()
             } catch {
                 errorMessage = "Couldn't remove the spot: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// A stroke painted over something (output pixels), healed from a patch
+    /// beside it whose surroundings match best: the stroke's bounds as one
+    /// big spot for SpotSource, then the stroke moved by as much.
+    func addHealStroke(_ points: [CGPoint]) {
+        guard let engine, url != nil, let first = points.first else { return }
+        let r = spotSize * min(imageSize.width, imageSize.height)
+        let xs = points.map(\.x), ys = points.map(\.y)
+        let box = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+        let centre = CGPoint(x: box.midX, y: box.midY)
+        let found = SpotSource.find(for: centre, radius: max(box.width, box.height) / 2 + r, in: image,
+                                    shown: imageIsZoomed ? shownCrop : nil, size: imageSize)
+        let source = CGPoint(x: first.x + found.x - centre.x, y: first.y + found.y - centre.y)
+        Task {
+            await settleEdits()
+            recordUndoStep(label: spotClones ? "Clone" : "Heal")
+            await settleEdits()
+            do {
+                let reply = try await engine.addHealStroke(points, radius: r, source: source, clone: spotClones)
+                if let m = reply.modules { modules = m }
+                spots = reply.spots
+                selectedSpot = reply.added
+                hasUnsavedChanges = true
+                requestRender()
+            } catch {
+                errorMessage = "Couldn't heal it: \(error.localizedDescription)"
             }
         }
     }

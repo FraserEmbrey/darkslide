@@ -16,8 +16,8 @@ struct SpotPanel: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             ParamSlider(label: "Size", value: model.spotSize * 100, defaultValue: 2, range: 0.3...10,
-                        isInteger: false, unit: "%", trackColors: nil, editsPhoto: false) { model.spotSize = $0 / 100 }
-            Text("Click a spot to remove it. Darkslide picks a patch nearby to heal it from; drag either circle to move it. Heal blends the patch into its surroundings, clone copies it as it is. Delete removes the selected spot. [ and ] change the size.")
+                        isInteger: false, unit: nil, trackColors: nil, editsPhoto: false, showsValue: false) { model.spotSize = $0 / 100 }
+            Text("Click a spot to remove it, or paint over something longer, such as a wire. Darkslide picks a patch nearby to heal it from; drag the spot or its dashed source to move them. Heal blends the patch into its surroundings, clone copies it as it is. Delete removes the selected spot. [ and ] change the size.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -30,11 +30,21 @@ struct SpotPanel: View {
             Text("darktable's retouch module does the healing, so the spots are in the sidecar and darktable shows them.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // the machine learning tool, for what healing can't fill
+            if model.canRemoveObjects {
+                Button("Remove Objects Instead…", systemImage: "eraser") {
+                    model.isRemovingSpots = false
+                    Task { if await model.ensureModel(.removeObjects) { model.isRemovingObjects = true } }
+                }
+                .help("Paint over a person or thing and a machine learning model fills in what was behind it: for bigger things than healing can cover")
+            }
             Spacer()
-            Button { model.isRemovingSpots = false } label: { Text("Done").frame(maxWidth: .infinity) }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+            HStack {
+                Spacer()
+                Button("Done") { model.isRemovingSpots = false }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
             // Delete and the bracket keys
             Group {
                 Button("") { if let id = model.selectedSpot { model.removeSpot(id) } }
@@ -61,6 +71,8 @@ struct SpotOverlay: View {
     let toImage: (CGPoint) -> CGPoint
 
     @State private var drag: (spot: Engine.Spot, source: Bool, start: CGPoint)?
+    /// a stroke being painted, in this view's points
+    @State private var painting: [CGPoint] = []
     @State private var hover: CGPoint?
 
     var body: some View {
@@ -68,8 +80,13 @@ struct SpotOverlay: View {
             ZStack {
                 Canvas { ctx, _ in
                     for s in model.spots { draw(s, in: &ctx) }
+                    if let first = painting.first {
+                        let r = radiusInView(model.spotSize * min(model.imageSize.width, model.imageSize.height), at: toImage(first))
+                        ctx.stroke(path(painting), with: .color(.white.opacity(0.35)),
+                                   style: StrokeStyle(lineWidth: 2 * r, lineCap: .round, lineJoin: .round))
+                    }
                     // the size a click would make
-                    if let h = hover, drag == nil {
+                    if let h = hover, drag == nil, painting.isEmpty {
                         let r = radiusInView(model.spotSize * min(model.imageSize.width, model.imageSize.height), at: toImage(h))
                         ctx.stroke(Path(ellipseIn: CGRect(x: h.x - r, y: h.y - r, width: 2 * r, height: 2 * r)),
                                    with: .color(.white.opacity(0.6)), lineWidth: 1)
@@ -83,27 +100,34 @@ struct SpotOverlay: View {
             }
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { g in
-                    if drag == nil {
+                    if drag == nil, painting.isEmpty {
                         if let hit = hitTest(g.startLocation) {
                             model.selectedSpot = hit.spot.id
                             drag = (hit.spot, hit.source, toImage(g.startLocation))
                         } else {
-                            return
+                            painting = [g.startLocation]
                         }
+                    }
+                    if !painting.isEmpty {
+                        if let last = painting.last, hypot(g.location.x - last.x, g.location.y - last.y) > 3 { painting.append(g.location) }
+                        return
                     }
                     guard let d = drag else { return }
                     let now = toImage(g.location)
-                    var s = d.spot
-                    let dx = now.x - d.start.x, dy = now.y - d.start.y
-                    if d.source { s.sx += dx; s.sy += dy } else { s.x += dx; s.y += dy; s.sx += dx; s.sy += dy }
-                    model.moveSpot(s)
+                    model.moveSpot(d.spot.moved(dx: now.x - d.start.x, dy: now.y - d.start.y, sourceOnly: d.source))
                 }
-                .onEnded { g in
-                    if drag == nil, hypot(g.translation.width, g.translation.height) < 3 {
-                        let p = toImage(g.startLocation)
-                        if p.x >= 0, p.y >= 0, p.x <= model.imageSize.width, p.y <= model.imageSize.height { model.addSpot(at: p) }
+                .onEnded { _ in
+                    defer { drag = nil; painting = [] }
+                    guard let start = painting.first else { return }
+                    let inside = { (p: CGPoint) in p.x >= 0 && p.y >= 0 && p.x <= model.imageSize.width && p.y <= model.imageSize.height }
+                    if painting.count < 3 {
+                        // a click: a spot there
+                        let p = toImage(start)
+                        if inside(p) { model.addSpot(at: p) }
+                    } else {
+                        let pts = painting.map(toImage).filter(inside)
+                        if pts.count > 1 { model.addHealStroke(pts) }
                     }
-                    drag = nil
                 })
         }
     }
@@ -113,10 +137,28 @@ struct SpotOverlay: View {
         return hypot(b.x - a.x, b.y - a.y)
     }
 
+    private func path(_ pts: [CGPoint]) -> Path {
+        var p = Path()
+        p.addLines(pts)
+        if pts.count == 1 { p.addLine(to: pts[0]) }
+        return p
+    }
+
     private func draw(_ s: Engine.Spot, in ctx: inout GraphicsContext) {
         let c = toView(s.center), src = toView(s.source), r = radiusInView(s.r, at: s.center)
         let selected = model.selectedSpot == s.id
         let colour: Color = selected ? .accentColor : .white
+        if let stroke = s.stroke?.map(toView), !stroke.isEmpty {
+            // a painted stroke: its outline, and its source's, as for a circle
+            let outline = path(stroke).strokedPath(StrokeStyle(lineWidth: 2 * r, lineCap: .round, lineJoin: .round))
+            ctx.stroke(outline, with: .color(.black.opacity(0.5)), lineWidth: 3)
+            ctx.stroke(outline, with: .color(colour), lineWidth: 1.5)
+            if selected {
+                let from = outline.offsetBy(dx: src.x - c.x, dy: src.y - c.y)
+                ctx.stroke(from, with: .color(colour), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            return
+        }
         let circle = { (p: CGPoint) in Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)) }
         ctx.stroke(circle(c), with: .color(.black.opacity(0.5)), lineWidth: 3)
         ctx.stroke(circle(c), with: .color(colour), lineWidth: 1.5)
@@ -135,8 +177,26 @@ struct SpotOverlay: View {
 
     /// the spot (or, for the selected one, its source) under a point
     private func hitTest(_ v: CGPoint) -> (spot: Engine.Spot, source: Bool)? {
+        /// how far a point is from a stroke
+        func distance(_ p: CGPoint, to pts: [CGPoint]) -> Double {
+            guard pts.count > 1 else { return pts.first.map { hypot(p.x - $0.x, p.y - $0.y) } ?? .infinity }
+            return (1..<pts.count).map { i in
+                let a = pts[i - 1], b = pts[i]
+                let dx = b.x - a.x, dy = b.y - a.y, len = dx * dx + dy * dy
+                let t = len > 0 ? max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len)) : 0
+                return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+            }.min()!
+        }
         for s in model.spots.reversed() {
             let r = radiusInView(s.r, at: s.center)
+            if let stroke = s.stroke?.map(toView) {
+                if s.id == model.selectedSpot {
+                    let c = toView(s.center), src = toView(s.source)
+                    if distance(v, to: stroke.map { CGPoint(x: $0.x + src.x - c.x, y: $0.y + src.y - c.y) }) <= r { return (s, true) }
+                }
+                if distance(v, to: stroke) <= r { return (s, false) }
+                continue
+            }
             if s.id == model.selectedSpot {
                 let src = toView(s.source)
                 if hypot(v.x - src.x, v.y - src.y) <= r { return (s, true) }

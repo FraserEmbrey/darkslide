@@ -1889,12 +1889,42 @@ static void _add_spots(JsonBuilder *b)
   for(int i = 0; rt && m->enabled && i < RT_FORMS && rt[i].formid; i++)
   {
     dt_masks_form_t *form = dt_masks_get_from_id(&H.edit.dev, rt[i].formid);
-    if(!form || !(form->type & DT_MASKS_CIRCLE) || !form->points) continue;
-    const dt_masks_point_circle_t *c = form->points->data;
-    float pts[6] = { c->center[0] * iw, c->center[1] * ih, c->center[0] * iw + c->radius * mind, c->center[1] * ih,
-                     form->source[0] * iw, form->source[1] * ih };
+    if(!form || !(form->type & (DT_MASKS_CIRCLE | DT_MASKS_BRUSH)) || !form->points) continue;
+    const gboolean stroke = form->type & DT_MASKS_BRUSH;
+    // a circle's centre, or a stroke's first point, with its radius beside it
+    float cx, cy, cr;
+    if(stroke)
+    {
+      const dt_masks_point_brush_t *p = form->points->data;
+      cx = p->corner[0]; cy = p->corner[1]; cr = p->border[0];
+    }
+    else
+    {
+      const dt_masks_point_circle_t *c = form->points->data;
+      cx = c->center[0]; cy = c->center[1]; cr = c->radius;
+    }
+    float pts[6] = { cx * iw, cy * ih, cx * iw + cr * mind, cy * ih, form->source[0] * iw, form->source[1] * ih };
     _to_output(pts, 3);
     json_builder_begin_object(b);
+    if(stroke)
+    {
+      // the stroke's points, x, y, …
+      const int n = g_list_length(form->points);
+      float *sp = g_new(float, 2 * n);
+      int k = 0;
+      for(GList *l = form->points; l; l = g_list_next(l))
+      {
+        const dt_masks_point_brush_t *p = l->data;
+        sp[k++] = p->corner[0] * iw;
+        sp[k++] = p->corner[1] * ih;
+      }
+      _to_output(sp, n);
+      json_builder_set_member_name(b, "points");
+      json_builder_begin_array(b);
+      for(int j = 0; j < 2 * n; j++) json_builder_add_double_value(b, sp[j]);
+      json_builder_end_array(b);
+      g_free(sp);
+    }
     json_builder_set_member_name(b, "id");
     json_builder_add_int_value(b, rt[i].formid);
     json_builder_set_member_name(b, "x");
@@ -1924,7 +1954,9 @@ static void _cmd_spots(void)
 }
 
 // {"cmd":"add_spot","x":..,"y":..,"r":..,"sx":..,"sy":..,"clone":false}, output pixels:
-// a circle healed (or cloned) from the source, retouch switched on
+// a circle healed (or cloned) from the source, retouch switched on. With
+// "points":[x,y,…] (and "radius", "hardness") it's a brushed stroke instead,
+// its source where its first point is copied from.
 static void _cmd_add_spot(JsonObject *o)
 {
   if(!H.edit.loaded) return _error("no image open");
@@ -1934,9 +1966,25 @@ static void _cmd_add_spot(JsonObject *o)
   int slot = 0;
   while(slot < RT_FORMS && rt[slot].formid) slot++;
   if(slot == RT_FORMS) return _error("retouch holds 300 spots at most");
-  dt_masks_form_t *form = dt_masks_create(DT_MASKS_CIRCLE | DT_MASKS_CLONE);
-  form->points = g_list_append(form->points, calloc(1, sizeof(dt_masks_point_circle_t)));
-  _place_spot(form, o);
+  // a stroke, painted over what's to go, or a circle where it was clicked
+  dt_masks_form_t *form = NULL;
+  if(json_object_has_member(o, "points"))
+  {
+    form = _brush_stroke(o);
+    if(!form) return _error("no points");
+    form->type = DT_MASKS_BRUSH | DT_MASKS_CLONE;
+    // the source is where the first point is copied from
+    float src[2] = { json_object_get_double_member(o, "sx"), json_object_get_double_member(o, "sy") };
+    _to_input(src, 1);
+    form->source[0] = src[0] / H.edit.pipe.iwidth;
+    form->source[1] = src[1] / H.edit.pipe.iheight;
+  }
+  else
+  {
+    form = dt_masks_create(DT_MASKS_CIRCLE | DT_MASKS_CLONE);
+    form->points = g_list_append(form->points, calloc(1, sizeof(dt_masks_point_circle_t)));
+    _place_spot(form, o);
+  }
   dt_masks_gui_form_save_creation(&H.edit.dev, m, form, NULL);
   memset(&rt[slot], 0, sizeof(_rt_form_t));
   rt[slot].formid = form->formid;
@@ -1962,8 +2010,28 @@ static void _cmd_move_spot(JsonObject *o)
   if(!H.edit.loaded) return _error("no image open");
   dt_iop_module_t *m = _retouch();
   dt_masks_form_t *form = m ? dt_masks_get_from_id(&H.edit.dev, json_object_get_int_member_with_default(o, "id", 0)) : NULL;
-  if(!form || !(form->type & DT_MASKS_CIRCLE)) return _error("no such spot");
-  _place_spot(form, o);
+  if(!form || !(form->type & (DT_MASKS_CIRCLE | DT_MASKS_BRUSH)) || !form->points) return _error("no such spot");
+  if(form->type & DT_MASKS_BRUSH)
+  {
+    // a stroke moves whole, by where its first point goes, and its source
+    const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+    float pts[4] = { json_object_get_double_member(o, "x"), json_object_get_double_member(o, "y"),
+                     json_object_get_double_member(o, "sx"), json_object_get_double_member(o, "sy") };
+    _to_input(pts, 2);
+    const dt_masks_point_brush_t *first = form->points->data;
+    const float dx = pts[0] / iw - first->corner[0], dy = pts[1] / ih - first->corner[1];
+    for(GList *l = form->points; l; l = g_list_next(l))
+    {
+      dt_masks_point_brush_t *p = l->data;
+      p->corner[0] += dx; p->corner[1] += dy;
+      p->ctrl1[0] += dx; p->ctrl1[1] += dy;
+      p->ctrl2[0] += dx; p->ctrl2[1] += dy;
+    }
+    form->source[0] = pts[2] / iw;
+    form->source[1] = pts[3] / ih;
+  }
+  else
+    _place_spot(form, o);
   _shape_changed(m);
   JsonBuilder *b = _ok();
   _ok_done(b);

@@ -389,12 +389,28 @@ actor Engine {
 
     // MARK: Spots (darktable's retouch module)
 
+    /// A spot: a circle at (x, y), or a painted stroke whose first point is
+    /// (x, y), healed or cloned from where (sx, sy) is; r its radius.
     struct Spot: Decodable, Identifiable, Equatable, Sendable {
         let id: Int
         var x, y, r, sx, sy: Double
         var clone: Bool
+        /// a stroke's points, x, y, …
+        var points: [Double]? = nil
         var center: CGPoint { CGPoint(x: x, y: y) }
         var source: CGPoint { CGPoint(x: sx, y: sy) }
+        var stroke: [CGPoint]? {
+            points.map { p in stride(from: 0, to: p.count - 1, by: 2).map { CGPoint(x: p[$0], y: p[$0 + 1]) } }
+        }
+        /// moved by (dx, dy), its source with it unless only the source moves
+        func moved(dx: Double, dy: Double, sourceOnly: Bool) -> Spot {
+            var s = self
+            s.sx += dx; s.sy += dy
+            guard !sourceOnly else { return s }
+            s.x += dx; s.y += dy
+            s.points = points.map { p in p.enumerated().map { $0.offset % 2 == 0 ? $0.element + dx : $0.element + dy } }
+            return s
+        }
     }
     struct SpotsReply: Decodable {
         let spots: [Spot]
@@ -408,6 +424,12 @@ actor Engine {
     func addSpot(at c: CGPoint, radius: Double, source: CGPoint, clone: Bool) async throws -> SpotsReply {
         try await request(["cmd": "add_spot", "x": c.x, "y": c.y, "r": radius, "sx": source.x, "sy": source.y, "clone": clone],
                           as: SpotsReply.self)
+    }
+
+    /// a painted stroke healed (or cloned) from where `source` is, the copy of its first point
+    func addHealStroke(_ points: [CGPoint], radius: Double, source: CGPoint, clone: Bool) async throws -> SpotsReply {
+        try await request(["cmd": "add_spot", "points": points.flatMap { [$0.x, $0.y] }, "radius": radius, "hardness": 0.6,
+                           "sx": source.x, "sy": source.y, "clone": clone], as: SpotsReply.self)
     }
 
     func moveSpot(_ s: Spot) async throws {

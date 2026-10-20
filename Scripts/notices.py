@@ -125,6 +125,10 @@ sections.append(("Raw denoise model (RawNIND)", None, "GPL-3.0", "https://github
 sections.append(("Rescue Focus models (Restormer)", None, "MIT", "https://github.com/swz30/Restormer",
                  [os.path.join(ROOT, "Licences/Restormer.txt")],
                  "Restormer's defocus and motion deblurring models (Zamir et al., CVPR 2022), converted to Core ML."))
+sections.append(("Remove Objects model (LaMa)", None, "Apache-2.0", "https://github.com/advimman/lama",
+                 [os.path.join(ROOT, "Licences/LaMa.txt")],
+                 "LaMa's big-lama inpainting model (Suvorov et al., \"Resolution-robust Large Mask Inpainting with "
+                 "Fourier Convolutions\", WACV 2022), converted to Core ML."))
 
 # each licence text once: later parts with the same text refer back to the first
 seen = {}
@@ -155,9 +159,9 @@ credits = f"""<html><body style="{style}">
 <p>Free software under the <a href="https://www.gnu.org/licenses/gpl-3.0.html">GNU GPL, version 3 or later</a>.
 It comes with no warranty.</p>
 <p><a href="{source}">Source code</a></p>
-<p>Built on darktable 5.6.2 and {len(components)} other libraries, with models from RawNIND and Restormer.
+<p>Built on darktable 5.6.2 and {len(components)} other libraries, with models from RawNIND, Restormer and LaMa.
 Help &rsaquo; Acknowledgements lists them with their licences.</p>
 </body></html>
 """
 open(os.path.join(resources, "Credits.html"), "w").write(credits)
-print(f"acknowledged darktable, {len(components)} libraries and 2 models")
+print(f"acknowledged darktable, {len(components)} libraries and 3 models")

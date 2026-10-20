@@ -52,9 +52,10 @@ echo "wrote $MANIFEST"
 
 if [ -z "$LOCAL" ]; then
   gh release create "$TAG" "$OUT"/*.mlmodelc.zip --latest=false --title "Models ($TAG)" \
-    --notes "Core ML models that Darkslide downloads the first time Denoise or Rescue Focus is used. Not an app release.
+    --notes "Core ML models that Darkslide downloads the first time Denoise, Rescue Focus or Remove Objects is used. Not an app release.
 
 - RawDenoise: darktable-ai's rawdenoise-nind (RawNIND), GPL-3.0
-- RescueFocus, RescueMotion: Restormer's defocus and motion deblurring (Zamir et al., CVPR 2022), MIT"
+- RescueFocus, RescueMotion: Restormer's defocus and motion deblurring (Zamir et al., CVPR 2022), MIT
+- RemoveObjects: LaMa's big-lama inpainting (Suvorov et al., WACV 2022), Apache-2.0"
   echo "published $TAG; commit $MANIFEST"
 fi

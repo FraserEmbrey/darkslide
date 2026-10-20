@@ -2501,6 +2501,7 @@ final class EditorModel {
                         try await engine.setMany(Array(sets[sent..<c.position]))
                         sent = c.position
                         resolveUndoStep(c.id, end: await engine.historyEnd)
+                        try await engine.newStep()
                     }
                     try await engine.setMany(Array(sets[sent...]))
                     let setDone = ContinuousClock.now
@@ -4119,6 +4120,8 @@ extension EditorModel {
         Task {
             await settleEdits()
             recordUndoStep(label: "Add \(kind == .gradient ? "Linear Gradient" : "Radial Gradient")")
+            // its history position, before the engine moves on from it
+            await settleEdits()
             do {
                 let reply = try await engine.addLocal(base: base.key, shape: kind == .gradient ? "gradient" : "ellipse", name: name)
                 modules = reply.modules
@@ -4167,6 +4170,8 @@ extension EditorModel {
                     return
                 }
                 recordUndoStep(label: "Add Subject")
+                // its history position, before the engine moves on from it
+                await settleEdits()
                 let reply = try await engine.addSubject(base: base.key, name: name, mask: mask.file,
                                                         width: mask.width, height: mask.height)
                 try? FileManager.default.removeItem(at: mask.file)
@@ -4190,6 +4195,8 @@ extension EditorModel {
         Task {
             await settleEdits()
             recordUndoStep(label: "Delete Local Adjustment")
+            // its history position, before the engine moves on from it
+            await settleEdits()
             do {
                 let parts = modules.first { $0.key == key }.map(localParts)?.map(\.key) ?? [key]
                 for k in parts {
@@ -4408,6 +4415,8 @@ extension EditorModel {
         Task {
             await settleEdits()
             recordUndoStep(label: spotClones ? "Clone Spot" : "Heal Spot")
+            // its history position, before the engine moves on from it
+            await settleEdits()
             do {
                 let reply = try await engine.addSpot(at: c, radius: r, source: source, clone: spotClones)
                 if let m = reply.modules { modules = m }
@@ -4447,6 +4456,8 @@ extension EditorModel {
         Task {
             await settleEdits()
             recordUndoStep(label: "Remove Spot")
+            // its history position, before the engine moves on from it
+            await settleEdits()
             if let left = try? await engine.removeSpot(id) { spots = left }
             hasUnsavedChanges = true
             requestRender()

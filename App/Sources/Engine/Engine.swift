@@ -190,6 +190,11 @@ actor Engine {
         }
     }
 
+    /// the app's undo step ends here: the next change starts a history item of its own
+    func newStep() async throws {
+        _ = try await request(["cmd": "new_step"])
+    }
+
     func enable(module: String, on: Bool) async throws {
         _ = try await request(["cmd": "enable", "module": module, "on": on])
     }

@@ -1840,6 +1840,18 @@ static void _cmd_to_input(JsonObject *o)
   _ok_done(b);
 }
 
+// {"cmd":"new_step"}: the app's undo step ends here, so the next change
+// starts a history item of its own. darktable merges a change into the last
+// item when it's for the same module, unless its focus hash has changed (its
+// GUI changes it as modules gain and lose focus); headless, nothing did, so a
+// second change to a module merged into the first and undo couldn't split them
+static void _cmd_new_step(void)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  H.edit.dev.focus_hash++;
+  _ok_done(_ok());
+}
+
 // {"cmd":"rename_instance","module":"exposure:1","name":"..."}: an instance's
 // name, kept in the history and the sidecar
 static void _cmd_rename_instance(JsonObject *o)
@@ -3370,6 +3382,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "lens_lenses")) _cmd_lens_lenses(o);
     else if(!strcmp(cmd, "set_text")) _cmd_set_text(o);
     else if(!strcmp(cmd, "add_local")) _cmd_add_local(o);
+    else if(!strcmp(cmd, "new_step")) _cmd_new_step();
     else if(!strcmp(cmd, "spots")) _cmd_spots();
     else if(!strcmp(cmd, "add_spot")) _cmd_add_spot(o);
     else if(!strcmp(cmd, "move_spot")) _cmd_move_spot(o);

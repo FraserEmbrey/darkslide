@@ -503,11 +503,22 @@ static gboolean _sidecar_has_history(const char *xmp)
   return found;
 }
 
+// Drops a photo's decoded raw from darktable's cache. darktable keeps the
+// last few for its lighttable; the app edits one photo at a time and has its
+// own thumbnails, so each one kept was only memory (about 50 MB for 24 MP).
+static void _forget_raw(const dt_imgid_t imgid)
+{
+  if(!dt_is_valid_imgid(imgid)) return;
+  dt_mipmap_cache_evict_at_size(imgid, DT_MIPMAP_FULL);
+  dt_mipmap_cache_evict_at_size(imgid, DT_MIPMAP_F);
+}
+
 // {"cmd":"open","path":"/photo.NEF","version":1}: version is optional, 0 the original
 static void _cmd_open(JsonObject *o)
 {
   const char *path = json_object_get_string_member_with_default(o, "path", NULL);
   if(!path || !g_file_test(path, G_FILE_TEST_IS_REGULAR)) return _error("file not found");
+  const dt_imgid_t previous = H.imgid;
   _close_image();
 
   // a version (darktable's duplicate) has its own sidecar, photo_01.NEF.xmp
@@ -536,6 +547,8 @@ static void _cmd_open(JsonObject *o)
   // sidecar, as darktable names it from the version in the library.
   if(version > 0) imgid = dt_image_duplicate_with_version(imgid, version);
   if(!dt_is_valid_imgid(imgid)) return _error("darktable could not make this version");
+  // the photo opened before, unless it's this one again
+  if(imgid != previous) _forget_raw(previous);
 
   // The sidecar is the edit. darktable only reads it the first time a file
   // is imported, so a file opened again this session (a decode whose sidecar
@@ -2785,6 +2798,8 @@ static void _cmd_export(JsonObject *o)
   storage->free_params(storage, sdata);
   format->free_params(format, fdata);
   g_list_free(ids);
+  // another photo, exported without opening it, isn't kept either
+  if(imgid != H.imgid) _forget_raw(imgid);
 
   if(sdr_rendition)
   {

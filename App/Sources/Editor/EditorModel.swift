@@ -86,6 +86,7 @@ final class EditorModel {
     private static var brushPreviewTested = false
     private static var healStrokeTested = false
     private static var cropToRetouchTested = false
+    private static var loupeRenderTested = false
     private static var retouchCancelTested = false
     private static var loupeTested = false
 
@@ -760,6 +761,8 @@ final class EditorModel {
         ?? Set(EditorModel.initialWorkspace.expanded) { didSet { recordWorkspace() } }
 
     private var engine: Engine?
+    /// the grid loupe's last full-size render (loupeRender)
+    private var lastLoupeRender: (path: String, date: Date?, image: CGImage)?
     /// for read-only lookups from pickers (Lensfun's lists), which change nothing
     var engineForPickers: Engine? { engine }
     private var canvasPixels = 1600
@@ -2210,6 +2213,19 @@ final class EditorModel {
                     await setRetouching(false)
                     await fetchSpots()
                     log("one spot, done")
+                }
+            }
+            // TestLoupeRender: launch argument (-TestLoupeRender <photo>) for testing:
+            // renders another photo for the grid loupe, twice, and logs the times
+            if let path = UserDefaults.standard.string(forKey: "TestLoupeRender"), !Self.loupeRenderTested {
+                Self.loupeRenderTested = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    for pass in 1...2 {
+                        let t = Date()
+                        let image = await loupeRender(URL(fileURLWithPath: path))
+                        FileHandle.standardError.write("Darkslide loupe render \(pass): \(image.map { "\($0.width)×\($0.height)" } ?? "none") in \(Int(Date().timeIntervalSince(t) * 1000)) ms\n".data(using: .utf8)!)
+                    }
                 }
             }
             // TestCropToRetouch: launch argument (-TestCropToRetouch YES) for testing: opens
@@ -5650,6 +5666,25 @@ extension EditorModel {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("darkslide-layer-\(UUID().uuidString)")
         return try await engine.export(path: temp.path, format: "tiff", quality: 100, bitDepth: 16,
                                        maxEdge: maxEdge, profile: 26, source: photo)
+    }
+
+    /// The grid loupe's picture of a photo edited here: its own saved edit at
+    /// full size, through darktable's export (as a composite's layers are).
+    /// Only the last is kept, as a full-size picture is about 100 MB.
+    func loupeRender(_ photo: URL) async -> CGImage? {
+        let date = Self.sidecarDate(photo)
+        if let last = lastLoupeRender, last.path == photo.path, last.date == date { return last.image }
+        guard let engine else { return nil }
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("darkslide-loupe-\(UUID().uuidString)")
+        // sRGB, as the thumbnails are: an HDR edit is seen as its SDR rendition
+        guard let file = try? await engine.export(path: temp.path, format: "jpeg", quality: 92, bitDepth: 8,
+                                                  maxEdge: 0, profile: 1, source: photo) else { return nil }
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        else { return nil }
+        lastLoupeRender = (photo.path, date, image)
+        return image
     }
 
     private static func sidecarDate(_ photo: URL) -> Date? {

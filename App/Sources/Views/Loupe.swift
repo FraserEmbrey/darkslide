@@ -188,13 +188,22 @@ struct EditorLoupe: View {
     }
 }
 
-/// The loupe over a grid thumbnail: the camera's full-size preview of the
-/// photo (as the cull view loads it), at the point under the pointer.
+/// The loupe over a grid thumbnail, at the point under the pointer. It shows
+/// what the thumbnail does: a photo edited here (or rendered with darktable's
+/// defaults) as darktable renders it at full size, with the thumbnail enlarged
+/// until that's ready; any other as the camera's full-size preview (as the
+/// cull view loads it). The camera's look beside a black and white edit, or
+/// the other way round, was jarring.
 struct GridLoupe: ViewModifier {
     @Environment(EditorModel.self) private var model
     let item: LibraryItem
     @State private var pointer: CGPoint?
     @State private var preview: CGImage?
+    /// the preview is the thumbnail, enlarged, while the full-size render comes
+    @State private var previewIsStandIn = false
+    /// the stand-in enlarged to the photo's size, so the view holds when the render comes
+    @State private var standInScale: CGFloat = 1
+    @State private var rendered = false
 
     func body(content: Content) -> some View {
         content
@@ -220,11 +229,11 @@ struct GridLoupe: ViewModifier {
                         let x0 = (geo.size.width - w) / 2, y0 = (geo.size.height - h) / 2
                         let u = CGPoint(x: (p.x - x0) / w, y: (p.y - y0) / h)
                         if (0...1).contains(u.x), (0...1).contains(u.y) {
-                            LoupeLens(image: preview, pixel: CGPoint(x: u.x * CGFloat(preview.width) * model.loupeZoom,
-                                                                     y: u.y * CGFloat(preview.height) * model.loupeZoom),
-                                      zoom: model.loupeZoom,
-                                      // it's the camera's own JPEG, which an edit doesn't change: the ring says so
-                                      label: "Camera preview\(item.hasEdit ? ", unedited" : "")  \(Int(model.loupeZoom * 100))%")
+                            let z = model.loupeZoom * (previewIsStandIn ? standInScale : 1)
+                            LoupeLens(layers: [LoupeLayer(image: preview, pixel: CGPoint(x: u.x * CGFloat(preview.width) * z,
+                                                                                         y: u.y * CGFloat(preview.height) * z),
+                                                          zoom: z, smooth: previewIsStandIn)],
+                                      label: "\(rendered ? (previewIsStandIn ? "Darkslide, rendering…" : "Darkslide") : "Camera preview")  \(Int(model.loupeZoom * 100))%")
                                 .position(p)
                         }
                     }
@@ -236,9 +245,39 @@ struct GridLoupe: ViewModifier {
     private func load() {
         let url = item.url
         preview = nil
-        Task {
-            let full = await model.culling.preview(url.photoFile, pixels: 8192)
-            if model.loupeItem == url { preview = full }
+        rendered = item.hasEdit || Library.hasStoredRender(for: url)
+        guard rendered else {
+            Task {
+                let full = await model.culling.preview(url.photoFile, pixels: 8192)
+                if model.loupeItem == url { preview = full }
+            }
+            return
         }
+        preview = model.library.thumbnails[url]
+        previewIsStandIn = true
+        standInScale = 1
+        Task {
+            if let thumb = preview, let width = await Task.detached(operation: { Self.pixelWidth(url) }).value,
+               model.loupeItem == url, previewIsStandIn {
+                standInScale = CGFloat(width) / CGFloat(max(thumb.width, 1))
+            }
+        }
+        Task {
+            // only once the pointer rests: each render takes the engine a second or two
+            try? await Task.sleep(for: .milliseconds(300))
+            guard model.loupeItem == url, let full = await model.loupeRender(url), model.loupeItem == url else { return }
+            preview = full
+            previewIsStandIn = false
+        }
+    }
+
+    /// the photo's width as shown (turned as the camera was held), from its metadata
+    nonisolated private static func pixelWidth(_ url: URL) -> Int? {
+        guard let source = CGImageSourceCreateWithURL(url.photoFile as CFURL, nil),
+              let p = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int
+        else { return nil }
+        let turned = [5, 6, 7, 8].contains(p[kCGImagePropertyOrientation] as? Int ?? 1)
+        return turned ? h : w
     }
 }

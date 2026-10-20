@@ -876,6 +876,12 @@ final class Library {
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 
+    /// a thumbnail rendered here (from the edit, or darktable's defaults), so
+    /// not the camera's own look
+    nonisolated static func hasStoredRender(for url: URL) -> Bool {
+        cacheURL(for: url).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+    }
+
     nonisolated private static func storeRender(_ image: CGImage, for url: URL) {
         guard let file = cacheURL(for: url) else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)

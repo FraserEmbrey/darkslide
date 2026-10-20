@@ -13,15 +13,11 @@ struct RetouchPanel: View {
                 if model.isFillingObjects { ProgressView().controlSize(.small) }
                 Spacer()
             }
-            Picker("Mode", selection: Binding(get: { model.retouchMode },
-                                              set: { m in Task { await model.chooseRetouchMode(m) } })) {
-                ForEach(RetouchMode.allCases) { m in
-                    Text(m.title).tag(m)
-                        .disabled(m == .remove && !model.canRemoveObjects)
-                }
+            FillingSegments(titles: RetouchMode.allCases.map(\.title),
+                            enabled: RetouchMode.allCases.map { $0 != .remove || model.canRemoveObjects },
+                            selected: RetouchMode.allCases.firstIndex(of: model.retouchMode) ?? 0) { i in
+                Task { await model.chooseRetouchMode(RetouchMode.allCases[i]) }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .help("Heal blends a nearby patch in, Clone copies it as it is, Remove fills in what was behind with machine learning")
             if model.isRemovingObjects { ObjectControls() } else { SpotControls() }
             Spacer()
@@ -39,6 +35,37 @@ struct RetouchPanel: View {
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// A segmented control as wide as it's given, its segments sharing the width
+/// equally: SwiftUI's segmented picker keeps to its natural width on the Mac.
+private struct FillingSegments: NSViewRepresentable {
+    let titles: [String]
+    let enabled: [Bool]
+    let selected: Int
+    let choose: (Int) -> Void
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let c = NSSegmentedControl(labels: titles, trackingMode: .selectOne,
+                                   target: context.coordinator, action: #selector(Coordinator.changed(_:)))
+        c.segmentDistribution = .fillEqually
+        c.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return c
+    }
+
+    func updateNSView(_ c: NSSegmentedControl, context: Context) {
+        context.coordinator.choose = choose
+        for (i, on) in enabled.enumerated() { c.setEnabled(on, forSegment: i) }
+        c.selectedSegment = selected
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(choose: choose) }
+
+    final class Coordinator: NSObject {
+        var choose: (Int) -> Void
+        init(choose: @escaping (Int) -> Void) { self.choose = choose }
+        @objc func changed(_ c: NSSegmentedControl) { choose(c.selectedSegment) }
     }
 }
 

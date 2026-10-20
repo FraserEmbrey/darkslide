@@ -77,6 +77,7 @@ final class EditorModel {
     private static var brushTested = false
     private static var compareTested = false
     private static var penBrushTested = false
+    private static var localNamesTested = false
     private static var loupeTested = false
 
     /// for testing: how far apart two frames are, as the largest difference
@@ -1984,6 +1985,33 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(4))
                     let s2 = localShape?.strokes.last
                     log("opacity: opacities \(s2?.opacities.map { "\(String(format: "%.2f", $0.first!))...\(String(format: "%.2f", $0.last!))" } ?? "none"), brightening on the line at the light end \(Int(brightness(opacityProbes[0]) - before2[0])), full end \(Int(brightness(opacityProbes[1]) - before2[1]))")
+                }
+            }
+            // TestLocalNames: launch argument (-TestLocalNames YES) for testing: a Dodge
+            // brush (named for it), renamed, renamed back, then Reset All
+            if UserDefaults.standard.bool(forKey: "TestLocalNames"), !Self.localNamesTested {
+                Self.localNamesTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        FileHandle.standardError.write("Darkslide local names: \(s): \(localAdjustments.map { "\($0.instanceName) [\(localTitle($0))] parts \(localParts($0).count)" }), selected \(selectedLocal ?? "-"), shape \(localShape == nil ? "none" : "shown")\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    let w = imageSize.width, h = imageSize.height
+                    startBrush(.dodge)
+                    paintStroke(stride(from: 0.3, through: 0.6, by: 0.02).map { CGPoint(x: w * $0, y: h * 0.5) }, erase: false)
+                    try? await Task.sleep(for: .seconds(3))
+                    if let a = localAdjustments.first { setLocal(.contrast, to: 20, of: a) }
+                    try? await Task.sleep(for: .seconds(2))
+                    log("painted")
+                    if let key = selectedLocal { renameLocal(key, to: "Sky") }
+                    try? await Task.sleep(for: .seconds(2))
+                    log("renamed")
+                    if let key = selectedLocal { renameLocal(key, to: "") }
+                    try? await Task.sleep(for: .seconds(2))
+                    log("renamed back")
+                    await resetAll()
+                    try? await Task.sleep(for: .seconds(2))
+                    log("reset")
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the
@@ -4336,6 +4364,47 @@ extension EditorModel {
     /// uses (colour balance rgb, local contrast) are instances of the same name
     /// sharing that shape, added the first time one of their sliders moves.
     nonisolated static func isLocal(_ m: EngineModule) -> Bool { m.instanceName.hasPrefix("Local ") }
+
+    /// An adjustment's darktable name is "Local n", which is how the app finds
+    /// it, then its title if it has one: "Local 2: Sky". Its number, and the
+    /// title shown for it.
+    nonisolated static func localNumber(_ m: EngineModule) -> Int? {
+        Int(m.instanceName.dropFirst("Local ".count).prefix { $0.isNumber })
+    }
+    func localTitle(_ m: EngineModule) -> String {
+        let name = m.instanceName
+        if let colon = name.range(of: ": "), !name[colon.upperBound...].isEmpty { return String(name[colon.upperBound...]) }
+        return name
+    }
+
+    /// the next free "Local n", with a title if given
+    func nextLocalName(titled title: String? = nil) -> String {
+        let used = Set(localAdjustments.compactMap(Self.localNumber))
+        let n = (1...).first { !used.contains($0) }!
+        return title.map { "Local \(n): \($0)" } ?? "Local \(n)"
+    }
+
+    /// Renames an adjustment (all its instances, which share the name);
+    /// an empty title goes back to "Local n".
+    func renameLocal(_ key: String, to title: String) {
+        guard let engine, let anchor = modules.first(where: { $0.key == key }), let n = Self.localNumber(anchor) else { return }
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ": ", with: " ")
+        // darktable keeps 128 bytes of a module's name
+        let name = String((clean.isEmpty || clean == "Local \(n)" ? "Local \(n)" : "Local \(n): \(clean)").utf8.prefix(120)) ?? "Local \(n)"
+        guard name != anchor.instanceName else { return }
+        let parts = localParts(anchor).map(\.key)
+        Task {
+            await settleEdits()
+            recordUndoStep(label: "Rename Local Adjustment")
+            await settleEdits()
+            do {
+                for k in parts { modules = try await engine.renameInstance(k, to: name) }
+                hasUnsavedChanges = true
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
     var localAdjustments: [EngineModule] {
         modules.filter { Self.isLocal($0) && $0.op == "exposure" }.sorted { $0.instanceName < $1.instanceName }
     }
@@ -4382,8 +4451,7 @@ extension EditorModel {
     func addLocal(_ kind: LocalShape.Kind) {
         guard let engine, url != nil,
               let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
-        let used = Set(localAdjustments.map(\.instanceName))
-        let name = (1...).lazy.map { "Local \($0)" }.first { !used.contains($0) }!
+        let name = nextLocalName()
         Task {
             await settleEdits()
             recordUndoStep(label: "Add \(kind == .gradient ? "Linear Gradient" : "Radial Gradient")")
@@ -4423,8 +4491,7 @@ extension EditorModel {
     func addSubject() {
         guard let engine, url != nil,
               let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
-        let used = Set(localAdjustments.map(\.instanceName))
-        let name = (1...).lazy.map { "Local \($0)" }.first { !used.contains($0) }!
+        let name = nextLocalName()
         Task {
             await settleEdits()
             isFindingSubject = true
@@ -4546,8 +4613,7 @@ extension EditorModel {
         if let brush = pendingBrush {
             guard !erase, let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
             pendingBrush = nil
-            let used = Set(localAdjustments.map(\.instanceName))
-            let name = (1...).lazy.map { "Local \($0)" }.first { !used.contains($0) }!
+            let name = nextLocalName(titled: brush == .plain ? nil : brush.title)
             Task {
                 await settleEdits()
                 recordUndoStep(label: brush.title)

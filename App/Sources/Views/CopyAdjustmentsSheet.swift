@@ -56,7 +56,7 @@ struct CopyAdjustmentsSheet: View {
     }
 
     private func title(_ m: EngineModule) -> String {
-        if EditorModel.isLocal(m) { return "Local adjustment: \(m.instanceName)" }
+        if EditorModel.isLocal(m) { return "Local adjustment: \(model.localTitle(m))" }
         if EditorModel.isChannelCurve(m) { return "RGB curve: colour curves" }
         return Presentation.title(of: m)
     }

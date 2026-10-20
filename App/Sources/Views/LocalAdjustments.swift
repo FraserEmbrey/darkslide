@@ -6,6 +6,10 @@ import SwiftUI
 struct LocalAdjustmentsCard: View {
     @Environment(EditorModel.self) private var model
     @State private var expanded = true
+    /// the adjustment being renamed, and its name as typed
+    @State private var renaming: String?
+    @State private var draftName = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -97,13 +101,23 @@ struct LocalAdjustmentsCard: View {
                         Image(systemName: selected ? "eye" : "eye.slash")
                             .foregroundStyle(selected ? Color.accentColor : .secondary)
                             .frame(width: 18)
-                        Text(m.instanceName)
+                        if renaming == m.key {
+                            TextField("Name", text: $draftName)
+                                .textFieldStyle(.roundedBorder)
+                                .focused($nameFocused)
+                                .onSubmit { finishRename(m) }
+                                .onExitCommand { renaming = nil }
+                                .onChange(of: nameFocused) { _, focused in if !focused { finishRename(m) } }
+                        } else {
+                            Text(model.localTitle(m))
+                        }
                         Spacer()
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(selected ? "Hide its shape" : "Show and edit its shape on the photo")
+                .simultaneousGesture(TapGesture(count: 2).onEnded { startRename(m) })
+                .help(selected ? "Hide its shape; double-click to rename it" : "Show and edit its shape on the photo; double-click to rename it")
                 Toggle("", isOn: Binding(get: { m.enabled }, set: { model.setEnabled($0, module: m.key) }))
                     .toggleStyle(.switch)
                     .controlSize(.mini)
@@ -131,6 +145,24 @@ struct LocalAdjustmentsCard: View {
         }
         .padding(8)
         .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .contextMenu {
+            Button("Rename…") { startRename(m) }
+            Button(m.enabled ? "Turn Off" : "Turn On") { model.setEnabled(!m.enabled, module: m.key) }
+            Divider()
+            Button("Delete", role: .destructive) { model.deleteLocal(m.key) }
+        }
+    }
+
+    private func startRename(_ m: EngineModule) {
+        draftName = model.localTitle(m)
+        renaming = m.key
+        DispatchQueue.main.async { nameFocused = true }
+    }
+
+    private func finishRename(_ m: EngineModule) {
+        guard renaming == m.key else { return }
+        renaming = nil
+        model.renameLocal(m.key, to: draftName)
     }
 }
 

@@ -164,20 +164,10 @@ struct ContentView: View {
                             get: { model.isCropping },
                             set: { $0 ? model.beginCrop() : model.commitCrop() }))
                             .help("Crop and straighten (⌘K)")
-                        Toggle("Spot Removal", systemImage: "bandage", isOn: $model.isRemovingSpots)
-                            .help("Heal or clone away spots and blemishes")
-                        Toggle("Remove Objects", systemImage: "eraser", isOn: Binding(
-                            get: { model.isRemovingObjects },
-                            set: { on in
-                                Task {
-                                    // the model is downloaded the first time, after asking
-                                    if on, !(await model.ensureModel(.removeObjects)) { return }
-                                    model.isRemovingObjects = on
-                                }
-                            }))
-                            .disabled(!model.canRemoveObjects)
-                            .help(model.canRemoveObjects ? "Paint over things to remove them, filled in by machine learning"
-                                                         : "The Remove Objects model isn't available")
+                        Toggle("Retouch", systemImage: "bandage", isOn: Binding(
+                            get: { model.isRetouching },
+                            set: { on in Task { await model.setRetouching(on) } }))
+                            .help("Heal, clone or remove spots, blemishes and things")
                         Menu {
                             Button("Fit") { model.zoom = .fit }
                             Divider()

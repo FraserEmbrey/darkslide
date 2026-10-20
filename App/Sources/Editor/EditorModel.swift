@@ -262,7 +262,32 @@ final class EditorModel {
     var spotSize = UserDefaults.standard.object(forKey: "SpotSize") as? Double ?? 0.02 {
         didSet { UserDefaults.standard.set(spotSize, forKey: "SpotSize") }
     }
-    var spotClones = false
+    /// the Retouch tool's mode: heal or clone spots and strokes (darktable's
+    /// retouch), or remove things (machine learning, CleanUp.swift)
+    var retouchMode = RetouchMode(rawValue: UserDefaults.standard.string(forKey: "RetouchMode") ?? "") ?? .heal {
+        didSet { UserDefaults.standard.set(retouchMode.rawValue, forKey: "RetouchMode") }
+    }
+    var spotClones: Bool { retouchMode == .clone }
+    /// the Retouch tool is on, in any mode
+    var isRetouching: Bool { isRemovingSpots || isRemovingObjects }
+
+    /// Turns the Retouch tool on, in its mode, or off.
+    func setRetouching(_ on: Bool) async {
+        guard on else { isRemovingSpots = false; isRemovingObjects = false; return }
+        await chooseRetouchMode(retouchMode)
+    }
+
+    /// Changes the Retouch tool's mode; Remove downloads its model the first time, after asking.
+    func chooseRetouchMode(_ mode: RetouchMode) async {
+        if mode == .remove {
+            guard canRemoveObjects, await ensureModel(.removeObjects) else { return }
+            retouchMode = .remove
+            isRemovingObjects = true
+        } else {
+            retouchMode = mode
+            isRemovingSpots = true
+        }
+    }
     /// Remove Objects (CleanUp.swift): on while its tool is; the photo's marks
     /// (from the catalog), where they fall on the output, the one selected,
     /// and the brush as a fraction of the photo's shorter side
@@ -4455,6 +4480,19 @@ struct BrushStroke: Equatable {
     /// a pen's stroke: each point's size, as a fraction of `radius`, and its opacity
     var sizes: [Double]? = nil
     var opacities: [Double]? = nil
+}
+
+/// The Retouch tool's modes, as Lightroom's Remove tool has them.
+enum RetouchMode: String, CaseIterable, Identifiable {
+    case heal, clone, remove
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .heal: "Heal"
+        case .clone: "Clone"
+        case .remove: "Remove"
+        }
+    }
 }
 
 /// What a drag on a brushed adjustment does.

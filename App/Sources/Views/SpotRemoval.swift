@@ -1,23 +1,47 @@
 import SwiftUI
 
-/// The spot removal tool's panel, in place of the inspector while it's on,
-/// as the crop tool's is.
-struct SpotPanel: View {
+/// The Retouch tool's panel, in place of the inspector while it's on, as the
+/// crop tool's is: Heal and Clone (darktable's retouch) or Remove (machine
+/// learning), as one tool, as Lightroom has them.
+struct RetouchPanel: View {
     @Environment(EditorModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         VStack(alignment: .leading, spacing: 18) {
-            Text("Spot Removal").font(.headline)
-            Picker("Mode", selection: $model.spotClones) {
-                Text("Heal").tag(false)
-                Text("Clone").tag(true)
+            HStack {
+                Text("Retouch").font(.headline)
+                if model.isFillingObjects { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Done") { Task { await model.setRetouching(false) } }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            Picker("Mode", selection: Binding(get: { model.retouchMode },
+                                              set: { m in Task { await model.chooseRetouchMode(m) } })) {
+                ForEach(RetouchMode.allCases) { m in
+                    Text(m.title).tag(m)
+                        .disabled(m == .remove && !model.canRemoveObjects)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .help("Heal blends a nearby patch in, Clone copies it as it is, Remove fills in what was behind with machine learning")
+            if model.isRemovingObjects { ObjectControls() } else { SpotControls() }
+        }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// Heal and Clone's controls in the Retouch panel.
+struct SpotControls: View {
+    @Environment(EditorModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
             ParamSlider(label: "Size", value: model.spotSize * 100, defaultValue: 2, range: 0.3...10,
                         isInteger: false, unit: nil, trackColors: nil, editsPhoto: false, showsValue: false) { model.spotSize = $0 / 100 }
-            Text("Click a spot to remove it, or paint over something longer, such as a wire. Darkslide picks a patch nearby to heal it from; drag the spot or its dashed source to move them. Heal blends the patch into its surroundings, clone copies it as it is. Delete removes the selected spot. [ and ] change the size.")
+            Text("Click a spot to remove it, or paint over something longer, such as a wire. Darkslide picks a patch nearby to heal it from; drag the spot or its dashed source to move them. Delete removes the selected spot. [ and ] change the size.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -27,24 +51,9 @@ struct SpotPanel: View {
                 Button("Remove Selected") { if let id = model.selectedSpot { model.removeSpot(id) } }
                     .disabled(model.selectedSpot == nil)
             }
-            Text("darktable's retouch module does the healing, so the spots are in the sidecar and darktable shows them.")
+            Text("darktable's retouch module does the healing, so the spots are in the sidecar and darktable shows them. For people and bigger things, Remove fills in better.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            // the machine learning tool, for what healing can't fill
-            if model.canRemoveObjects {
-                Button("Remove Objects Instead…", systemImage: "eraser") {
-                    model.isRemovingSpots = false
-                    Task { if await model.ensureModel(.removeObjects) { model.isRemovingObjects = true } }
-                }
-                .help("Paint over a person or thing and a machine learning model fills in what was behind it: for bigger things than healing can cover")
-            }
-            Spacer()
-            HStack {
-                Spacer()
-                Button("Done") { model.isRemovingSpots = false }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-            }
             // Delete and the bracket keys
             Group {
                 Button("") { if let id = model.selectedSpot { model.removeSpot(id) } }
@@ -56,8 +65,6 @@ struct SpotPanel: View {
             }
             .frame(width: 0, height: 0).opacity(0)
         }
-        .padding(16)
-        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 

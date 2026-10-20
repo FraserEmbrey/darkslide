@@ -1,17 +1,11 @@
 import SwiftUI
 
-/// The Remove Objects tool's panel, in place of the inspector while it's on.
-struct ObjectsPanel: View {
+/// Remove's controls in the Retouch panel (SpotRemoval.swift).
+struct ObjectControls: View {
     @Environment(EditorModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("Remove Objects").font(.headline)
-                Spacer()
-                if model.isFillingObjects { ProgressView().controlSize(.small) }
-            }
             ParamSlider(label: "Brush", value: model.objectBrush * 100, defaultValue: 2, range: 0.3...10,
                         isInteger: false, unit: nil, trackColors: nil, editsPhoto: false, showsValue: false) { model.objectBrush = $0 / 100 }
             Text("Paint over something to remove it, covering it and a little around it. A machine learning model (LaMa) fills it in from what's around. Click a painted area to select it; Delete removes it. [ and ] change the brush.")
@@ -26,16 +20,9 @@ struct ObjectsPanel: View {
             }
             Button("Remove All") { model.removeAllObjectMarks() }
                 .disabled(model.cleanUpMarks.isEmpty)
-            Text("Works best on small and medium things with plenty around them; large ones come out softer. Darkslide keeps this layer itself, over darktable's edit, so darktable doesn't show it. For dust and spots, Spot Removal is sharper.")
+            Text("Works best on small and medium things with plenty around them; large ones come out softer. Darkslide keeps this layer itself, over darktable's edit, so darktable doesn't show it. For dust and spots, Heal is sharper.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Spacer()
-            HStack {
-                Spacer()
-                Button("Done") { model.isRemovingObjects = false }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-            }
             Group {
                 Button("") { if let id = model.selectedMark { model.removeObjectMark(id) } }
                     .keyboardShortcut(.delete, modifiers: [])
@@ -46,8 +33,6 @@ struct ObjectsPanel: View {
             }
             .frame(width: 0, height: 0).opacity(0)
         }
-        .padding(16)
-        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 

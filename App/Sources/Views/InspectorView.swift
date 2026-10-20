@@ -8,10 +8,8 @@ struct InspectorView: View {
     var body: some View {
         if model.isCropping {
             CropPanel()
-        } else if model.isRemovingSpots {
-            SpotPanel()
-        } else if model.isRemovingObjects {
-            ObjectsPanel()
+        } else if model.isRetouching {
+            RetouchPanel()
         } else {
             adjustments
         }

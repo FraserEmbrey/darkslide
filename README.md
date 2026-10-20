@@ -297,7 +297,7 @@ The engine does what darktable's mask tools do, without the interface:
 
 ### Spot removal
 
-The bandage button in the toolbar turns on spot removal, with its panel in place of the inspector. Click a spot to heal it, or clone it under Clone, from a patch nearby; drag across something longer, such as a wire or a crack, to paint a stroke that heals along it. Darkslide picks the patch for a stroke as for a spot, treating the stroke's bounds as one big spot (`addHealStroke`). Drag a spot or stroke, or its dashed source, to move them, Delete removes the selected one, and [ and ] change the size. darktable's retouch module does the work, so the spots are darktable circles and brush strokes in the sidecar. Remove Objects Instead… switches to the machine learning tool, for things too big to heal.
+The bandage button in the toolbar turns on Retouch, with its panel in place of the inspector and Done at its top. Its three modes are Lightroom's: Heal and Clone, below, and Remove, the machine learning fill described next. In Heal, click a spot to heal it, or in Clone clone it, from a patch nearby; drag across something longer, such as a wire or a crack, to paint a stroke that heals along it. Darkslide picks the patch for a stroke as for a spot, treating the stroke's bounds as one big spot (`addHealStroke`). Drag a spot or stroke, or its dashed source, to move them, Delete removes the selected one, and [ and ] change the size. darktable's retouch module does the work, so the spots are darktable circles and brush strokes in the sidecar.
 
 - **Source.** darktable leaves the source to the user. Darkslide picks one, as Lightroom and Photos do (`SpotSource.swift`): candidates at two to four radii around the spot, every 20°, each scored on how its surroundings match the spot's (rings of luminance samples from the frame on screen), plus how plain its own middle is against its ring, so the source isn't another blemish.
 - **Engine.** retouch keeps its own list of shapes in its params (`rt_forms`), which its GUI fills in as shapes are drawn. Headless, the engine's `add_spot`, `move_spot` and `remove_spot` do that, with retouch's form data declared as darktable 5.6.2 has it and checked against its introspection.
@@ -305,7 +305,7 @@ The bandage button in the toolbar turns on spot removal, with its panel in place
 
 ### Remove Objects
 
-The eraser button in the toolbar paints things out: paint over something, and a little around it, and a machine learning model fills it in from what's around. It's LaMa ("big-lama", Samsung, Apache-2.0), converted to Core ML at 512 × 512 in half precision (`Scripts/models/convert_lama.py`), 99 MB, downloaded the first time it's used like the other models. A fill takes about half a second on an M3 Pro once the model is loaded, which happens when the tool is turned on. Click a painted area to select it, and Delete removes it.
+Retouch's Remove mode paints things out: paint over something, and a little around it, and a machine learning model fills it in from what's around. It's LaMa ("big-lama", Samsung, Apache-2.0), converted to Core ML at 512 × 512 in half precision (`Scripts/models/convert_lama.py`), 99 MB, downloaded the first time it's used like the other models. A fill takes about half a second on an M3 Pro once the model is loaded, which happens when the tool is turned on. Click a painted area to select it, and Delete removes it.
 
 darktable has no way to hold pixels a model made, so this is Darkslide's own layer over darktable's output (`CleanUp.swift`), as AI denoise's amount is:
 

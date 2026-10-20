@@ -512,6 +512,16 @@ struct ZoomableImage: View {
                             .allowsHitTesting(false)
                     }
                 }
+                // TestLoupeAt: launch argument (-TestLoupeAt 0.5,0.4) for testing: the
+                // loupe at that fraction of the canvas, without a pointer
+                .task(id: model.showLoupe) {
+                    guard model.showLoupe, let at = UserDefaults.standard.string(forKey: "TestLoupeAt") else { return }
+                    let f = at.split(separator: ",").compactMap { Double($0) }
+                    guard f.count == 2 else { return }
+                    let p = CGPoint(x: geo.size.width * f[0], y: geo.size.height * f[1])
+                    loupePointer = p
+                    model.pointLoupe(at: toImage(p, in: geo.size, frame: size))
+                }
                 .onContinuousHover { phase in
                     guard model.showLoupe else { return }
                     if case .active(let p) = phase {

@@ -189,12 +189,14 @@ final class EditorModel {
     /// The loupe (`), as Aperture's: a lens following the pointer, at 100%
     /// (or `loupeZoom`) of the photo as edited. Its centre is in output pixels.
     var showLoupe = false {
-        didSet { if !showLoupe { loupeCenter = nil; loupeImage = nil } }
+        didSet { if !showLoupe { loupeCenter = nil; loupeImage = nil; loupeCovers = nil } }
     }
     var loupeZoom = UserDefaults.standard.object(forKey: "LoupeZoom") as? Double ?? 1 {
         didSet { UserDefaults.standard.set(loupeZoom, forKey: "LoupeZoom"); if loupeCenter != nil { loupeDirty = true; pump() } }
     }
-    static let loupeSide = 360   // pixels rendered for it
+    /// pixels rendered for it: the lens is 440 on a Retina display, and the rest
+    /// keeps it covered as the pointer moves, until the next render arrives
+    static let loupeSide = 960
     private(set) var loupeCenter: CGPoint?
     /// the grid thumbnail the loupe is over
     var loupeItem: URL?
@@ -202,6 +204,8 @@ final class EditorModel {
     /// where the loupe's image starts on the output, so the lens lines up as the pointer moves
     private(set) var loupeOrigin: CGPoint = .zero
     private var loupeDirty = false
+    /// what the loupe's image covers, in output pixels, and at which zoom
+    private var loupeCovers: (rect: CGRect, zoom: Double)?
 
     /// a Quick Brush chosen, waiting for its first stroke to make its adjustment
     var pendingBrush: QuickBrush?
@@ -2253,6 +2257,8 @@ final class EditorModel {
             if openingPreviewFrame != frameID { image = nil }
             beforeImage = nil
             beforeKey = ""
+            loupeImage = nil
+            loupeCovers = nil
             hdrAnalysis = nil
             headroomOverlay = nil
             appliedStyles = []
@@ -4614,7 +4620,10 @@ extension EditorModel {
     func pointLoupe(at p: CGPoint?) {
         guard showLoupe else { return }
         loupeCenter = p
-        guard p != nil else { return }
+        guard let p else { return }
+        // still well inside the image there is: the lens moves over it, no render needed
+        if let c = loupeCovers, c.zoom == loupeZoom,
+           c.rect.insetBy(dx: 300 / loupeZoom, dy: 300 / loupeZoom).contains(p) { return }
         loupeDirty = true
         pump()
     }
@@ -4634,6 +4643,11 @@ extension EditorModel {
               showLoupe else { return }
         loupeImage = frame.image
         loupeOrigin = CGPoint(x: Double(crop.x) / s, y: Double(crop.y) / s)
+        // a side at the photo's edge counts as covered beyond it, as there's nothing more to render
+        let far = 1e9
+        let minX = crop.x == 0 ? -far : Double(crop.x) / s, maxX = crop.x + w >= iw ? far : Double(crop.x + w) / s
+        let minY = crop.y == 0 ? -far : Double(crop.y) / s, maxY = crop.y + h >= ih ? far : Double(crop.y + h) / s
+        loupeCovers = (CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY), s)
     }
 }
 
@@ -4643,7 +4657,7 @@ extension EditorModel {
     var canRemoveObjects: Bool { Inpainter.isAvailable || ModelStore.isOffered(.removeObjects) }
 
     /// where a frame sits on the output: output pixels times `scale`, less (x, y)
-    private func frameMapping(_ frame: CGImage, crop: Engine.Crop?) -> (scale: Double, x: Double, y: Double) {
+    func frameMapping(_ frame: CGImage, crop: Engine.Crop?) -> (scale: Double, x: Double, y: Double) {
         if let crop { return (crop.scale, Double(crop.x), Double(crop.y)) }
         return (Double(frame.width) / max(imageSize.width, 1), 0, 0)
     }

@@ -1,42 +1,70 @@
 import SwiftUI
 
-/// Aperture's loupe: a round lens showing an image at one image pixel to a
-/// screen pixel, `pixel` at its centre. HDR images keep their highlights.
+/// One image in the loupe: `pixel` (in the image as magnified by `zoom`) at
+/// its centre. `smooth` scales it smoothly, for a stand-in at another size.
+struct LoupeLayer {
+    let image: CGImage
+    let pixel: CGPoint
+    var zoom: CGFloat = 1
+    var smooth = false
+}
+
+/// Aperture's loupe, as a lens of Liquid Glass: images at one image pixel to
+/// a screen pixel (`zoom` magnifies), drawn bottom first, so a sharp render
+/// can sit over a softer stand-in until it covers the lens. HDR images keep
+/// their highlights.
 struct LoupeLens: View {
     @Environment(\.displayScale) private var displayScale
-    let image: CGImage
-    /// the image pixel under the lens's centre, in the image as magnified by `zoom`
-    let pixel: CGPoint
-    /// screen pixels to an image pixel (the editor renders at its zoom, so 1 there)
-    var zoom: CGFloat = 1
+    let layers: [LoupeLayer]
     var diameter: CGFloat = 220
     var label: String?
 
+    init(layers: [LoupeLayer], diameter: CGFloat = 220, label: String? = nil) {
+        self.layers = layers
+        self.diameter = diameter
+        self.label = label
+    }
+
+    init(image: CGImage, pixel: CGPoint, zoom: CGFloat = 1, label: String? = nil) {
+        self.init(layers: [LoupeLayer(image: image, pixel: pixel, zoom: zoom)], label: label)
+    }
+
+    /// the glass rim's width
+    private let rim: CGFloat = 14
+
     var body: some View {
-        let w = CGFloat(image.width) * zoom / displayScale, h = CGFloat(image.height) * zoom / displayScale
-        ZStack(alignment: .bottom) {
-            Image(decorative: image, scale: displayScale)
-                .resizable()
-                .interpolation(.none)
-                .allowedDynamicRange(.high)
-                .frame(width: w, height: h)
-                .offset(x: w / 2 - pixel.x / displayScale, y: h / 2 - pixel.y / displayScale)
-                .frame(width: diameter, height: diameter)
-                .background(Color.black)
-                .clipShape(Circle())
-            if let label {
-                Text(label)
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(.black.opacity(0.6), in: Capsule())
-                    .foregroundStyle(.white)
-                    .padding(.bottom, 10)
+        ZStack {
+            Color.black
+            ForEach(layers.indices, id: \.self) { i in
+                let l = layers[i]
+                let w = CGFloat(l.image.width) * l.zoom / displayScale, h = CGFloat(l.image.height) * l.zoom / displayScale
+                Image(decorative: l.image, scale: displayScale)
+                    .resizable()
+                    .interpolation(l.smooth ? .high : .none)
+                    .allowedDynamicRange(.high)
+                    .frame(width: w, height: h)
+                    .offset(x: w / 2 - l.pixel.x / displayScale, y: h / 2 - l.pixel.y / displayScale)
+                    .frame(width: diameter, height: diameter)
             }
         }
         .frame(width: diameter, height: diameter)
-        .overlay(Circle().strokeBorder(.white.opacity(0.9), lineWidth: 2))
-        .overlay(Circle().strokeBorder(.black.opacity(0.4), lineWidth: 0.5).padding(-1))
-        .shadow(color: .black.opacity(0.5), radius: 8, y: 3)
+        .clipShape(Circle())
+        // the rim: a ring of glass that bends the picture at the lens's edge
+        .overlay {
+            Color.clear
+                .glassEffect(.clear, in: Circle().inset(by: rim / 2).stroke(lineWidth: rim))
+        }
+        .overlay(alignment: .bottom) {
+            if let label {
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .glassEffect(.regular.tint(.black.opacity(0.35)), in: Capsule())
+                    .padding(.bottom, rim + 4)
+            }
+        }
+        .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
         .allowsHitTesting(false)
     }
 }
@@ -49,13 +77,26 @@ struct EditorLoupe: View {
     let toImage: (CGPoint) -> CGPoint
 
     var body: some View {
+        let o = toImage(pointer), zoom = model.loupeZoom
+        var layers: [LoupeLayer] = []
+        // the canvas's frame, magnified, under the sharp render: where that
+        // doesn't reach yet (the pointer moved on), the lens is soft, not black
+        if let frame = model.image {
+            let m = model.frameMapping(frame, crop: model.currentCrop)
+            let k = zoom / m.scale
+            layers.append(LoupeLayer(image: frame, pixel: CGPoint(x: (o.x * m.scale - m.x) * k, y: (o.y * m.scale - m.y) * k),
+                                     zoom: k, smooth: true))
+        }
+        // the render, which starts at loupeOrigin on the output, at loupeZoom
         if let img = model.loupeImage {
-            let o = toImage(pointer)
-            // the image starts at loupeOrigin on the output, at loupeZoom
-            let px = CGPoint(x: (o.x - model.loupeOrigin.x) * model.loupeZoom,
-                             y: (o.y - model.loupeOrigin.y) * model.loupeZoom)
-            LoupeLens(image: img, pixel: px, label: "\(Int(model.loupeZoom * 100))%")
-                .position(pointer)
+            layers.append(LoupeLayer(image: img, pixel: CGPoint(x: (o.x - model.loupeOrigin.x) * zoom,
+                                                                y: (o.y - model.loupeOrigin.y) * zoom)))
+        }
+        return Group {
+            if !layers.isEmpty {
+                LoupeLens(layers: layers, label: "\(Int(zoom * 100))%")
+                    .position(pointer)
+            }
         }
     }
 }

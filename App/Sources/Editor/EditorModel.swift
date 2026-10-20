@@ -58,7 +58,12 @@ final class EditorModel {
     private(set) var hdrAnalysis: HDRAnalysis?
     private(set) var rgbHistogram: RGBHistogram?
     private(set) var headroomOverlay: CGImage?
-    private(set) var modules: [EngineModule] = []
+    private(set) var modules: [EngineModule] = [] {
+        // an adjustment that's gone (Reset All, undo, deleted) isn't selected any more
+        didSet {
+            if let key = selectedLocal, !modules.contains(where: { $0.key == key && Self.isLocal($0) }) { selectedLocal = nil }
+        }
+    }
     private(set) var hasUnsavedChanges = false
 
     private static var testLibraryRan = false

@@ -814,6 +814,8 @@ final class EditorModel {
     // only the current engine's exit counts; starts never overlap
     private var engineGeneration = 0
     private var startingEngine = false
+    /// the session goes back to where it was once, at launch, not after an engine restart
+    private static var sessionRestored = false
     private var failedStarts = 0
 
     func startEngine() async {
@@ -851,7 +853,10 @@ final class EditorModel {
             if let url = openWhenReady {
                 openWhenReady = nil
                 await open(url)
+            } else if !Self.sessionRestored {
+                await restoreSession()
             }
+            Self.sessionRestored = true
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -859,6 +864,41 @@ final class EditorModel {
 
     func stopEngine() async {
         await engine?.stop()
+    }
+
+    /// Before quitting: what leaving the photo does (a crop finished, unsaved
+    /// edits saved to the sidecar, the thumbnail updated), ratings written,
+    /// and where things were kept for the next launch.
+    func prepareToQuit() async {
+        saveSession()
+        if engine != nil, url != nil {
+            statusNote = "Saving…"
+            await leaveCurrentPhoto()
+        }
+        while writingRatings { try? await Task.sleep(for: .milliseconds(100)) }
+    }
+
+    func saveSession() {
+        Session(photo: url?.path, source: library.source.map(Session.Source.init), showingLibrary: showingLibrary,
+                selection: library.selection?.path).save()
+    }
+
+    /// Goes back to where things were when Darkslide last quit.
+    private func restoreSession() async {
+        guard let session = Session.load() else { return }
+        let fm = FileManager.default
+        if let path = session.photo {
+            let photo = URL(fileURLWithPath: path)
+            if fm.fileExists(atPath: photo.photoFile.path) { await open(photo) }
+        }
+        if let source = session.source?.librarySource {
+            if case .folder(let folder) = source, !fm.fileExists(atPath: folder.path) {} else { library.show(source) }
+        }
+        if let path = session.selection { library.selection = URL(fileURLWithPath: path) }
+        if session.showingLibrary || url == nil, library.source != nil { await showLibrary() }
+        if UserDefaults.standard.bool(forKey: "TestSession") {
+            FileHandle.standardError.write("Darkslide session: restored \(url?.lastPathComponent ?? "no photo"), library \(library.sourceTitle ?? "-"), grid \(showingLibrary), selection \(library.selection?.lastPathComponent ?? "-")\n".data(using: .utf8)!)
+        }
     }
 
     /// darktable reads the default tone mapper at startup, so a change needs a

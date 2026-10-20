@@ -394,13 +394,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    /// Quitting waits for ratings still going into sidecars, so none are lost.
+    /// Quitting saves the open photo's edits and waits for ratings still going
+    /// into sidecars, so nothing is lost, and keeps where things were for the
+    /// next launch. If saving hangs, it quits anyway after 15 seconds.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.writingRatings else { return .terminateNow }
-        model.statusNote = "Saving ratings…"
-        Task { @MainActor in
-            while model.writingRatings { try? await Task.sleep(for: .milliseconds(100)) }
+        guard let model else { return .terminateNow }
+        var replied = false
+        let reply = { @MainActor in
+            guard !replied else { return }
+            replied = true
             sender.reply(toApplicationShouldTerminate: true)
+        }
+        Task { @MainActor in
+            await model.prepareToQuit()
+            reply()
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(15))
+            reply()
         }
         return .terminateLater
     }

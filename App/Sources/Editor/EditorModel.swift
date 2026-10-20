@@ -85,6 +85,7 @@ final class EditorModel {
     private static var localNamesTested = false
     private static var brushPreviewTested = false
     private static var healStrokeTested = false
+    private static var cropToRetouchTested = false
     private static var retouchCancelTested = false
     private static var loupeTested = false
 
@@ -277,6 +278,8 @@ final class EditorModel {
     /// Turns the Retouch tool on, in its mode, or off (Done).
     func setRetouching(_ on: Bool) async {
         guard on else { isRemovingSpots = false; isRemovingObjects = false; retouchStart = nil; return }
+        // straight from crop, the crop is kept, as Done would, before Cancel's starting point
+        commitCrop()
         if !isRetouching { retouchStart = undoStack.count }
         await chooseRetouchMode(retouchMode)
     }
@@ -2207,6 +2210,21 @@ final class EditorModel {
                     await setRetouching(false)
                     await fetchSpots()
                     log("one spot, done")
+                }
+            }
+            // TestCropToRetouch: launch argument (-TestCropToRetouch YES) for testing: opens
+            // crop, narrows it, then goes straight to Retouch, and logs what's on
+            if UserDefaults.standard.bool(forKey: "TestCropToRetouch"), !Self.cropToRetouchTested {
+                Self.cropToRetouchTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) { FileHandle.standardError.write("Darkslide crop to retouch: \(s): cropping \(isCropping), retouching \(isRetouching), crop \(cropModule?.enabled ?? false)\n".data(using: .utf8)!) }
+                    try? await Task.sleep(for: .seconds(4))
+                    beginCrop()
+                    cropRect = CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)
+                    log("cropping")
+                    await setRetouching(true)
+                    try? await Task.sleep(for: .seconds(3))
+                    log("retouch")
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the

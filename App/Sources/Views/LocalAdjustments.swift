@@ -73,6 +73,9 @@ struct LocalAdjustmentsCard: View {
         }
         .pickerStyle(.menu)
         .help("What a pen's pressure changes as it paints: a drawing tablet's, or Apple Pencil's with an iPad as a Sidecar display")
+        Toggle("Show Mask", isOn: $model.showBrushMask)
+            .toggleStyle(.checkbox)
+            .help("Tint the painted strokes red on the photo, to see exactly where the adjustment is")
         if model.pendingBrush == nil {
             Toggle("Erase", isOn: $model.brushErases)
                 .toggleStyle(.checkbox)
@@ -371,19 +374,20 @@ struct BrushOverlay: View {
     var body: some View {
         Canvas { ctx, _ in
             // painted strokes, then erasing ones cut out of them
-            ctx.drawLayer { layer in
+            if model.showBrushMask { ctx.drawLayer { layer in
                 for s in model.localShape?.strokes ?? [] {
                     layer.blendMode = s.erase ? .destinationOut : .normal
                     draw(s.points.map(toView), width: 2 * viewRadius(s.radius, at: s.points[0]), sizes: s.sizes,
                          opacities: s.opacities, colour: .red, opacity: s.erase ? 1 : 0.35, in: &layer)
                 }
-            }
+            } }
             if !stroke.isEmpty {
                 let pen = pressures.map { p in model.penPressure == .off ? nil : p } ?? nil
                 draw(stroke, width: 2 * viewRadius(radius, at: toImage(stroke[0])),
                      sizes: model.penPressure == .size ? pen.map { $0.map { max($0, 0.1) } } : nil,
                      opacities: model.penPressure == .opacity ? pen.map { $0.map { max($0, 0.05) } } : nil,
-                     colour: erasing ? .white : .red, opacity: erasing ? 0.4 : 0.45, in: &ctx)
+                     colour: erasing || !model.showBrushMask ? .white : .red,
+                     opacity: erasing ? 0.4 : model.showBrushMask ? 0.45 : 0.25, in: &ctx)
             } else if let h = hover {
                 let r = viewRadius(radius, at: toImage(h))
                 let inner = r * (1 - model.brushSoftness)

@@ -219,6 +219,11 @@ final class EditorModel {
     }
     /// strokes take the adjustment away (Option does it for one stroke)
     var brushErases = false
+    /// the brushed adjustment's strokes tinted red on the photo, as Aperture's
+    /// overlay could; off, the photo shows only the adjustment
+    var showBrushMask = UserDefaults.standard.bool(forKey: "ShowBrushMask") {
+        didSet { UserDefaults.standard.set(showBrushMask, forKey: "ShowBrushMask") }
+    }
     /// what a pen's pressure changes as it paints (a mouse or trackpad paints at full strength)
     var penPressure = BrushPressure(rawValue: UserDefaults.standard.string(forKey: "BrushPressure") ?? "") ?? .size {
         didSet { UserDefaults.standard.set(penPressure.rawValue, forKey: "BrushPressure") }

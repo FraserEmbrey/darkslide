@@ -39,7 +39,7 @@ struct PlacedMark: Sendable, Equatable {
     }
 }
 
-/// Fills marks with LaMa. One at a time: the Neural Engine runs one model at once anyway.
+/// Fills marks with LaMa, one at a time.
 actor Inpainter {
     static let shared = Inpainter()
     static let side = 512
@@ -57,14 +57,17 @@ actor Inpainter {
             throw ModelStore.Failure(message: "The Remove Objects model isn't installed.")
         }
         let config = MLModelConfiguration()
-        config.computeUnits = .all
+        // not the Neural Engine: its half precision wove a lattice into fills
+        // (the Fourier convolutions, as macOS 27 runs them) and smeared them;
+        // the GPU's are clean and as quick once it's warm
+        config.computeUnits = .cpuAndGPU
         let m = try MLModel(contentsOf: url, configuration: config)
         model = m
         return m
     }
 
     /// Loads the model and runs it once, so the first stroke doesn't wait
-    /// for the Neural Engine to compile it (about five seconds on an M3 Pro).
+    /// for Core ML to prepare it (a second or two on the GPU).
     func prepare() {
         guard model == nil, let m = try? loaded() else { return }
         let n = Self.side

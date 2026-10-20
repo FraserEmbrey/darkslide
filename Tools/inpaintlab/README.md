@@ -19,6 +19,7 @@ Then:
 - **It converts and runs.** Half precision at 512 × 512 matches PyTorch to a mean of 0.0003 and is 99 MB. A fill takes 0.25 to 0.6 s once the Neural Engine is warm; the first takes longer.
 - **Medium objects are good.** Two plant pots on a roof, about 350 px across, came out convincingly: the roof's seams carried on through and the branches over them stayed. That's with a square three times the object's size, scaled to half to fit 512.
 - **Large or long objects are soft.** LaMa needs that context, so the square for a 630 px lamp post was scaled to a quarter, and the fill was blocky and smeared. A tighter square kept more resolution but gave it too little to go on: worse for both objects.
+- **The Neural Engine went wrong later.** By macOS 27 its half precision wove a lattice into fills and smeared them, on noisy photos most of all; the same model on the GPU or CPU is clean, and the GPU is as quick once warm (0.6 s), so the app runs it there.
 - **1024 doesn't work in half precision.** The output overflows to black with coloured specks, and at 18 to 28 s a fill it wasn't running on the Neural Engine anyway. Full precision would mean the GPU and seconds per fill.
 
 ## How it could fit

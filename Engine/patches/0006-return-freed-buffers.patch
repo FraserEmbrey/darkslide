@@ -1,0 +1,41 @@
+--- a/src/common/darktable.h
++++ b/src/common/darktable.h
+@@ -642,6 +642,9 @@
+              // plain free() on an aligned allocation
+ void dt_free_align(void *mem);
+ #define dt_free_align_ptr dt_free_align
++#elif defined(__APPLE__) // gives large buffers' memory back to the system
++void dt_free_align(void *mem);
++#define dt_free_align_ptr dt_free_align
+ #else
+ #define dt_free_align(A) free(A)
+ #define dt_free_align_ptr free
+--- a/src/common/darktable.c
++++ b/src/common/darktable.c
+@@ -2448,6 +2448,26 @@
+ void dt_free_align(void *mem)
+ {
+   _aligned_free(mem);
++}
++#elif defined(__APPLE__) && !defined(_DEBUG)
++#include <malloc/malloc.h>
++#include <mach/vm_page_size.h>
++#include <sys/mman.h>
++void dt_free_align(void *mem)
++{
++  // macOS's allocator keeps freed large blocks for reuse with their pages
++  // still resident, so after one full-size pipe run gigabytes of image
++  // buffers stayed with the process. Marking the pages reusable before the
++  // free lets the system take them back; a block handed out again gets
++  // fresh pages as it's written.
++  const size_t size = mem ? malloc_size(mem) : 0;
++  if(size >= ((size_t)8 << 20))
++  {
++    const uintptr_t start = ((uintptr_t)mem + vm_page_size - 1) & ~((uintptr_t)vm_page_size - 1);
++    const uintptr_t end = ((uintptr_t)mem + size) & ~((uintptr_t)vm_page_size - 1);
++    if(end > start) madvise((void *)start, end - start, MADV_FREE_REUSABLE);
++  }
++  free(mem);
+ }
+ #elif defined(_DEBUG)
+ void dt_free_align(void *mem)

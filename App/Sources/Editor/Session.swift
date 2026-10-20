@@ -45,11 +45,12 @@ struct Session: Codable {
     private static var key: String { testing ? "TestSession.saved" : "Session" }
 
     /// Test runs (launch arguments starting -Test or -Start, or their own
-    /// catalog) neither keep nor restore the session, but for TestSession.
+    /// catalog) and headless exports neither keep nor restore the session, but
+    /// for TestSession.
     static var isTestRun: Bool {
         guard !testing else { return false }
         return UserDefaults.standard.string(forKey: "CatalogPath") != nil
-            || ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-Test") || $0.hasPrefix("-Start") }
+            || ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-Test") || $0.hasPrefix("-Start") || $0 == "-HeadlessExport" }
     }
 
     static func load() -> Session? {

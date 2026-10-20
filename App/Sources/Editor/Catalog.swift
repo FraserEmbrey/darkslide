@@ -88,8 +88,9 @@ final class Catalog {
         var bursts: [[String]]?
     }
 
-    // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone
-    private let file: URL? = UserDefaults.standard.string(forKey: "CatalogPath").map { URL(fileURLWithPath: $0) }
+    // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone.
+    // A headless export keeps none: its photos are temporary copies.
+    private let file: URL? = HeadlessExport.requested ? nil : UserDefaults.standard.string(forKey: "CatalogPath").map { URL(fileURLWithPath: $0) }
         ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Darkslide/catalog.json")
     private var saveTask: Task<Void, Never>?

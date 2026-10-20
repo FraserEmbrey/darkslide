@@ -14,6 +14,7 @@ struct DarkslideApp: App {
         _model = State(initialValue: model)
         // for the Shortcuts actions (Shortcuts.swift)
         AppDependencyManager.shared.add(dependency: model)
+        if HeadlessExport.requested { HeadlessExport.model = model }
     }
 
     var body: some Scene {
@@ -24,6 +25,8 @@ struct DarkslideApp: App {
                 .task {
                     delegate.openFile = { url in Task { await model.openDropped([url]) } }
                     delegate.installKeys(model: model)
+                    // a headless export runs from the delegate, without the window
+                    guard !HeadlessExport.requested else { return }
                     await model.startEngine()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -392,7 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !HeadlessExport.requested }
 
     /// Quitting saves the open photo's edits and waits for ratings still going
     /// into sidecars, so nothing is lost, and keeps where things were for the
@@ -418,6 +421,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // needed when launched as a bare SwiftPM executable during development
+        if let model = HeadlessExport.model {
+            // for another app: no window, no Dock icon (HeadlessExport.swift)
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.windows.forEach { $0.orderOut(nil) }
+            Task { @MainActor in
+                await model.startEngine()
+                await model.runHeadlessExport()
+            }
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
     }

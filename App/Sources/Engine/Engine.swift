@@ -26,10 +26,11 @@ actor Engine {
     init(workflow: String, backend: GPUBackend, onExit: @escaping @Sendable (Int32) -> Void) throws {
         let fm = FileManager.default
         // EngineConfigDir: launch argument (-EngineConfigDir /path) for testing: darktable's
-        // settings and lock elsewhere, so a test copy runs beside the user's
+        // settings and lock elsewhere, so a test copy runs beside the user's. A headless
+        // export has its own too, so it runs while Darkslide is open.
         let support = try UserDefaults.standard.string(forKey: "EngineConfigDir").map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("Darkslide/darktable", isDirectory: true)
+                .appendingPathComponent(HeadlessExport.requested ? "Darkslide/darktable-headless" : "Darkslide/darktable", isDirectory: true)
         configDir = support
         let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
                                 appropriateFor: nil, create: true)

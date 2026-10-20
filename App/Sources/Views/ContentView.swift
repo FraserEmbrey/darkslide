@@ -450,7 +450,8 @@ struct ZoomableImage: View {
                              if model.whitePickTarget != nil {
                                  let u = imagePoint(at: p, in: geo.size, frame: size)
                                  if (0...1).contains(u.x), (0...1).contains(u.y) { model.pickWhite(at: u) }
-                             } else if !model.isCropping {
+                             } else if !model.isCropping, !model.isRetouching, !model.isBrushing {
+                                 // a tool's click (a heal spot, a brush dab) mustn't zoom as well
                                  click(at: p, in: geo.size, frame: size)
                              }
                          },

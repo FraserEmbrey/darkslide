@@ -13,7 +13,7 @@ struct ObjectsPanel: View {
                 if model.isFillingObjects { ProgressView().controlSize(.small) }
             }
             ParamSlider(label: "Brush", value: model.objectBrush * 100, defaultValue: 2, range: 0.3...10,
-                        isInteger: false, unit: "%", trackColors: nil, editsPhoto: false) { model.objectBrush = $0 / 100 }
+                        isInteger: false, unit: nil, trackColors: nil, editsPhoto: false, showsValue: false) { model.objectBrush = $0 / 100 }
             Text("Paint over something to remove it, covering it and a little around it. A machine learning model (LaMa) fills it in from what's around. Click a painted area to select it; Delete removes it. [ and ] change the brush.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -30,10 +30,12 @@ struct ObjectsPanel: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button { model.isRemovingObjects = false } label: { Text("Done").frame(maxWidth: .infinity) }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+            HStack {
+                Spacer()
+                Button("Done") { model.isRemovingObjects = false }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
             Group {
                 Button("") { if let id = model.selectedMark { model.removeObjectMark(id) } }
                     .keyboardShortcut(.delete, modifiers: [])

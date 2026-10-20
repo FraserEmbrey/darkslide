@@ -121,6 +121,8 @@ struct ParamSlider: View {
     var clipping = false
     /// how the number reads, where the track works in other units
     var readout: Readout? = nil
+    /// false leaves the number out, for a value that means nothing as one (a brush's size)
+    var showsValue = true
     let onChange: (Double) -> Void
 
     /// The number shown for a track value, and back: ISO 1600 on a track in stops.
@@ -163,7 +165,8 @@ struct ParamSlider: View {
                 Text(label)
                     .onTapGesture(count: 2) { onChange(defaultValue) }
                 Spacer()
-                if let readout {
+                if !showsValue {
+                } else if let readout {
                     if let prefix = readout.prefix { Text(prefix).foregroundStyle(.secondary) }
                     ValueField(value: readout.shown(shown), isInteger: true, decimals: 0, grouping: false,
                                onCommit: { onChange(clamp(readout.value($0))) })
@@ -171,7 +174,7 @@ struct ParamSlider: View {
                 } else {
                     ValueField(value: shown, isInteger: isInteger, decimals: decimals, onCommit: onChange)
                 }
-                if let unit { Text(unit).foregroundStyle(.secondary) }
+                if showsValue, let unit { Text(unit).foregroundStyle(.secondary) }
             }
             track
         }

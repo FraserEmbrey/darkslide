@@ -73,7 +73,7 @@ struct LocalAdjustmentsCard: View {
             .help("Paint the adjustment in, erase it, or turn the brush off to click and drag on the photo as usual; Option swaps Paint and Erase for one stroke")
         }
         ParamSlider(label: "Brush Size", value: model.brushSize * 100, defaultValue: 4, range: 0.5...20,
-                    isInteger: false, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSize = $0 / 100 }
+                    isInteger: false, unit: nil, trackColors: nil, editsPhoto: false, showsValue: false) { model.brushSize = $0 / 100 }
         ParamSlider(label: "Softness", value: model.brushSoftness * 100, defaultValue: 50, range: 0...100,
                     isInteger: true, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSoftness = $0 / 100 }
         Toggle("Show Mask", isOn: $model.showBrushMask)

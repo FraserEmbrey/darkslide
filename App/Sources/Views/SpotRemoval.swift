@@ -51,8 +51,9 @@ struct SpotPanel: View {
     }
 }
 
-/// The spots on the photo: each spot's circle, its source dashed, a line
-/// between. A click elsewhere adds a spot; dragging a circle moves it.
+/// The spots on the photo: each spot's circle or painted stroke, its source
+/// dashed, a line between. A click elsewhere adds a spot, a drag paints a
+/// stroke to heal; dragging a spot moves it, its source moves the source.
 /// `toView` and `toImage` map between output pixels and this view's points.
 struct SpotOverlay: View {
     @Environment(EditorModel.self) private var model

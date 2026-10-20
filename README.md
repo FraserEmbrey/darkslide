@@ -180,6 +180,10 @@ Separate photos stack too. View › Stacks › Auto-Stack Bursts stacks each bur
 
 A version's URL in the app is the file its sidecar's name implies, `photo_01.NEF`, which doesn't exist (`PhotoVersion.swift`). Its sidecar is then the URL plus `.xmp` like any photo's, so the catalog, thumbnails and exports keep versions apart without knowing about them; whatever reads the image itself goes through `photoFile`. The engine's `open` takes the original's path and a version number, and gets that version's image from darktable's library with `dt_image_duplicate_with_version`, which darktable then saves to the version's sidecar. Renaming a photo renames its versions' sidecars too.
 
+### Full screen
+
+F (or View › Full Screen Editor) edits full screen, as Aperture did: the window goes into macOS full screen without its toolbar, sidebar or inspector, the photo fills the screen, and the adjustments float in a HUD, a dark translucent panel to drag anywhere by its title, which H shows and hides. The filmstrip slides up when the pointer reaches the bottom edge, and a bar from the top edge has the photo's name, SDR and HDR, the loupe, compare, the HUD and the way out. F or Escape go back (`FullScreenEditor.swift`). It's an overlay over the window rather than a window of its own, so sheets and panels open as usual, and the window's canvas steps aside while it shows. The app must be active to go full screen, which a key press makes it.
+
 ### Loupe
 
 ` (or View › Show Loupe) turns on the loupe, as in Aperture: a round lens that follows the pointer. Over the photo in the editor it shows the edit at 100%, or 200% or 400% under View › Loupe Zoom: the render loop renders the 360-pixel square under it at that scale whenever it moves or the edit changes, after the canvas's own frame (`EditorModel.renderLoupe`). Over the grid it shows the camera's full-size preview of the photo beneath, as the cull view loads it, so it's for checking focus rather than the edit.

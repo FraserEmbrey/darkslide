@@ -21,6 +21,20 @@ struct ContentView: View {
             editor
         }
         .onChange(of: columns) { _, v in sidebarVisible = v != .detailOnly }
+        .onChange(of: showInspector) { _, v in
+            if UserDefaults.standard.bool(forKey: "TestFullScreen") {
+                FileHandle.standardError.write("Darkslide full screen: inspector \(v), full screen \(model.isFullScreenEditor), columns \(columns)\n".data(using: .utf8)!)
+            }
+        }
+        // full screen editing covers the window, and its toolbar goes
+        .overlay {
+            if model.isFullScreenEditor && !model.showingLibrary {
+                FullScreenEditor().transition(.opacity)
+            }
+        }
+        .toolbar(model.isFullScreenEditor ? .hidden : .visible, for: .windowToolbar)
+        .animation(.easeInOut(duration: 0.25), value: model.isFullScreenEditor)
+        .modifier(FullScreenWindowSync())
     }
 
     private var editor: some View {
@@ -31,6 +45,9 @@ struct ContentView: View {
                 } else {
                     LibraryGrid()
                 }
+            } else if model.isFullScreenEditor {
+                // the canvas is the full screen editor's while it's showing
+                Color.black
             } else {
                 VStack(spacing: 0) {
                     CanvasView()
@@ -43,8 +60,9 @@ struct ContentView: View {
             }
         }
             // the grid is for choosing photos; the adjustments come back with the editor
-            .inspector(isPresented: Binding(get: { showInspector && !model.showingLibrary },
-                                            set: { if !model.showingLibrary { showInspector = $0 } })) {
+            // (in full screen, in the HUD)
+            .inspector(isPresented: Binding(get: { showInspector && !model.showingLibrary && !model.isFullScreenEditor },
+                                            set: { if !model.showingLibrary && !model.isFullScreenEditor { showInspector = $0 } })) {
                 InspectorView()
                     .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
             }

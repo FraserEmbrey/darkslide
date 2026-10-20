@@ -239,6 +239,11 @@ struct AppCommands: Commands {
                 set: { model.library.ratingFilter = $0 ? .notRejected : .all }))
                 .keyboardShortcut("r", modifiers: [.command, .option])
             Divider()
+            // F alone does it too, outside text fields (see AppDelegate)
+            Toggle("Full Screen Editor", isOn: Binding(get: { model.isFullScreenEditor }, set: { model.isFullScreenEditor = $0 }))
+                .disabled(model.showingLibrary || model.url == nil)
+            Toggle("Show Adjustments HUD", isOn: Binding(get: { model.showHUD }, set: { model.showHUD = $0 }))
+                .disabled(!model.isFullScreenEditor)
             // ` alone does it too, outside text fields (see AppDelegate)
             Toggle("Show Loupe", isOn: Binding(get: { model.showLoupe }, set: { model.showLoupe = $0 }))
             Picker("Loupe Zoom", selection: Binding(get: { model.loupeZoom }, set: { model.loupeZoom = $0 })) {
@@ -350,6 +355,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch event.keyCode {
             case 5:   // G
                 model.toggleLibrary()
+                return nil
+            case 3:    // F: full screen editing, as in Aperture
+                guard !model.showingLibrary, model.url != nil else { return event }
+                model.isFullScreenEditor.toggle()
+                return nil
+            case 4:    // H: the full screen editor's adjustments HUD
+                guard model.isFullScreenEditor else { return event }
+                model.showHUD.toggle()
+                return nil
+            case 53:   // Escape leaves full screen editing
+                // not over a sheet or a panel, which Escape closes
+                guard model.isFullScreenEditor, !model.isCropping, let key = NSApp.keyWindow,
+                      key.attachedSheet == nil, !key.isSheet, key.isMainWindow else { return event }
+                model.isFullScreenEditor = false
                 return nil
             case 50:   // `: the loupe, as in Aperture
                 model.showLoupe.toggle()

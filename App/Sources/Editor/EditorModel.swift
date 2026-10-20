@@ -67,6 +67,7 @@ final class EditorModel {
     private static var autoStackTested = false
     private static var brushTested = false
     private static var loupeTested = false
+    private static var fullScreenTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -152,6 +153,13 @@ final class EditorModel {
     private(set) var canShowFocusPoint = false
     /// Vision is looking for the subject
     var isFindingSubject = false
+    /// Full screen editing, as Aperture's (F): the photo on black, the
+    /// adjustments in a HUD (H), the filmstrip from the bottom edge
+    var isFullScreenEditor = false
+    var showHUD = UserDefaults.standard.object(forKey: "ShowHUD") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showHUD, forKey: "ShowHUD") }
+    }
+
     /// The loupe (`), as Aperture's: a lens following the pointer, at 100%
     /// (or `loupeZoom`) of the photo as edited. Its centre is in output pixels.
     var showLoupe = false {
@@ -1794,6 +1802,34 @@ final class EditorModel {
                     await undo()
                     await undo()
                     log("undone twice: \(cleanUpMarks.count) marks, next undo \(undoTitle ?? "-"), redo \(redoTitle ?? "-")")
+                }
+            }
+            // TestFullScreen: launch argument (-TestFullScreen YES) for testing: into full
+            // screen editing and out, logging the window and the canvas
+            if UserDefaults.standard.bool(forKey: "TestFullScreen"), !Self.fullScreenTested {
+                Self.fullScreenTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let w = NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
+                        let all = NSApp.windows.map { "\($0.className) visible \($0.isVisible) main \($0.canBecomeMain) primary \($0.collectionBehavior.contains(.fullScreenPrimary))" }
+                        FileHandle.standardError.write("Darkslide full screen: \(s): active \(NSApp.isActive), windows \(all)\n".data(using: .utf8)!)
+                        FileHandle.standardError.write("Darkslide full screen: \(s): window full screen \(w?.styleMask.contains(.fullScreen) ?? false), toolbar \(w?.toolbar?.isVisible ?? false), canvas \(canvasPixelSize), frame \(image?.width ?? 0)x\(image?.height ?? 0)\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(4))
+                    log("before")
+                    isFullScreenEditor = true
+                    try? await Task.sleep(for: .seconds(6))
+                    log("in")
+                    try? await Task.sleep(for: .seconds(8))
+                    showHUD = false
+                    try? await Task.sleep(for: .seconds(1))
+                    log("HUD hidden")
+                    showHUD = true
+                    isFullScreenEditor = false
+                    try? await Task.sleep(for: .seconds(4))
+                    log("out")
+                    try? await Task.sleep(for: .seconds(4))
+                    log("out, later")
                 }
             }
             // TestLoupe: launch argument (-TestLoupe YES) for testing: the loupe at the

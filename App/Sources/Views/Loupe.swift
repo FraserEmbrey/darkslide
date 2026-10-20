@@ -91,9 +91,9 @@ struct LoupeLens: View {
                    style: StrokeStyle(lineWidth: ring * 0.12, lineCap: .round))
         ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r1, y: c.y - r1, width: 2 * r1, height: 2 * r1)),
                    with: .color(.black.opacity(0.6)), lineWidth: 0.75)
-        // the zoom, round the lower right, as Preview's says PREVIEW 10×
+        // the label, round the lower right, as Preview's says PREVIEW 10×
         guard let label else { return }
-        let text = Array("DARKSLIDE  \(label)")
+        let text = Array(label.uppercased())
         let glyphs = text.map { ctx.resolve(Text(String($0)).font(.system(size: 8.5, weight: .medium)).foregroundStyle(.white.opacity(0.42))) }
         let widths = glyphs.map { $0.measure(in: CGSize(width: 40, height: 40)).width + 1.2 }
         let r = mid - 1.5
@@ -181,7 +181,7 @@ struct EditorLoupe: View {
                 // while painting or retouching, it sits up and to the left, so the
                 // pointer and the stroke under it stay in sight
                 let aside = model.isBrushing || model.isRemovingSpots || model.isRemovingObjects
-                LoupeLens(layers: layers, label: "\(Int(zoom * 100))%")
+                LoupeLens(layers: layers, label: "Darkslide  \(Int(zoom * 100))%")
                     .position(aside ? CGPoint(x: pointer.x - 190, y: pointer.y - 190) : pointer)
             }
         }
@@ -222,7 +222,9 @@ struct GridLoupe: ViewModifier {
                         if (0...1).contains(u.x), (0...1).contains(u.y) {
                             LoupeLens(image: preview, pixel: CGPoint(x: u.x * CGFloat(preview.width) * model.loupeZoom,
                                                                      y: u.y * CGFloat(preview.height) * model.loupeZoom),
-                                      zoom: model.loupeZoom, label: "\(Int(model.loupeZoom * 100))%")
+                                      zoom: model.loupeZoom,
+                                      // it's the camera's own JPEG, which an edit doesn't change: the ring says so
+                                      label: "Camera preview\(item.hasEdit ? ", unedited" : "")  \(Int(model.loupeZoom * 100))%")
                                 .position(p)
                         }
                     }

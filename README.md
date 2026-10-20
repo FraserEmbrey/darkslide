@@ -186,7 +186,7 @@ F (or View › Full Screen Editor) edits full screen, as Aperture did: the windo
 
 ### Loupe
 
-` (or View › Show Loupe) turns on the loupe, as in Aperture: a round lens that follows the pointer. Over the photo in the editor it shows the edit at 100%, or 200% or 400% under View › Loupe Zoom: the render loop renders the 360-pixel square under it at that scale whenever it moves or the edit changes, after the canvas's own frame (`EditorModel.renderLoupe`). Over the grid it shows the camera's full-size preview of the photo beneath, as the cull view loads it, so it's for checking focus rather than the edit.
+` (or View › Show Loupe) turns on the loupe, as in Aperture: a round lens that follows the pointer. Over the photo in the editor it shows the edit at 100%, or 200% or 400% under View › Loupe Zoom: the render loop renders a 960-pixel square around it at that scale when the edit changes or the lens nears that square's edge, after the canvas's own frame (`EditorModel.renderLoupe`). Underneath, the canvas's frame is magnified smoothly, so where the sharp render hasn't reached yet the lens is soft rather than black. The lens is ringed with Liquid Glass (`glassEffect`), which bends the picture at its edge. Over the grid it shows the camera's full-size preview of the photo beneath, as the cull view loads it, so it's for checking focus rather than the edit.
 
 ### Info
 
@@ -281,7 +281,7 @@ The engine reads and writes `data.presets` in Darkslide's darktable database. It
 
 ### Local adjustments
 
-The Local adjustments card adds the subject, and linear and radial gradients, to adjust part of the photo: exposure, contrast, highlights, shadows, clarity, saturation, vibrance and warmth. Each is its own exposure instance, named "Local n", masked by one darktable drawn shape (a gradient or an ellipse), so the sidecar carries it as darktable would. Select one to show its shape on the photo:
+The Local adjustments card adds the subject, and linear and radial gradients, to adjust part of the photo: exposure, contrast, highlights, shadows, clarity, saturation, vibrance and warmth. Each is its own exposure instance, named "Local n" (with its title after a colon once renamed: double-click it or right-click › Rename; Quick Brushes are titled for their brush), masked by one darktable drawn shape (a gradient or an ellipse), so the sidecar carries it as darktable would. Select one to show its shape on the photo:
 - **Linear:** drag the centre to move it, the arrow to turn it (the side it points to gets the adjustment), and the dashed line to soften it.
 - **Radial:** drag the centre, the two radius handles, and the outer handle for the softness.
 - **Subject:** Apple's Vision finds the subject (`VNGenerateForegroundInstanceMaskRequest`, the subject lifting in Photos and Preview: people, animals and objects that stand out) in a render of the photo as it looks, in about half a second. The engine traces the mask into darktable path shapes with darktable's own `ras2forms` (potrace), as darktable's AI masks do, holes included, so the edit is darktable's and exports anywhere. Its outline shows on the photo. The [mask lab](Tools/masklab) compared Vision with SAM and darktable's AI models.

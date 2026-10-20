@@ -167,7 +167,12 @@ final class EditorModel {
     private(set) var panBackdrop: (image: CGImage, isHDR: Bool)?
     /// the local adjustment being edited, whose shape shows on the photo
     var selectedLocal: String? {
-        didSet { if selectedLocal != oldValue { localShape = nil; if selectedLocal != nil { Task { await fetchLocalShape() } } } }
+        didSet {
+            guard selectedLocal != oldValue else { return }
+            localShape = nil
+            brushMode = .paint
+            if selectedLocal != nil { Task { await fetchLocalShape() } }
+        }
     }
     /// its shape in output pixels, as the engine has it
     var localShape: LocalShape?
@@ -224,8 +229,10 @@ final class EditorModel {
     var brushSoftness = UserDefaults.standard.object(forKey: "BrushSoftness") as? Double ?? 0.5 {
         didSet { UserDefaults.standard.set(brushSoftness, forKey: "BrushSoftness") }
     }
-    /// strokes take the adjustment away (Option does it for one stroke)
-    var brushErases = false
+    /// what a drag on a brushed adjustment does: paint it in, take it away
+    /// (Option swaps the two for one stroke), or nothing, for the usual clicks
+    /// and drags on the photo
+    var brushMode = BrushMode.paint
     /// the frame as the stroke being painted will make it, and where it sits
     /// on the output (see BrushPreview)
     private(set) var brushPreview: (image: CGImage, origin: CGPoint, size: CGSize)?
@@ -4401,6 +4408,19 @@ struct BrushStroke: Equatable {
     var opacities: [Double]? = nil
 }
 
+/// What a drag on a brushed adjustment does.
+enum BrushMode: String, CaseIterable, Identifiable {
+    case paint, erase, off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .paint: "Paint"
+        case .erase: "Erase"
+        case .off: "Off"
+        }
+    }
+}
+
 /// What a pen's pressure changes, as darktable's brush offers.
 enum BrushPressure: String, CaseIterable, Identifiable {
     case size, opacity, off
@@ -4687,12 +4707,12 @@ extension EditorModel {
     func endBrushPreview() { brushPreview = nil }
 
     /// whether the photo is being painted: a Quick Brush waiting, or a brushed adjustment selected
-    var isBrushing: Bool { pendingBrush != nil || localShape?.kind == .brush }
+    var isBrushing: Bool { pendingBrush != nil || (localShape?.kind == .brush && brushMode != .off) }
 
     /// Chooses a Quick Brush: its adjustment is made by the first stroke.
     func startBrush(_ brush: QuickBrush) {
         selectedLocal = nil
-        brushErases = false
+        brushMode = .paint
         pendingBrush = brush
     }
 

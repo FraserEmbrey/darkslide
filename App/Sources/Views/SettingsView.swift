@@ -22,6 +22,14 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Pen pressure", selection: $model.penPressure) {
+                    ForEach(BrushPressure.allCases) { Text($0.title).tag($0) }
+                }
+            } footer: {
+                Text("What a pen's pressure changes as you brush: a drawing tablet's, or Apple Pencil's with an iPad as a Sidecar display. A mouse or trackpad always paints at full strength.")
+            }
+
+            Section {
                 Picker("Graphics processing", selection: $model.gpuBackend) {
                     ForEach(GPUBackend.allCases) { Text($0.title).tag($0) }
                 }

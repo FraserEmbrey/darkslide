@@ -64,30 +64,28 @@ struct LocalAdjustmentsCard: View {
     /// the brush's size and edge, and painting or erasing
     @ViewBuilder private var brushControls: some View {
         @Bindable var model = model
+        if model.pendingBrush == nil {
+            Picker("Brush", selection: $model.brushMode) {
+                ForEach(BrushMode.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("Paint the adjustment in, erase it, or turn the brush off to click and drag on the photo as usual; Option swaps Paint and Erase for one stroke")
+        }
         ParamSlider(label: "Brush Size", value: model.brushSize * 100, defaultValue: 4, range: 0.5...20,
                     isInteger: false, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSize = $0 / 100 }
         ParamSlider(label: "Softness", value: model.brushSoftness * 100, defaultValue: 50, range: 0...100,
                     isInteger: true, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSoftness = $0 / 100 }
-        Picker("Pen Pressure", selection: $model.penPressure) {
-            ForEach(BrushPressure.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.menu)
-        .help("What a pen's pressure changes as it paints: a drawing tablet's, or Apple Pencil's with an iPad as a Sidecar display")
         Toggle("Show Mask", isOn: $model.showBrushMask)
             .toggleStyle(.checkbox)
             .help("Tint the painted strokes red on the photo, to see exactly where the adjustment is")
-        if model.pendingBrush == nil {
-            Toggle("Erase", isOn: $model.brushErases)
-                .toggleStyle(.checkbox)
-                .help("Strokes take the adjustment away; Option does it for one stroke")
-        }
     }
 
     private var hint: String {
         switch model.localShape?.kind {
         case .ellipse: "Drag the centre to move it, the side handles to size it, the outer handle for a softer edge."
         case .subject: "The subject as macOS found it, outlined on the photo."
-        case .brush: "Paint to add to it; hold Option, or turn on Erase, to take it away."
+        case .brush: "Paint to add to it; Erase, or Option, takes it away. Off leaves the photo to click and drag as usual."
         default: "Drag the centre to move it, the arrow to turn it, the dashed line for a softer edge."
         }
     }
@@ -127,6 +125,8 @@ struct LocalAdjustmentsCard: View {
                     .labelsHidden()
             }
             if selected {
+                // the brush first, as it's what's used most on a brushed adjustment
+                if model.localShape?.kind == .brush { brushControls }
                 ForEach(LocalControl.allCases) { c in
                     ParamSlider(label: c.label, value: model.localValue(c, of: m), defaultValue: 0, range: c.range,
                                 isInteger: c != .exposure, unit: c.unit,
@@ -140,7 +140,6 @@ struct LocalAdjustmentsCard: View {
                         .buttonStyle(.link)
                         .font(.caption)
                 }
-                if model.localShape?.kind == .brush { brushControls }
                 Text(hint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -447,7 +446,8 @@ struct BrushOverlay: View {
                 if stroke.isEmpty {
                     stroke = [g.startLocation]
                     pressures = pen.pressure.map { [$0] }
-                    erasing = model.brushErases || NSEvent.modifierFlags.contains(.option) || pen.eraser
+                    // Option, or a tablet pen's eraser end, does the other for this stroke
+                    erasing = (model.brushMode == .erase) != (NSEvent.modifierFlags.contains(.option) || pen.eraser)
                     landing = nil
                     model.startBrushPreview(erase: erasing)
                 }

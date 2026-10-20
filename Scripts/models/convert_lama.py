@@ -1,3 +1,6 @@
+# Converts LaMa ("big-lama", loaded by spandrel) to Core ML at a fixed square
+# size, in half precision, and checks it against PyTorch on random input.
+#   convert_lama.py big-lama.pt RemoveObjects.mlpackage 512
 import sys, time, torch, numpy as np, coremltools as ct, spandrel, spandrel_extra_arches
 spandrel_extra_arches.install()
 src, out, size = sys.argv[1], sys.argv[2], int(sys.argv[3])

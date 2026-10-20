@@ -5,7 +5,7 @@ A look at machine-learning object removal, beside darktable's retouch (Darkslide
 Get the weights and convert them (the model venv from `Scripts/fetch-models.sh` has spandrel, which loads LaMa):
 
     curl -fsSLo .build/models/big-lama.pt https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt
-    .build/model-venv/bin/python -I Tools/inpaintlab/convert_lama.py .build/models/big-lama.pt LaMa512.mlpackage 512
+    .build/model-venv/bin/python -I Scripts/models/convert_lama.py .build/models/big-lama.pt LaMa512.mlpackage 512
 
 Then:
 

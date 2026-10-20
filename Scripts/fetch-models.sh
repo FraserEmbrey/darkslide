@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fetches darktable's raw denoise model (RawNIND, GPL-3.0) from its
-# darktable-ai release, and Restormer's defocus and motion deblurring models
-# (MIT) from its GitHub release, and converts them to Core ML in Models/,
+# darktable-ai release, Restormer's defocus and motion deblurring models
+# (MIT) from its GitHub release, and LaMa for Remove Objects (Apache-2.0), and converts them to Core ML in Models/,
 # which build-app.sh compiles into the app. Without them, Denoise and Rescue
 # Focus aren't offered.
 # Needs uv; the conversion tools go in .build/model-venv.
@@ -56,3 +56,15 @@ echo "194e38fb5b607c9dc5a5b3e08e65b2e79ee2bf0ef5048e0612f6b2ff2f79da31  $MOTION"
 out="$ROOT/Models/RescueMotion.mlpackage"
 if [ -e "$out" ]; then trash "$out"; fi
 "$VENV/bin/python" -I "$ROOT/Scripts/models/convert_restormer.py" "$MOTION" "$out" motion
+
+# Remove Objects: LaMa ("big-lama", Samsung, Apache-2.0), at 512 × 512 in half
+# precision; 1024 overflows in half precision (Tools/inpaintlab/README.md)
+LAMA="$WORK/big-lama.pt"
+if [ ! -f "$LAMA" ]; then
+  curl -fsSL -o "$LAMA" "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt"
+fi
+echo "344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9  $LAMA" | shasum -a 256 -c - > /dev/null
+out="$ROOT/Models/RemoveObjects.mlpackage"
+if [ -e "$out" ]; then trash "$out"; fi
+"$VENV/bin/python" -I "$ROOT/Scripts/models/convert_lama.py" "$LAMA" "$out" 512
+echo "converted $out"

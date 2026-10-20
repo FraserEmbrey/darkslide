@@ -148,6 +148,18 @@ struct ContentView: View {
                             .help("Crop and straighten (⌘K)")
                         Toggle("Spot Removal", systemImage: "bandage", isOn: $model.isRemovingSpots)
                             .help("Heal or clone away spots and blemishes")
+                        Toggle("Remove Objects", systemImage: "eraser", isOn: Binding(
+                            get: { model.isRemovingObjects },
+                            set: { on in
+                                Task {
+                                    // the model is downloaded the first time, after asking
+                                    if on, !(await model.ensureModel(.removeObjects)) { return }
+                                    model.isRemovingObjects = on
+                                }
+                            }))
+                            .disabled(!model.canRemoveObjects)
+                            .help(model.canRemoveObjects ? "Paint over things to remove them, filled in by machine learning"
+                                                         : "The Remove Objects model isn't available")
                         Menu {
                             Button("Fit") { model.zoom = .fit }
                             Divider()
@@ -434,6 +446,9 @@ struct ZoomableImage: View {
                         CropOverlay(frameSize: size)
                     } else if model.comparing {
                         CompareDivider(imageSize: size, pixelExact: model.imageIsZoomed)
+                    } else if model.isRemovingObjects {
+                        ObjectsOverlay(toView: { toView($0, in: geo.size, frame: size) },
+                                       toImage: { toImage($0, in: geo.size, frame: size) })
                     } else if model.isRemovingSpots {
                         SpotOverlay(toView: { toView($0, in: geo.size, frame: size) },
                                     toImage: { toImage($0, in: geo.size, frame: size) })

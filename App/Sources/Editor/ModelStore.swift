@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// The Core ML models behind Denoise and Rescue Focus. They're 30 to 50 MB
+/// The Core ML models behind Denoise, Rescue Focus and Remove Objects. They're 30 to 50 MB
 /// each, more than the rest of the app together, and most people never use
 /// them, so a release leaves them out: each is downloaded the first time it's
 /// wanted, from the GitHub release named in ModelManifest (made by
@@ -13,12 +13,14 @@ enum ModelStore {
         case rawDenoise = "RawDenoise"
         case rescueFocus = "RescueFocus"
         case rescueMotion = "RescueMotion"
+        case removeObjects = "RemoveObjects"
 
         var title: String {
             switch self {
             case .rawDenoise: "Denoise"
             case .rescueFocus: "Rescue Focus"
             case .rescueMotion: "Rescue Focus for camera shake"
+            case .removeObjects: "Remove Objects"
             }
         }
     }

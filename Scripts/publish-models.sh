@@ -26,7 +26,7 @@ fi
 if [ -e "$OUT" ]; then trash "$OUT"; fi
 mkdir -p "$OUT/compiled"
 entries=""
-for model in RawDenoise RescueFocus RescueMotion; do
+for model in RawDenoise RescueFocus RescueMotion RemoveObjects; do
   if [ ! -d "$ROOT/Models/$model.mlpackage" ]; then
     echo "Models/$model.mlpackage is missing: run Scripts/fetch-models.sh" >&2
     exit 1

@@ -63,6 +63,7 @@ final class EditorModel {
     private static var shortcutsTested = false
     private static var spotsTested = false
     private static var stacksTested = false
+    private static var removeObjectsTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -152,7 +153,10 @@ final class EditorModel {
     /// the photo in output pixels, the one selected, and the size for new ones
     /// as a fraction of the photo's shorter side
     var isRemovingSpots = false {
-        didSet { if isRemovingSpots != oldValue { selectedSpot = nil; if isRemovingSpots { Task { await fetchSpots() } } } }
+        didSet {
+            if isRemovingSpots != oldValue { selectedSpot = nil; if isRemovingSpots { Task { await fetchSpots() } } }
+            if isRemovingSpots { isRemovingObjects = false }
+        }
     }
     private(set) var spots: [Engine.Spot] = []
     var selectedSpot: Int?
@@ -160,6 +164,33 @@ final class EditorModel {
         didSet { UserDefaults.standard.set(spotSize, forKey: "SpotSize") }
     }
     var spotClones = false
+    /// Remove Objects (CleanUp.swift): on while its tool is; the photo's marks
+    /// (from the catalog), where they fall on the output, the one selected,
+    /// and the brush as a fraction of the photo's shorter side
+    var isRemovingObjects = false {
+        didSet {
+            if isRemovingObjects != oldValue {
+                selectedMark = nil
+                if isRemovingObjects {
+                    Task { await placeObjectMarks() }
+                    Task.detached(priority: .userInitiated) { await Inpainter.shared.prepare() }
+                }
+            }
+            if isRemovingObjects { isRemovingSpots = false }
+        }
+    }
+    private(set) var cleanUpMarks: [CleanUpMark] = []
+    private(set) var placedMarks: [UUID: PlacedMark] = [:]
+    var selectedMark: UUID?
+    var objectBrush = UserDefaults.standard.object(forKey: "ObjectBrush") as? Double ?? 0.02 {
+        didSet { UserDefaults.standard.set(objectBrush, forKey: "ObjectBrush") }
+    }
+    /// filling is under way, for the panel
+    private(set) var isFillingObjects = false
+    private var fillTask: Task<Void, Never>?
+    /// the last filled frame and where it was on the output, laid over frames
+    /// until they're filled themselves, so objects don't flash back while dragging
+    private var lastFill: (image: CIImage, scale: Double, x: Double, y: Double, height: Double)?
     private var pendingSpot: Engine.Spot?
     private var sendingSpot = false
     /// the folder of film-look LUTs (Settings, or the Look card) and what's in it
@@ -1688,6 +1719,41 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(3)); log("undone crop")
                 }
             }
+            // TestRemoveObjects: launch argument (-TestRemoveObjects x,y,x,y,…,radius) for testing:
+            // paints a stroke in output pixels, waits for the fill, then exports to -TestRemoveObjectsExport
+            if let spec = UserDefaults.standard.string(forKey: "TestRemoveObjects"), !Self.removeObjectsTested {
+                Self.removeObjectsTested = true
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide remove objects: \(s)\n".data(using: .utf8)!) }
+                    let v = spec.split(separator: ",").compactMap { Double($0) }
+                    guard v.count >= 3 else { return log("bad spec") }
+                    let pts = stride(from: 0, to: v.count - 1, by: 2).map { CGPoint(x: v[$0], y: v[$0 + 1]) }
+                    try? await Task.sleep(for: .seconds(4))
+                    let before = image
+                    let start = ContinuousClock.now
+                    isRemovingObjects = true
+                    addObjectMark(pts, radius: v[v.count - 1])
+                    try? await Task.sleep(for: .seconds(1))
+                    while isFillingObjects || image === before { try? await Task.sleep(for: .milliseconds(100)) }
+                    log("filled in \(ContinuousClock.now - start), marks \(cleanUpMarks.count), placed \(placedMarks.values.map { "\($0.points.count) pts r \(Int($0.radius))" })")
+                    if let key = modules.first(where: { $0.op == "exposure" })?.key {
+                        let ev = modules.first { $0.key == key }?.fields.first { $0.name == "exposure" }?.value.number ?? 0
+                        setValue(.number(ev + 0.5), module: key, field: "exposure")
+                        try? await Task.sleep(for: .seconds(3))
+                        log("after an edit: filling \(isFillingObjects)")
+                    }
+                    if let out = UserDefaults.standard.string(forKey: "TestRemoveObjectsExport") {
+                        await export(ExportSettings(format: .jpeg, profile: .sRGB, quality: 90), to: URL(fileURLWithPath: out), remember: false)
+                        log("exported \(out), error \(errorMessage ?? "none")")
+                        removeAllObjectMarks()
+                        await settleEdits()
+                        await export(ExportSettings(format: .jpeg, profile: .sRGB, quality: 90),
+                                     to: URL(fileURLWithPath: out.replacingOccurrences(of: ".jpg", with: "-plain.jpg")), remember: false)
+                        log("exported without")
+                    }
+                    removeAllObjectMarks()
+                }
+            }
             // TestStacks: launch argument (-TestStacks YES) for testing: two versions of the
             // photo, then its stack closed, open, picked and revealed, logging the library
             if UserDefaults.standard.bool(forKey: "TestStacks"), !Self.stacksTested {
@@ -1925,6 +1991,11 @@ final class EditorModel {
             whitePickNote = nil
             isRemovingSpots = false
             spots = []
+            isRemovingObjects = false
+            cleanUpMarks = catalog.cleanUp(of: url)
+            placedMarks = [:]
+            lastFill = nil
+            fillTask?.cancel()
             photosAsset = openingPhotosAsset
             modules = reply.modules
             panBackdrop = nil
@@ -2436,7 +2507,8 @@ final class EditorModel {
                     if let simulate, frame.isHDR {
                         image = try await gainMapPreview(frame, stops: simulate, maxPixels: pixels, crop: crop, engine: engine)
                     } else {
-                        image = frame.image
+                        image = laidOverLastFill(frame.image, crop: crop)
+                        if !cleanUpMarks.isEmpty, !draft { fillObjects(in: frame.image, crop: crop) }
                     }
                     isSimulatingHeadroom = simulate != nil && frame.isHDR
                     if isSimulatingHeadroom, let img = image {
@@ -2586,8 +2658,9 @@ final class EditorModel {
                 lastExport = url
                 FileHandle.standardError.write("Darkslide exported \(url.path)\n".data(using: .utf8)!)
             } else if settings.format == .heif || ExportExtras.load().any || toneMapsExport(settings)
-                        || settings.enlargement != nil {
-                // HEIF, anything with a frame or watermark, an HDR source made SDR, and enlargements, through Core Image
+                        || settings.enlargement != nil || !cleanUpMarks.isEmpty {
+                // HEIF, anything with a frame or watermark, an HDR source made SDR, enlargements,
+                // and objects to remove, through Core Image
                 try await exportThroughCoreImage(settings, to: url, engine: engine)
                 lastExport = url
             } else {
@@ -2644,6 +2717,11 @@ final class EditorModel {
                                            profile: toneMap ? 4 : profile,
                                            sdrFromHDR: !toneMap && exportsSDRRendition(settings))
         defer { try? FileManager.default.removeItem(at: tiff) }
+        // objects to remove, on the output, scaled to the export below
+        await placeObjectMarks()
+        let marks = cleanUpMarks.compactMap { placedMarks[$0.id] }
+        let outputWidth = imageSize.width
+        if !marks.isEmpty { statusNote = "Removing objects…" }
         let quality = Double(settings.quality) / 100
         let progress = enlargeProgress()
         defer { statusNote = nil }
@@ -2664,6 +2742,11 @@ final class EditorModel {
                     throw EngineError(message: "Couldn't read darktable's export.")
                 }
                 (image, space) = (read, s)
+            }
+            if !marks.isEmpty {
+                let k = image.extent.width / max(outputWidth, 1)
+                // read as darktable encoded it (tagged), or colour managed
+                image = try await Inpainter.shared.fill(image, marks: marks.map { $0.scaled(k) }, encoded: tagged != nil)
             }
             if let enlarge {
                 // in the export's encoding, or gamma-encoded Rec.2020 for the tone mapped one
@@ -2792,6 +2875,16 @@ final class EditorModel {
             toneMap.targetHeadroom = 1
             guard let out = toneMap.outputImage else { throw EngineError(message: "Couldn't make the SDR base image.") }
             sdr = out
+        }
+        // objects to remove, from each rendering: the gain map between them stays the photo's
+        if !cleanUpMarks.isEmpty {
+            statusNote = "Removing objects…"
+            await placeObjectMarks()
+            let marks = cleanUpMarks.compactMap { placedMarks[$0.id] }
+            let k = hdr.extent.width / max(imageSize.width, 1)
+            hdr = try await Inpainter.shared.fill(hdr, marks: marks.map { $0.scaled(k) },
+                                                  headroom: max(hdrFrame.analysis?.peak ?? 1, 1))
+            sdr = try await Inpainter.shared.fill(sdr, marks: marks.map { $0.scaled(sdr.extent.width / max(imageSize.width, 1)) })
         }
         if let enlarge {
             // the SDR picture through the scaler, and the HDR one made from it
@@ -3418,6 +3511,7 @@ extension EditorModel {
         comparing = false
         zoom = .fit
         isRemovingSpots = false
+        isRemovingObjects = false
         isCropping = true
         requestRender()
     }
@@ -4118,6 +4212,129 @@ extension EditorModel {
                 }
                 requestRender()
             }
+        }
+    }
+}
+
+// MARK: - Remove Objects
+
+extension EditorModel {
+    var canRemoveObjects: Bool { Inpainter.isAvailable || ModelStore.isOffered(.removeObjects) }
+
+    /// where a frame sits on the output: output pixels times `scale`, less (x, y)
+    private func frameMapping(_ frame: CGImage, crop: Engine.Crop?) -> (scale: Double, x: Double, y: Double) {
+        if let crop { return (crop.scale, Double(crop.x), Double(crop.y)) }
+        return (Double(frame.width) / max(imageSize.width, 1), 0, 0)
+    }
+
+    /// Paints out a stroke, in output pixels, with the brush's radius.
+    func addObjectMark(_ points: [CGPoint], radius: Double) {
+        guard let engine, let photo = url, !points.isEmpty else { return }
+        Task {
+            if !Inpainter.isAvailable { guard await ensureModel(.removeObjects) else { return } }
+            guard let input = try? await engine.toInput(points), photo == url else { return }
+            let shorter = min(imageSize.width, imageSize.height)
+            let mark = CleanUpMark(points: input, radius: radius / max(shorter, 1))
+            cleanUpMarks.append(mark)
+            placedMarks[mark.id] = PlacedMark(points: points, radius: radius)
+            selectedMark = mark.id
+            catalog.setCleanUp(cleanUpMarks, for: photo)
+            editedSinceOpen = true
+            requestRender()
+        }
+    }
+
+    func removeObjectMark(_ id: UUID) {
+        guard let photo = url else { return }
+        cleanUpMarks.removeAll { $0.id == id }
+        placedMarks[id] = nil
+        if selectedMark == id { selectedMark = nil }
+        catalog.setCleanUp(cleanUpMarks, for: photo)
+        if cleanUpMarks.isEmpty { lastFill = nil }
+        editedSinceOpen = true
+        requestRender()
+    }
+
+    func removeAllObjectMarks() {
+        guard let photo = url else { return }
+        cleanUpMarks = []
+        placedMarks = [:]
+        selectedMark = nil
+        lastFill = nil
+        catalog.setCleanUp([], for: photo)
+        editedSinceOpen = true
+        requestRender()
+    }
+
+    /// the marks on the output now, from darktable's input through the edit's crop and distortions
+    func placeObjectMarks() async {
+        guard let engine, !cleanUpMarks.isEmpty else { placedMarks = [:]; return }
+        let shorter = min(imageSize.width, imageSize.height)
+        var placed: [UUID: PlacedMark] = [:]
+        for m in cleanUpMarks {
+            guard let pts = try? await engine.toOutput(m.points) else { continue }
+            placed[m.id] = PlacedMark(points: pts, radius: m.radius * shorter)
+        }
+        placedMarks = placed
+    }
+
+    /// The marks on a frame, in its pixels.
+    private func marks(on frame: CGImage, crop: Engine.Crop?) -> [PlacedMark] {
+        let m = frameMapping(frame, crop: crop)
+        return cleanUpMarks.compactMap { placedMarks[$0.id]?.scaled(m.scale, dx: m.x, dy: m.y) }
+            .filter { $0.bounds.intersects(CGRect(x: 0, y: 0, width: frame.width, height: frame.height)) }
+    }
+
+    /// The frame with the last fill laid over the marks, at once, until it's filled itself.
+    private func laidOverLastFill(_ frame: CGImage, crop: Engine.Crop?) -> CGImage {
+        guard let last = lastFill, !cleanUpMarks.isEmpty, !placedMarks.isEmpty else { return frame }
+        let m = frameMapping(frame, crop: crop)
+        let h = Double(frame.height)
+        // the last fill's CI coordinates to output pixels (top left), then to this frame's CI coordinates
+        let t = CGAffineTransform(translationX: last.x, y: -last.height - last.y)
+            .concatenating(CGAffineTransform(scaleX: 1 / last.scale, y: -1 / last.scale))
+            .concatenating(CGAffineTransform(scaleX: m.scale, y: -m.scale))
+            .concatenating(CGAffineTransform(translationX: -m.x, y: h + m.y))
+        let marks = marks(on: frame, crop: crop)
+        guard !marks.isEmpty else { return frame }
+        var mask = [UInt8](repeating: 0, count: frame.width * frame.height)
+        for mk in marks {
+            let r = Inpainter.raster(mk, width: frame.width, height: frame.height, grow: 1.1)
+            for i in r.indices where r[i] > mask[i] { mask[i] = r[i] }
+        }
+        let maskImage = CIImage(bitmapData: Data(mask.flatMap { [$0, $0, $0, 255] }), bytesPerRow: frame.width * 4,
+                                size: CGSize(width: frame.width, height: frame.height), format: .RGBA8, colorSpace: nil)
+        let out = last.image.transformed(by: t).applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage(cgImage: frame), kCIInputMaskImageKey: maskImage,
+        ])
+        return Inpainter.image(out, like: frame) ?? frame
+    }
+
+    /// Fills the marks on a full frame in the background, and shows it if
+    /// nothing newer has arrived.
+    private func fillObjects(in frame: CGImage, crop: Engine.Crop?) {
+        fillTask?.cancel()
+        let shownFrame = frameID
+        fillTask = Task {
+            isFillingObjects = true
+            defer { isFillingObjects = false }
+            await placeObjectMarks()
+            let marks = marks(on: frame, crop: crop)
+            guard !Task.isCancelled, !marks.isEmpty, Inpainter.isAvailable else { return }
+            let headroom = max(Double(frame.contentHeadroom), 1)
+            let filled: CIImage
+            do {
+                filled = try await Inpainter.shared.fill(CIImage(cgImage: frame), marks: marks, headroom: headroom)
+            } catch {
+                errorMessage = "Couldn't remove the objects: \(error.localizedDescription)"
+                return
+            }
+            guard !Task.isCancelled, frameID == shownFrame,
+                  let shown = await Task.detached(operation: { Inpainter.image(filled, like: frame) }).value else { return }
+            let m = frameMapping(frame, crop: crop)
+            lastFill = (filled, m.scale, m.x, m.y, Double(frame.height))
+            image = shown
+            if crop == nil, !isCropping { thumbnailFrame = shown }
         }
     }
 }

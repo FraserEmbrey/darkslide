@@ -21,6 +21,8 @@ final class Catalog {
         var aiDenoise: Double?
         /// other photos blended into this one, and its backdrop (Compositor)
         var composite: CompositeSettings?
+        /// things painted out with Remove Objects (CleanUp.swift)
+        var cleanUp: [CleanUpMark]?
     }
 
     /// folders added to the library, in the order added
@@ -155,6 +157,13 @@ final class Catalog {
     func setAIDenoise(_ amount: Double?, for photo: URL) {
         guard records[photo.path]?.aiDenoise != amount else { return }
         records[photo.path, default: Record()].aiDenoise = amount
+        scheduleSave()
+    }
+
+    func cleanUp(of photo: URL) -> [CleanUpMark] { records[photo.path]?.cleanUp ?? [] }
+
+    func setCleanUp(_ marks: [CleanUpMark], for photo: URL) {
+        records[photo.path, default: Record()].cleanUp = marks.isEmpty ? nil : marks
         scheduleSave()
     }
 

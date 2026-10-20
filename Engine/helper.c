@@ -1814,6 +1814,32 @@ static void _cmd_remove_spot(JsonObject *o)
   _ok_done(b);
 }
 
+// {"cmd":"to_input","points":[x,y,...]}: output pixels back to darktable's
+// input, normalised (0...1), through the pipe's distortions: where Darkslide's
+// object removal keeps its marks, so a crop or rotation leaves them in place
+static void _cmd_to_input(JsonObject *o)
+{
+  if(!H.edit.loaded) return _error("no image open");
+  JsonArray *a = json_object_has_member(o, "points") ? json_object_get_array_member(o, "points") : NULL;
+  const int n = a ? json_array_get_length(a) / 2 : 0;
+  if(n <= 0) return _error("no points");
+  const float iw = H.edit.pipe.iwidth, ih = H.edit.pipe.iheight;
+  float *pts = g_new(float, 2 * n);
+  for(int i = 0; i < 2 * n; i++) pts[i] = json_array_get_double_element(a, i);
+  _to_input(pts, n);
+  JsonBuilder *b = _ok();
+  json_builder_set_member_name(b, "points");
+  json_builder_begin_array(b);
+  for(int i = 0; i < n; i++)
+  {
+    json_builder_add_double_value(b, pts[2 * i] / iw);
+    json_builder_add_double_value(b, pts[2 * i + 1] / ih);
+  }
+  json_builder_end_array(b);
+  g_free(pts);
+  _ok_done(b);
+}
+
 // {"cmd":"rename_instance","module":"exposure:1","name":"..."}: an instance's
 // name, kept in the history and the sidecar
 static void _cmd_rename_instance(JsonObject *o)
@@ -3351,6 +3377,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "set_shape")) _cmd_set_shape(o);
     else if(!strcmp(cmd, "shape")) _cmd_shape(o);
     else if(!strcmp(cmd, "to_output")) _cmd_to_output(o);
+    else if(!strcmp(cmd, "to_input")) _cmd_to_input(o);
     else if(!strcmp(cmd, "raw_mosaic")) _cmd_raw_mosaic(o);
     else if(!strcmp(cmd, "write_dng")) _cmd_write_dng(o);
     else if(!strcmp(cmd, "denoise")) _cmd_denoise(o);

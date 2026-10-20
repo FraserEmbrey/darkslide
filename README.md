@@ -291,6 +291,17 @@ The bandage button in the toolbar turns on spot removal, with its panel in place
 - **Engine.** retouch keeps its own list of shapes in its params (`rt_forms`), which its GUI fills in as shapes are drawn. Headless, the engine's `add_spot`, `move_spot` and `remove_spot` do that, with retouch's form data declared as darktable 5.6.2 has it and checked against its introspection.
 - **A trap.** darktable records a shape in the history (`dt_dev_add_masks_history_item`) only with its GUI attached. Moving through the history rebuilds the shapes from it, so a spot vanished at the next undo. The engine records it itself.
 
+### Remove Objects
+
+The eraser button in the toolbar paints things out: paint over something, and a little around it, and a machine learning model fills it in from what's around. It's LaMa ("big-lama", Samsung, Apache-2.0), converted to Core ML at 512 × 512 in half precision (`Scripts/models/convert_lama.py`), 99 MB, downloaded the first time it's used like the other models. A fill takes about half a second on an M3 Pro once the model is loaded, which happens when the tool is turned on. Click a painted area to select it, and Delete removes it.
+
+darktable has no way to hold pixels a model made, so this is Darkslide's own layer over darktable's output (`CleanUp.swift`), as AI denoise's amount is:
+
+- **Marks.** Each stroke is kept in the catalog in darktable's input coordinates (the engine's `to_input`, the inverse of `to_output`), so a crop or rotation leaves it on its object.
+- **On screen.** After each full render the marks are filled again in the background, around each one, so the fill follows the edit beneath. Until it's done, and while a slider is dragged, the last fill is laid over the new frame, so objects don't flash back.
+- **Exports.** A photo with marks exports through Core Image, filled at the export's own resolution. A gain map's HDR and SDR renderings are each filled.
+- **What it's good at.** Small and medium things with plenty around them. LaMa needs about three times an object's size as context, so a large one is filled from a scaled-down square and comes out softer (`Tools/inpaintlab/README.md`). darktable doesn't see the layer, and it isn't in the undo history yet: Delete or Remove All take marks away.
+
 ### Hue curves
 
 The Hue curves card is darktable's colour equaliser shown as Photomator-style curves. It has Hue, Saturation and Luminance tabs, each plotted against hue, with a handle on each of darktable's eight colours (red, orange, yellow, green, cyan, blue, lavender and magenta). Drag a handle up or down, or double-click it to reset. Hue runs ±90° on screen (darktable allows ±180°) and the others 0 to 200%. The line is darktable's periodic radial-basis interpolation (`_periodic_RBF_interpolate`), ported, so it's the curve applied, including the module's hue smoothing and node placement. The handles use the eight named colours rather than HSV hues, because darktable's hue circle (its UCS) isn't HSV's. The module's other settings (saturation threshold, contrast, white level, the guided filter's radii) are under Advanced. Every value is a plain field, so no engine support was needed.

@@ -402,6 +402,12 @@ actor Engine {
         return stride(from: 0, to: r.points.count - 1, by: 2).map { CGPoint(x: r.points[$0], y: r.points[$0 + 1]) }
     }
 
+    /// output pixels to darktable's input, normalised: the inverse of toOutput
+    func toInput(_ points: [CGPoint]) async throws -> [CGPoint] {
+        let r = try await request(["cmd": "to_input", "points": points.flatMap { [$0.x, $0.y] }], as: PointsReply.self)
+        return stride(from: 0, to: r.points.count - 1, by: 2).map { CGPoint(x: r.points[$0], y: r.points[$0 + 1]) }
+    }
+
     func shape(module: String) async throws -> ShapeReply {
         try await request(["cmd": "shape", "module": module], as: ShapeReply.self)
     }

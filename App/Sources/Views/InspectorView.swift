@@ -10,6 +10,8 @@ struct InspectorView: View {
             CropPanel()
         } else if model.isRemovingSpots {
             SpotPanel()
+        } else if model.isRemovingObjects {
+            ObjectsPanel()
         } else {
             adjustments
         }

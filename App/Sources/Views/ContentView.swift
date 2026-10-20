@@ -507,7 +507,8 @@ struct ZoomableImage: View {
                     if waitingForFrame { pinch = 1; waitingForFrame = false }
                 }
                 .overlay {
-                    if model.showLoupe, let p = loupePointer {
+                    // hidden while brushing, back when the brush is put down
+                    if model.showLoupe, !model.isBrushing, let p = loupePointer {
                         EditorLoupe(pointer: p, toImage: { toImage($0, in: geo.size, frame: size) })
                             .allowsHitTesting(false)
                     }
@@ -523,7 +524,7 @@ struct ZoomableImage: View {
                     model.pointLoupe(at: toImage(p, in: geo.size, frame: size))
                 }
                 .onContinuousHover { phase in
-                    guard model.showLoupe else { return }
+                    guard model.showLoupe, !model.isBrushing else { return }
                     if case .active(let p) = phase {
                         loupePointer = p
                         let o = toImage(p, in: geo.size, frame: size)

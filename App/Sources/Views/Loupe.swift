@@ -178,9 +178,9 @@ struct EditorLoupe: View {
         }
         return Group {
             if !layers.isEmpty {
-                // while painting or retouching, it sits up and to the left, so the
-                // pointer and the stroke under it stay in sight
-                let aside = model.isBrushing || model.isRemovingSpots || model.isRemovingObjects
+                // while retouching, it sits up and to the left, so the pointer and
+                // the spot under it stay in sight (while brushing it's hidden)
+                let aside = model.isRemovingSpots || model.isRemovingObjects
                 LoupeLens(layers: layers, label: "Darkslide  \(Int(zoom * 100))%")
                     .position(aside ? CGPoint(x: pointer.x - 190, y: pointer.y - 190) : pointer)
             }

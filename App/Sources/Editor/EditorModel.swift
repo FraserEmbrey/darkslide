@@ -2924,11 +2924,12 @@ final class EditorModel {
                         panBackdrop = (frame.image, frame.isHDR)
                     }
                     if let r = frame.rotateInSize { rotateInSize = r }
+                    var fill = false
                     if let simulate, frame.isHDR {
                         image = try await gainMapPreview(frame, stops: simulate, maxPixels: pixels, crop: crop, engine: engine)
                     } else {
                         image = laidOverLastFill(frame.image, crop: crop)
-                        if !cleanUpMarks.isEmpty, !draft { fillObjects(in: frame.image, crop: crop) }
+                        fill = !cleanUpMarks.isEmpty && !draft
                     }
                     isSimulatingHeadroom = simulate != nil && frame.isHDR
                     if isSimulatingHeadroom, let img = image {
@@ -2937,6 +2938,8 @@ final class EditorModel {
                     imageIsZoomed = crop != nil
                     shownCrop = crop
                     frameID += 1
+                    // after the count moves on: the fill is shown only while this frame is
+                    if fill { fillObjects(in: frame.image, crop: crop) }
                     imageIsHDR = frame.isHDR
                     if crop == nil {
                         hdrAnalysis = frame.analysis

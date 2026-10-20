@@ -186,6 +186,12 @@ struct ContentView: View {
                     .disabled(model.url == nil)
                 }
                 .hidden(model.showingLibrary)
+                // the loupe works over the library's thumbnails too, so it stays
+                ToolbarItem(id: "loupe") {
+                    @Bindable var model = model
+                    Toggle("Loupe", systemImage: "magnifyingglass.circle", isOn: $model.showLoupe)
+                        .help("The loupe (`)")
+                }
                 ToolbarSpacer(.fixed)
                 ToolbarItem(id: "hdr") {
                     @Bindable var model = model

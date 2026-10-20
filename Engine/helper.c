@@ -15,6 +15,7 @@
     {"cmd":"reset","module":"exposure:0"}
     {"cmd":"render","max":1600,"hdr":false}         -> frame width/height/ms
       "before":true renders the photo as it was when opened, for comparison
+        (its pipe is made then, and {"cmd":"drop_before"} frees it again)
       "scale":1,"x":..,"y":..,"w":..,"h":.. renders a crop at that scale (zoom)
       SDR: BGRA8 in sRGB. HDR: RGBA float32, linear Rec.2020, unclipped, so
       values above 1.0 are highlights above SDR white (EDR convention).
@@ -76,6 +77,7 @@ typedef struct view_t
   gboolean loaded;
   dt_develop_t dev;
   dt_dev_pixelpipe_t pipe;
+  gboolean piped;           // the pipe exists (the before view's only while comparing)
   dt_mipmap_buffer_t buf;
   gboolean dirty;           // params changed since the last render
   gboolean overridden;      // the pipe holds one render's overrides; resync before the next
@@ -362,7 +364,8 @@ static void _add_modules(JsonBuilder *b)
 static void _close_view(view_t *v)
 {
   if(!v->loaded) return;
-  dt_dev_pixelpipe_cleanup(&v->pipe);
+  if(v->piped) dt_dev_pixelpipe_cleanup(&v->pipe);
+  v->piped = FALSE;
   dt_mipmap_cache_release(&v->buf);
   dt_dev_cleanup(&v->dev);
   v->loaded = FALSE;
@@ -427,6 +430,8 @@ static void _set_output_mode(const gboolean hdr)
   H.hdr = hdr;
 }
 
+static void _make_pipe(view_t *v);
+
 // builds develop state and a pipe for an image already in the library,
 // from the history currently in the library
 static const char *_load_view(view_t *v, const dt_imgid_t imgid)
@@ -446,21 +451,29 @@ static const char *_load_view(view_t *v, const dt_imgid_t imgid)
     return "darktable could not decode this file";
   }
 
-  // a long-lived pipe with a real cache: after a slider move, only the
-  // modules from the changed one onwards are recomputed. The darkroom
-  // (FULL) type takes darktable's interactive fast paths, about 10x quicker
-  // per change than an export pipe; final exports should use an export pipe.
+  dt_ioppr_resync_modules_order(&v->dev);
+  _set_output_mode(H.hdr);
+  // with AI denoise on, the edit's raw is the denoised one (the cache may
+  // have dropped and decoded it again while it wasn't held)
+  if(v == &H.edit) _dn_write(v->buf.buf);
+  v->loaded = TRUE;
+  v->dirty = FALSE;
+  // the before view's pipe is made when it's first rendered
+  if(v == &H.edit) _make_pipe(v);
+  return NULL;
+}
+
+// A long-lived pipe with a real cache: after a slider move, only the modules
+// from the changed one onwards are recomputed. The darkroom (FULL) type takes
+// darktable's interactive fast paths, about 10x quicker per change than an
+// export pipe; final exports should use an export pipe.
+static void _make_pipe(view_t *v)
+{
   dt_dev_pixelpipe_init_cached(&v->pipe, 0, 64, 8);
   v->pipe.type = DT_DEV_PIXELPIPE_FULL;
   v->pipe.input_hint = NULL;
   v->pipe.levels = IMAGEIO_RGB | IMAGEIO_INT8;
-
-  dt_ioppr_resync_modules_order(&v->dev);
-  _set_output_mode(H.hdr);
-  // with AI denoise on, the edit's raw is the denoised one (the cache may
-  // have dropped and decoded it again while it wasn't held), and the before
-  // view keeps the original for comparison
-  if(v == &H.edit) _dn_write(v->buf.buf);
+  // with AI denoise on, the before view keeps the original for comparison
   void *input = (v == &H.before && H.dn.orig) ? H.dn.orig : v->buf.buf;
   dt_dev_pixelpipe_set_input(&v->pipe, &v->dev, (float *)input,
                              v->buf.width, v->buf.height, v->buf.iscale);
@@ -468,9 +481,16 @@ static const char *_load_view(view_t *v, const dt_imgid_t imgid)
   dt_dev_pixelpipe_synch_all(&v->pipe, &v->dev);
   dt_dev_pixelpipe_get_dimensions(&v->pipe, &v->dev, v->pipe.iwidth, v->pipe.iheight,
                                   &v->pipe.processed_width, &v->pipe.processed_height);
-  v->loaded = TRUE;
-  v->dirty = FALSE;
-  return NULL;
+  v->piped = TRUE;
+}
+
+// Frees a view's pipe and its cached renders: the before view's, when the
+// app stops comparing, as they'd otherwise stay until the next photo.
+static void _drop_pipe(view_t *v)
+{
+  if(!v->piped) return;
+  dt_dev_pixelpipe_cleanup(&v->pipe);
+  v->piped = FALSE;
 }
 
 // (re)loads the edit; the before view is left alone
@@ -716,6 +736,7 @@ static void _cmd_render(JsonObject *o)
   const gboolean before = json_object_get_boolean_member_with_default(o, "before", FALSE);
   view_t *v = before ? &H.before : &H.edit;
   if(!v->loaded) return _error("no image open");
+  if(!v->piped) _make_pipe(v);
 
   // "overrides" renders the current edit with some settings changed, without
   // touching the edit: [{"module":"sigmoid:0","field":"display_white_target","value":100}],
@@ -740,7 +761,7 @@ static void _cmd_render(JsonObject *o)
     for(size_t i = 0; i < G_N_ELEMENTS(views); i++)
     {
       view_t *each = views[i];
-      if(!each->loaded) continue;
+      if(!each->piped) continue;
       int32_t order = 0;
       for(GList *l = each->dev.iop; l && !order; l = g_list_next(l))
       {
@@ -3106,7 +3127,7 @@ static void _cmd_denoise(JsonObject *o)
 
   dt_dev_pixelpipe_cache_flush(&H.edit.pipe);
   H.edit.dirty = TRUE;
-  if(H.before.loaded)
+  if(H.before.piped)
   {
     dt_dev_pixelpipe_set_input(&H.before.pipe, &H.before.dev, (float *)H.dn.orig,
                                H.before.buf.width, H.before.buf.height, H.before.buf.iscale);
@@ -3550,6 +3571,7 @@ int main(int argc, char *argv[])
     else if(!strcmp(cmd, "toneequal_fit")) _cmd_toneequal_fit();
     else if(!strcmp(cmd, "filmic_autotune")) _cmd_filmic_autotune();
     else if(!strcmp(cmd, "export")) _cmd_export(o);
+    else if(!strcmp(cmd, "drop_before")) { _drop_pipe(&H.before); _ok_done(_ok()); }
     else if(!strcmp(cmd, "quit")) break;
     else _error("unknown command");
   }

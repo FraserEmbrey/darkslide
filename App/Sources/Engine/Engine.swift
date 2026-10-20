@@ -195,6 +195,11 @@ actor Engine {
         _ = try await request(["cmd": "new_step"])
     }
 
+    /// Frees the before view's pipe and cached renders, made again on the next before render.
+    func dropBefore() async throws {
+        _ = try await request(["cmd": "drop_before"])
+    }
+
     func enable(module: String, on: Bool) async throws {
         _ = try await request(["cmd": "enable", "module": module, "on": on])
     }

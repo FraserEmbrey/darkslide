@@ -35,7 +35,16 @@ final class EditorModel {
 
     // Before and after: the photo as opened on the left of a movable divider
     // StartComparing: launch argument (-StartComparing YES) for testing
-    var comparing = UserDefaults.standard.bool(forKey: "StartComparing") { didSet { if comparing != oldValue, comparing, url != nil { requestRender() } } }
+    var comparing = UserDefaults.standard.bool(forKey: "StartComparing") {
+        didSet {
+            guard comparing != oldValue, url != nil else { return }
+            if comparing { requestRender(); return }
+            // the before renders are freed in the engine until the next compare
+            beforeImage = nil
+            beforeKey = ""
+            if let engine { Task { try? await engine.dropBefore() } }
+        }
+    }
     var compareSplit: Double = 0.5
     private(set) var beforeImage: CGImage?
     private var beforeKey = ""   // size and mode the before image was rendered for
@@ -66,7 +75,23 @@ final class EditorModel {
     private static var removeObjectsTested = false
     private static var autoStackTested = false
     private static var brushTested = false
+    private static var compareTested = false
     private static var loupeTested = false
+
+    /// for testing: how far apart two frames are, as the largest difference
+    /// in any channel, 0...1 (nil if they can't be compared)
+    private static func pixelDifference(_ a: CGImage?, _ b: CGImage?) -> Double? {
+        guard let a, let b, a.width == b.width, a.height == b.height else { return nil }
+        func floats(_ i: CGImage) -> [Float] {
+            var px = [Float](repeating: 0, count: i.width * i.height * 4)
+            let ctx = CGContext(data: &px, width: i.width, height: i.height, bitsPerComponent: 32, bytesPerRow: i.width * 16,
+                                space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue)
+            ctx?.draw(i, in: CGRect(x: 0, y: 0, width: i.width, height: i.height))
+            return px
+        }
+        return Double(zip(floats(a), floats(b)).reduce(Float(0)) { max($0, abs($1.0 - $1.1)) })
+    }
     private static var fullScreenTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
@@ -1830,6 +1855,25 @@ final class EditorModel {
                     log("out")
                     try? await Task.sleep(for: .seconds(4))
                     log("out, later")
+                }
+            }
+            // TestCompare: launch argument (-TestCompare YES) for testing: Compare on,
+            // off (the engine frees its before renders) and on again
+            if UserDefaults.standard.bool(forKey: "TestCompare"), !Self.compareTested {
+                Self.compareTested = true
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide compare: \(s)\n".data(using: .utf8)!) }
+                    try? await Task.sleep(for: .seconds(4))
+                    comparing = true
+                    try? await Task.sleep(for: .seconds(3))
+                    let first = beforeImage
+                    log("on: \(first.map { "\($0.width)x\($0.height)" } ?? "-")")
+                    comparing = false
+                    try? await Task.sleep(for: .seconds(2))
+                    log("off: \(beforeImage == nil ? "freed" : "kept")")
+                    comparing = true
+                    try? await Task.sleep(for: .seconds(3))
+                    log("on again: \(beforeImage.map { "\($0.width)x\($0.height)" } ?? "-"), largest difference \(Self.pixelDifference(first, beforeImage).map { String(format: "%.4f", $0) } ?? "-")")
                 }
             }
             // TestLoupe: launch argument (-TestLoupe YES) for testing: the loupe at the

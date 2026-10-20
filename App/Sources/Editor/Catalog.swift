@@ -38,6 +38,42 @@ final class Catalog {
 
     func stackPick(_ stack: String) -> String? { stackPicks[stack] }
 
+    /// photos stacked together (Auto-Stack, or Stack): each a list of
+    /// originals' paths, the first its key, as an original keys its versions' stack
+    private(set) var bursts: [[String]] = [] { didSet { burstOf = Self.index(bursts) } }
+    private var burstOf: [String: String] = [:]
+    var hasBursts: Bool { !bursts.isEmpty }
+
+    private static func index(_ bursts: [[String]]) -> [String: String] {
+        var out: [String: String] = [:]
+        for b in bursts { for m in b { out[m] = b[0] } }
+        return out
+    }
+
+    /// the key of the stack an original is in, if it's in one with other photos
+    func burst(containing original: String) -> String? { burstOf[original] }
+
+    func burstMembers(of original: String) -> [String]? {
+        burstOf[original].flatMap { key in bursts.first { $0[0] == key } }
+    }
+
+    /// a new stack of originals, replacing any they were in; returns its key
+    @discardableResult
+    func addBurst(_ members: [String]) -> String {
+        let set = Set(members)
+        bursts.removeAll { !set.isDisjoint(with: $0) }
+        bursts.append(members)
+        scheduleSave()
+        return members[0]
+    }
+
+    func removeBurst(containing original: String) {
+        guard let key = burstOf[original] else { return }
+        bursts.removeAll { $0[0] == key }
+        stackPicks[key] = nil
+        scheduleSave()
+    }
+
     func setStackPick(_ pick: String?, for stack: String) {
         stackPicks[stack] = pick
         scheduleSave()
@@ -49,6 +85,7 @@ final class Catalog {
         var remount: [String: String]?
         var smartAlbums: [SmartAlbum]?
         var stackPicks: [String: String]?
+        var bursts: [[String]]?
     }
 
     // CatalogPath: launch argument (-CatalogPath /path/catalog.json) for testing, so tests leave the real one alone
@@ -65,6 +102,8 @@ final class Catalog {
         remount = stored.remount ?? [:]
         smartAlbums = stored.smartAlbums ?? []
         stackPicks = stored.stackPicks ?? [:]
+        bursts = stored.bursts ?? []
+        burstOf = Self.index(bursts)   // didSet doesn't run in init
     }
 
     // MARK: Folders
@@ -209,7 +248,7 @@ final class Catalog {
     func save() {
         guard let file else { return }
         let stored = Stored(folders: folders.map(\.path), records: records, remount: remount, smartAlbums: smartAlbums,
-                            stackPicks: stackPicks)
+                            stackPicks: stackPicks, bursts: bursts)
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(stored) { try? data.write(to: file, options: .atomic) }
     }

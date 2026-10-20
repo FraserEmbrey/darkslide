@@ -64,6 +64,7 @@ final class EditorModel {
     private static var spotsTested = false
     private static var stacksTested = false
     private static var removeObjectsTested = false
+    private static var autoStackTested = false
 
     /// when darktable couldn't decode the raw: the TIFF macOS decoded it to,
     /// which darktable is editing (see AppleRawFallback)
@@ -102,6 +103,8 @@ final class EditorModel {
     private(set) var canDecodeWithApple = false
     /// a passing note for the window's subtitle
     var statusNote: String?
+    /// Auto-Stack is finding bursts
+    var isAutoStacking = false
 
     // Library (see the Library extension at the end)
     let library = Library(catalog: Catalog())
@@ -1761,6 +1764,26 @@ final class EditorModel {
                     await undo()
                     await undo()
                     log("undone twice: \(cleanUpMarks.count) marks, next undo \(undoTitle ?? "-"), redo \(redoTitle ?? "-")")
+                }
+            }
+            // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the
+            // folder's bursts, logs the library, then unstacks them
+            if UserDefaults.standard.bool(forKey: "TestAutoStack"), !Self.autoStackTested {
+                Self.autoStackTested = true
+                Task { @MainActor in
+                    @MainActor func log(_ s: String) {
+                        let shown = library.items.map { "\($0.name)\($0.stackSize > 1 ? " [\($0.stackSize)\($0.isStackPick ? " pick" : "")]" : "")" }
+                        FileHandle.standardError.write("Darkslide auto-stack: \(s): \(shown)\n".data(using: .utf8)!)
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    await showLibrary()
+                    log("before")
+                    autoStackBursts()
+                    try? await Task.sleep(for: .seconds(1))
+                    while isAutoStacking { try? await Task.sleep(for: .milliseconds(200)) }
+                    log("stacked, \(statusNote ?? "-")")
+                    library.unstack(library.allPhotos)
+                    log("unstacked")
                 }
             }
             // TestStacks: launch argument (-TestStacks YES) for testing: two versions of the

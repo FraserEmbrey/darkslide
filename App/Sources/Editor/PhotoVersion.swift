@@ -150,3 +150,38 @@ extension PhotoVersion {
     <?xpacket end="w"?>
     """
 }
+
+// MARK: - Auto-Stack
+
+extension EditorModel {
+    /// Stacks each burst among the photos showing, as Aperture's Auto-Stack
+    /// did, but found as the cull view finds them (CullAnalysis.bursts):
+    /// frames close in time that look alike. The frame the cull view would
+    /// keep (sharpest where it matters, eyes open) is each stack's pick.
+    func autoStackBursts() {
+        let photos = library.allPhotos.filter { PhotosLibrary.assetID($0) == nil && !$0.isVersion }
+        guard photos.count > 1, !isAutoStacking else { return }
+        isAutoStacking = true
+        culling.analyse(photos)
+        Task {
+            // the measuring reports its progress as it goes
+            let watch = Task {
+                while !Task.isCancelled {
+                    if let p = culling.progress { statusNote = "Finding bursts… \(p.done) of \(p.total)" }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
+            await culling.finished()
+            watch.cancel()
+            var stacked = 0
+            for (i, run) in culling.runs.enumerated() where run.count > 1 && !library.inBurst(run) {
+                library.stack(run, pick: culling.suggested(in: i))
+                stacked += 1
+            }
+            statusNote = stacked == 0 ? "No new bursts to stack" : stacked == 1 ? "Stacked 1 burst" : "Stacked \(stacked) bursts"
+            isAutoStacking = false
+            try? await Task.sleep(for: .seconds(4))
+            if statusNote?.hasPrefix("Stacked") == true || statusNote?.hasPrefix("No new") == true { statusNote = nil }
+        }
+    }
+}

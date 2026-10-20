@@ -219,8 +219,21 @@ struct AppCommands: Commands {
                 set: { _ in model.showLibrary(as: .cull) }))
                 .keyboardShortcut("3", modifiers: [.command, .option])
                 .disabled(model.library.source == nil && model.library.lastFolder == nil)
-            Button("Open All Stacks") { model.library.setAllStacks(open: true) }
-            Button("Close All Stacks") { model.library.setAllStacks(open: false) }
+            Menu("Stacks") {
+                let selected = model.library.selectedInOrder
+                Button("Auto-Stack Bursts") { model.autoStackBursts() }
+                    .disabled(model.isAutoStacking || model.library.allPhotos.count < 2)
+                    .help("Stacks frames shot moments apart that look alike, the best one on top")
+                Button("Stack Selected Photos") { model.library.stack(selected) }
+                    .keyboardShortcut("k", modifiers: [.command, .option])
+                    .disabled(!model.showingLibrary || selected.count < 2)
+                Button("Unstack") { model.library.unstack(selected.isEmpty ? model.library.selection.map { [$0] } ?? [] : selected) }
+                    .keyboardShortcut("k", modifiers: [.command, .option, .shift])
+                    .disabled(!model.showingLibrary || !model.library.inBurst(selected.isEmpty ? model.library.selection.map { [$0] } ?? [] : selected))
+                Divider()
+                Button("Open All Stacks") { model.library.setAllStacks(open: true) }
+                Button("Close All Stacks") { model.library.setAllStacks(open: false) }
+            }
             Toggle("Hide Rejected Photos", isOn: Binding(
                 get: { model.library.ratingFilter == .notRejected },
                 set: { model.library.ratingFilter = $0 ? .notRejected : .all }))

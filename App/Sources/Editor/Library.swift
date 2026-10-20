@@ -23,8 +23,9 @@ struct LibraryItem: Identifiable, Hashable {
     var hasEdit: Bool
     /// darktable's version number (PhotoVersion), 0 for the original
     var version = 0
-    /// the original's path: an original and its versions are one stack
-    var stack: String { version > 0 ? url.photoFile.path : url.path }
+    /// the original's path: an original and its versions are one stack, and
+    /// a burst stacked together is one stack of its originals (Library.stackKey)
+    var original: String { version > 0 ? url.photoFile.path : url.path }
     /// how many photos its stack holds, as shown (1: not stacked)
     var stackSize = 1
     /// its stack is open, showing every version
@@ -148,17 +149,24 @@ final class Library {
     /// picked) with a count; open, every version. Stacks start closed.
     private(set) var openStacks: Set<String> = []
 
+    /// the stack a photo belongs to: its burst's, or its original's
+    func stackKey(_ item: LibraryItem) -> String {
+        let original = item.original
+        return catalog.burst(containing: original) ?? original
+    }
+
     private func stacked(_ shown: [LibraryItem]) -> [LibraryItem] {
-        // only versions make stacks, so most folders have none to look at
-        guard shown.contains(where: { $0.version > 0 }) else { return shown }
-        let groups = Dictionary(grouping: shown, by: \.stack)
+        // only versions and stacked bursts make stacks, so most folders have none
+        guard shown.contains(where: { $0.version > 0 }) || catalog.hasBursts else { return shown }
+        let keys = shown.map(stackKey)
+        let groups = Dictionary(grouping: zip(keys, shown), by: \.0).mapValues { $0.map(\.1) }
         var out: [LibraryItem] = []
-        for var item in shown {
-            guard let group = groups[item.stack], group.count > 1 else { out.append(item); continue }
-            let pick = catalog.stackPick(item.stack).flatMap { p in group.first { $0.url.path == p } } ?? group[0]
+        for (key, var item) in zip(keys, shown) {
+            guard let group = groups[key], group.count > 1 else { out.append(item); continue }
+            let pick = catalog.stackPick(key).flatMap { p in group.first { $0.url.path == p } } ?? group[0]
             item.stackSize = group.count
             item.isStackPick = item.url == pick.url
-            if openStacks.contains(item.stack) {
+            if openStacks.contains(key) {
                 item.stackOpen = true
                 out.append(item)
             } else if item.isStackPick {
@@ -170,8 +178,8 @@ final class Library {
 
     /// the stack a photo is in, if it's in one that's showing
     private func stack(of url: URL) -> String? {
-        allItems.first { $0.url == url }.map(\.stack).flatMap { key in
-            allItems.filter { $0.stack == key }.count > 1 ? key : nil
+        allItems.first { $0.url == url }.map(stackKey).flatMap { key in
+            allItems.filter { stackKey($0) == key }.count > 1 ? key : nil
         }
     }
 
@@ -190,12 +198,39 @@ final class Library {
 
     /// opens a photo's stack before its versions are scanned (a version just made)
     func openStack(of original: URL) {
-        openStacks.insert(original.photoFile.path)
+        let path = original.photoFile.path
+        openStacks.insert(catalog.burst(containing: path) ?? path)
         applyFilter()
     }
 
+    // MARK: Stacking photos together
+
+    /// Stacks photos together, as Aperture's Stack: their originals become one
+    /// stack, `pick` showing when it's closed (else the first). Photos already
+    /// in a stack bring theirs along.
+    func stack(_ photos: [URL], pick: URL? = nil) {
+        let originals = photos.map { $0.photoFile.path }
+        var members: [String] = []
+        for o in originals {
+            for m in catalog.burstMembers(of: o) ?? [o] where !members.contains(m) { members.append(m) }
+        }
+        guard members.count > 1 else { return }
+        let key = catalog.addBurst(members)
+        catalog.setStackPick((pick ?? photos.first).map { $0.path == key ? nil : $0.path } ?? nil, for: key)
+        afterStackChange()
+    }
+
+    /// Takes the selected photos' stacks apart, back to each original with its versions.
+    func unstack(_ photos: [URL]) {
+        for p in photos { catalog.removeBurst(containing: p.photoFile.path) }
+        afterStackChange()
+    }
+
+    /// whether any of the photos is in a stack of separate photos
+    func inBurst(_ photos: [URL]) -> Bool { photos.contains { catalog.burst(containing: $0.photoFile.path) != nil } }
+
     func setAllStacks(open: Bool) {
-        openStacks = open ? Set(allItems.filter { $0.version > 0 }.map(\.stack)) : []
+        openStacks = open ? Set(Dictionary(grouping: allItems, by: stackKey).filter { $0.value.count > 1 }.keys) : []
         afterStackChange()
     }
 
@@ -215,8 +250,8 @@ final class Library {
     private func afterStackChange() {
         applyFilter()
         if let sel = selection, !items.contains(where: { $0.url == sel }),
-           let key = allItems.first(where: { $0.url == sel })?.stack {
-            selection = items.first { $0.stack == key }?.url
+           let key = allItems.first(where: { $0.url == sel }).map(stackKey) {
+            selection = items.first { stackKey($0) == key }?.url
         }
     }
 

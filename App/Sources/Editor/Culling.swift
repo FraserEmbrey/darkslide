@@ -96,6 +96,9 @@ final class Culling {
         }
     }
 
+    /// waits for the measuring under way to finish
+    func finished() async { await job?.value }
+
     private func regroup() {
         // the folder's order, as the arrows go: one camera's file numbers
         // are the order taken, and photos not measured yet keep their place

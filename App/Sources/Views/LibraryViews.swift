@@ -112,8 +112,14 @@ struct ItemMenu: View {
             Button(item.stackOpen ? "Close Stack" : "Open Stack") { model.library.toggleStack(item.url) }
             if item.stackOpen, !item.isStackPick {
                 Button("Pick for Stack") { model.library.pickForStack(item.url) }
-                    .help("Show this version when the stack is closed")
+                    .help("Show this photo when the stack is closed")
             }
+            if model.library.inBurst([item.url]) {
+                Button("Unstack") { model.library.unstack([item.url]) }
+            }
+        }
+        if let model, model.library.selected.count > 1, model.library.selected.contains(item.url) {
+            Button("Stack \(model.library.selected.count) Photos") { model.library.stack(model.library.selectedInOrder) }
         }
         if let model {
             Divider()

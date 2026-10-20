@@ -76,6 +76,7 @@ final class EditorModel {
     private static var autoStackTested = false
     private static var brushTested = false
     private static var compareTested = false
+    private static var penBrushTested = false
     private static var loupeTested = false
 
     /// for testing: how far apart two frames are, as the largest difference
@@ -213,6 +214,10 @@ final class EditorModel {
     }
     /// strokes take the adjustment away (Option does it for one stroke)
     var brushErases = false
+    /// what a pen's pressure changes as it paints (a mouse or trackpad paints at full strength)
+    var penPressure = BrushPressure(rawValue: UserDefaults.standard.string(forKey: "BrushPressure") ?? "") ?? .size {
+        didSet { UserDefaults.standard.set(penPressure.rawValue, forKey: "BrushPressure") }
+    }
     var pendingShape: ShapeEdit?
     var sendingShape = false
     /// Spot removal (darktable's retouch): on while its tool is, the spots on
@@ -1929,6 +1934,52 @@ final class EditorModel {
                     try? await Task.sleep(for: .seconds(2))
                     await fetchLocalShape()
                     log("undone")
+                }
+            }
+            // TestPenBrush: launch argument (-TestPenBrush YES) for testing: a Dodge stroke
+            // whose pen pressure ramps from light to full, by size, then another by
+            // opacity, logging the stored points and the brightening along each
+            if UserDefaults.standard.bool(forKey: "TestPenBrush"), !Self.penBrushTested {
+                Self.penBrushTested = true
+                Task { @MainActor in
+                    func log(_ s: String) { FileHandle.standardError.write("Darkslide pen brush: \(s)\n".data(using: .utf8)!) }
+                    /// the canvas frame's brightness (0...255) at a point in output pixels
+                    @MainActor func brightness(_ p: CGPoint) -> Double {
+                        guard let frame = image else { return -1 }
+                        let k = Double(frame.width) / imageSize.width
+                        var px = [UInt8](repeating: 0, count: 4)
+                        let ctx = CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                        ctx.draw(frame, in: CGRect(x: -p.x * k, y: -(imageSize.height - p.y) * k + 1, width: Double(frame.width), height: Double(frame.height)))
+                        return (Double(px[0]) + Double(px[1]) + Double(px[2])) / 3
+                    }
+                    let saved = penPressure
+                    defer { penPressure = saved }
+                    try? await Task.sleep(for: .seconds(4))
+                    let w = imageSize.width, h = imageSize.height
+                    let r = brushSize * min(w, h)
+                    let xs = Array(stride(from: 0.3, through: 0.6, by: 0.01))
+                    let ramp = xs.indices.map { 0.1 + 0.9 * Double($0) / Double(xs.count - 1) }
+                    func probes(_ y: Double, off: Double) -> [CGPoint] {
+                        [CGPoint(x: w * 0.32, y: h * y + off), CGPoint(x: w * 0.58, y: h * y + off)]
+                    }
+                    // by size: just off the line, the light end shouldn't reach, the full end should
+                    let sizeProbes = probes(0.5, off: 0.6 * r)
+                    let before = sizeProbes.map(brightness)
+                    penPressure = .size
+                    startBrush(.dodge)
+                    paintStroke(xs.map { CGPoint(x: w * $0, y: h * 0.5) }, erase: false, pressure: ramp)
+                    try? await Task.sleep(for: .seconds(4))
+                    let s1 = localShape?.strokes.first
+                    log("size: sizes \(s1?.sizes.map { "\(String(format: "%.2f", $0.first!))...\(String(format: "%.2f", $0.last!))" } ?? "none"), brightening off the line at the light end \(Int(brightness(sizeProbes[0]) - before[0])), full end \(Int(brightness(sizeProbes[1]) - before[1]))")
+                    // by opacity: on the line, the light end brightens less
+                    let opacityProbes = probes(0.3, off: 0)
+                    let before2 = opacityProbes.map(brightness)
+                    penPressure = .opacity
+                    paintStroke(xs.map { CGPoint(x: w * $0, y: h * 0.3) }, erase: false, pressure: ramp)
+                    try? await Task.sleep(for: .seconds(4))
+                    let s2 = localShape?.strokes.last
+                    log("opacity: opacities \(s2?.opacities.map { "\(String(format: "%.2f", $0.first!))...\(String(format: "%.2f", $0.last!))" } ?? "none"), brightening on the line at the light end \(Int(brightness(opacityProbes[0]) - before2[0])), full end \(Int(brightness(opacityProbes[1]) - before2[1]))")
                 }
             }
             // TestAutoStack: launch argument (-TestAutoStack YES) for testing: stacks the
@@ -4235,6 +4286,34 @@ struct BrushStroke: Equatable {
     var points: [CGPoint]
     var radius: Double
     var erase = false
+    /// a pen's stroke: each point's size, as a fraction of `radius`, and its opacity
+    var sizes: [Double]? = nil
+    var opacities: [Double]? = nil
+}
+
+/// What a pen's pressure changes, as darktable's brush offers.
+enum BrushPressure: String, CaseIterable, Identifiable {
+    case size, opacity, off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .size: "Size"
+        case .opacity: "Opacity"
+        case .off: "Off"
+        }
+    }
+}
+
+/// A pen stroke's pressure, one reading a point, and what it changes.
+struct PenPressure {
+    var values: [Double]
+    var mode: BrushPressure
+
+    func add(to body: inout [String: Any]) {
+        guard mode != .off else { return }
+        body["pressure"] = values
+        body["pressureMode"] = mode.rawValue
+    }
 }
 
 /// A move of a shape, in output pixels, waiting to go to the engine.
@@ -4418,11 +4497,18 @@ extension EditorModel {
         }
         if kind == .brush {
             // each stroke: x, y, … then its radius and 1 if it erases
-            let strokes = (r.outlines ?? []).compactMap { o -> BrushStroke? in
+            var strokes = (r.outlines ?? []).compactMap { o -> BrushStroke? in
                 guard o.count >= 4 else { return nil }
                 let xy = o.dropLast(2)
                 let points = stride(from: xy.startIndex, to: xy.endIndex - 1, by: 2).map { CGPoint(x: o[$0], y: o[$0 + 1]) }
                 return BrushStroke(points: points, radius: o[o.count - 2], erase: o[o.count - 1] > 0.5)
+            }
+            // a pen's: each point's size and density (strokes without pressure are all 1)
+            for (i, sd) in (r.pointSizes ?? []).enumerated() where i < strokes.count && sd.count == 2 * strokes[i].points.count {
+                let sizes = stride(from: 0, to: sd.count, by: 2).map { sd[$0] }
+                let opacities = stride(from: 1, to: sd.count, by: 2).map { sd[$0] }
+                if sizes.contains(where: { abs($0 - 1) > 0.01 }) { strokes[i].sizes = sizes }
+                if opacities.contains(where: { $0 < 0.99 }) { strokes[i].opacities = opacities }
             }
             localShape = LocalShape(kind: .brush, strokes: strokes, points: [])
             return
@@ -4446,10 +4532,11 @@ extension EditorModel {
     /// adjustment (an exposure instance masked by darktable's brush, its
     /// values set as the brush has them); the rest paint more of the
     /// selected one in, or erase it.
-    func paintStroke(_ points: [CGPoint], erase: Bool) {
+    func paintStroke(_ points: [CGPoint], erase: Bool, pressure: [Double]? = nil) {
         guard let engine, url != nil, !points.isEmpty else { return }
         let radius = brushSize * min(imageSize.width, imageSize.height)
         let hardness = 1 - brushSoftness
+        let pen = pressure.flatMap { $0.count == points.count ? PenPressure(values: $0, mode: penPressure) : nil }
         if let brush = pendingBrush {
             guard !erase, let base = modules.first(where: { $0.op == "exposure" && !Self.isLocal($0) }) else { return }
             pendingBrush = nil
@@ -4461,7 +4548,8 @@ extension EditorModel {
                 // its history position, before the engine moves on from it
                 await settleEdits()
                 do {
-                    let reply = try await engine.addBrush(base: base.key, name: name, points: points, radius: radius, hardness: hardness)
+                    let reply = try await engine.addBrush(base: base.key, name: name, points: points, radius: radius,
+                                                          hardness: hardness, pressure: pen)
                     modules = reply.modules
                     hasUnsavedChanges = true
                     selectedLocal = reply.added
@@ -4484,7 +4572,7 @@ extension EditorModel {
             await settleEdits()
             do {
                 try await engine.addStroke(module: key, also: others, points: points, radius: radius,
-                                           hardness: hardness, erase: erase)
+                                           hardness: hardness, erase: erase, pressure: pen)
                 hasUnsavedChanges = true
                 await fetchLocalShape()
                 requestRender()

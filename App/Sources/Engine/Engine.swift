@@ -334,6 +334,8 @@ actor Engine {
         var border: Double? = nil
         /// a subject's traced outlines, each x, y, x, y…
         var outlines: [[Double]]? = nil
+        /// a brush's strokes' points: size (a fraction of the stroke's radius), density, …
+        var pointSizes: [[Double]]? = nil
     }
 
     /// A local adjustment masked to a subject: `mask` holds one byte a pixel
@@ -354,15 +356,21 @@ actor Engine {
     }
 
     /// a local adjustment masked by a brush stroke, in output pixels
-    func addBrush(base: String, name: String, points: [CGPoint], radius: Double, hardness: Double) async throws -> InstanceReply {
-        try await request(["cmd": "add_local", "module": base, "shape": "brush", "name": name,
-                           "points": points.flatMap { [$0.x, $0.y] }, "radius": radius, "hardness": hardness], as: InstanceReply.self)
+    func addBrush(base: String, name: String, points: [CGPoint], radius: Double, hardness: Double,
+                  pressure: PenPressure? = nil) async throws -> InstanceReply {
+        var body: [String: Any] = ["cmd": "add_local", "module": base, "shape": "brush", "name": name,
+                                   "points": points.flatMap { [$0.x, $0.y] }, "radius": radius, "hardness": hardness]
+        pressure?.add(to: &body)
+        return try await request(body, as: InstanceReply.self)
     }
 
     /// another stroke on a brushed adjustment; `also` are its other instances, sharing its strokes
-    func addStroke(module: String, also: [String], points: [CGPoint], radius: Double, hardness: Double, erase: Bool) async throws {
-        _ = try await request(["cmd": "add_stroke", "module": module, "also": also, "points": points.flatMap { [$0.x, $0.y] },
-                               "radius": radius, "hardness": hardness, "erase": erase])
+    func addStroke(module: String, also: [String], points: [CGPoint], radius: Double, hardness: Double, erase: Bool,
+                   pressure: PenPressure? = nil) async throws {
+        var body: [String: Any] = ["cmd": "add_stroke", "module": module, "also": also, "points": points.flatMap { [$0.x, $0.y] },
+                                   "radius": radius, "hardness": hardness, "erase": erase]
+        pressure?.add(to: &body)
+        _ = try await request(body)
     }
 
     func setGradient(module: String, anchor: CGPoint, toward: CGPoint, compression: Double?) async throws {

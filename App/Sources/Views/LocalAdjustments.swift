@@ -64,6 +64,11 @@ struct LocalAdjustmentsCard: View {
                     isInteger: false, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSize = $0 / 100 }
         ParamSlider(label: "Softness", value: model.brushSoftness * 100, defaultValue: 50, range: 0...100,
                     isInteger: true, unit: "%", trackColors: nil, editsPhoto: false) { model.brushSoftness = $0 / 100 }
+        Picker("Pen Pressure", selection: $model.penPressure) {
+            ForEach(BrushPressure.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.menu)
+        .help("What a pen's pressure changes as it paints: a drawing tablet's, or Apple Pencil's with an iPad as a Sidecar display")
         if model.pendingBrush == nil {
             Toggle("Erase", isOn: $model.brushErases)
                 .toggleStyle(.checkbox)
@@ -316,13 +321,16 @@ struct LocalShapeOverlay: View {
 
 /// Painting a brushed local adjustment: its strokes tinted on the photo (as
 /// Aperture's brush overlay showed them), the stroke being drawn, and the
-/// brush under the pointer. Option-drag erases.
+/// brush under the pointer. Option-drag erases. A pen's pressure (a tablet's,
+/// or Apple Pencil's over Sidecar) sets each point's size or opacity.
 struct BrushOverlay: View {
     @Environment(EditorModel.self) private var model
     let toView: (CGPoint) -> CGPoint
     let toImage: (CGPoint) -> CGPoint
 
     @State private var stroke: [CGPoint] = []
+    /// the pen's pressure at each point of the stroke, if a pen is drawing it
+    @State private var pressures: [Double]?
     @State private var erasing = false
     @State private var hover: CGPoint?
 
@@ -334,14 +342,16 @@ struct BrushOverlay: View {
             ctx.drawLayer { layer in
                 for s in model.localShape?.strokes ?? [] {
                     layer.blendMode = s.erase ? .destinationOut : .normal
-                    layer.stroke(path(s.points.map(toView)), with: .color(.red.opacity(s.erase ? 1 : 0.35)),
-                                 style: StrokeStyle(lineWidth: 2 * viewRadius(s.radius, at: s.points[0]), lineCap: .round, lineJoin: .round))
+                    draw(s.points.map(toView), width: 2 * viewRadius(s.radius, at: s.points[0]), sizes: s.sizes,
+                         opacities: s.opacities, colour: .red, opacity: s.erase ? 1 : 0.35, in: &layer)
                 }
             }
             if !stroke.isEmpty {
-                let colour: Color = erasing ? .white.opacity(0.4) : .red.opacity(0.45)
-                ctx.stroke(path(stroke), with: .color(colour),
-                           style: StrokeStyle(lineWidth: 2 * viewRadius(radius, at: toImage(stroke[0])), lineCap: .round, lineJoin: .round))
+                let pen = pressures.map { p in model.penPressure == .off ? nil : p } ?? nil
+                draw(stroke, width: 2 * viewRadius(radius, at: toImage(stroke[0])),
+                     sizes: model.penPressure == .size ? pen.map { $0.map { max($0, 0.1) } } : nil,
+                     opacities: model.penPressure == .opacity ? pen.map { $0.map { max($0, 0.05) } } : nil,
+                     colour: erasing ? .white : .red, opacity: erasing ? 0.4 : 0.45, in: &ctx)
             } else if let h = hover {
                 let r = viewRadius(radius, at: toImage(h))
                 let inner = r * (1 - model.brushSoftness)
@@ -353,22 +363,48 @@ struct BrushOverlay: View {
             }
         }
         .contentShape(Rectangle())
+        .onAppear { PenInput.shared.start() }
+        .onDisappear { PenInput.shared.stop() }
         .onContinuousHover { phase in
             if case .active(let p) = phase { hover = p } else { hover = nil }
         }
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { g in
+                let pen = PenInput.shared
                 if stroke.isEmpty {
                     stroke = [g.startLocation]
-                    erasing = model.brushErases || NSEvent.modifierFlags.contains(.option)
+                    pressures = pen.pressure.map { [$0] }
+                    erasing = model.brushErases || NSEvent.modifierFlags.contains(.option) || pen.eraser
                 }
-                if let last = stroke.last, hypot(g.location.x - last.x, g.location.y - last.y) > 3 { stroke.append(g.location) }
+                if let last = stroke.last, hypot(g.location.x - last.x, g.location.y - last.y) > 3 {
+                    stroke.append(g.location)
+                    // smoothed a little, as a pen's readings jitter
+                    if let p = pen.pressure, let before = pressures?.last { pressures?.append(0.6 * p + 0.4 * before) }
+                }
             }
             .onEnded { _ in
                 let points = stroke.map(toImage)
+                let pen = pressures?.count == points.count ? pressures : nil
                 stroke = []
-                model.paintStroke(points, erase: erasing)
+                pressures = nil
+                model.paintStroke(points, erase: erasing, pressure: pen)
             })
+    }
+
+    /// A stroke `width` wide, or, for a pen's, each segment as wide and as
+    /// opaque as its points say.
+    private func draw(_ pts: [CGPoint], width: Double, sizes: [Double]?, opacities: [Double]?,
+                      colour: Color, opacity: Double, in ctx: inout GraphicsContext) {
+        let style = { (w: Double) in StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round) }
+        guard sizes?.count == pts.count || opacities?.count == pts.count, pts.count > 1 else {
+            ctx.stroke(path(pts), with: .color(colour.opacity(opacity)), style: style(width))
+            return
+        }
+        for i in 1..<pts.count {
+            let size = sizes.map { ($0[i - 1] + $0[i]) / 2 } ?? 1
+            let alpha = opacities.map { ($0[i - 1] + $0[i]) / 2 } ?? 1
+            ctx.stroke(path([pts[i - 1], pts[i]]), with: .color(colour.opacity(opacity * alpha)), style: style(width * size))
+        }
     }
 
     private func path(_ pts: [CGPoint]) -> Path {

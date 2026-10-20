@@ -1312,6 +1312,9 @@ static void _shape_changed(dt_iop_module_t *m)
 // A brush stroke from output pixels: {"points":[x,y,...],"radius":r,"hardness":h}.
 // Straight segments between the points (their control points on the corners),
 // which, sent every few pixels as they are, follow the stroke closely.
+// A pen's stroke adds "pressure":[p,...] (0 to 1, one a point), which sets
+// each point's size or, with "pressureMode":"opacity", its density, as
+// darktable's brush does with pen pressure.
 static dt_masks_form_t *_brush_stroke(JsonObject *o)
 {
   JsonArray *a = json_object_has_member(o, "points") ? json_object_get_array_member(o, "points") : NULL;
@@ -1329,6 +1332,9 @@ static dt_masks_form_t *_brush_stroke(JsonObject *o)
     pts[2 * i + 1] = json_array_get_double_element(a, 2 * i + 1);
   }
   if(n == 1) { pts[2] = pts[0] + 0.5f; pts[3] = pts[1]; }
+  JsonArray *pa = json_object_has_member(o, "pressure") ? json_object_get_array_member(o, "pressure") : NULL;
+  if(pa && (int)json_array_get_length(pa) != n) pa = NULL;
+  const gboolean by_opacity = !g_strcmp0(json_object_get_string_member_with_default(o, "pressureMode", "size"), "opacity");
   // and the radius, as a point beside the first, through the same distortions
   pts[2 * count] = pts[0] + r;
   pts[2 * count + 1] = pts[1];
@@ -1340,8 +1346,9 @@ static dt_masks_form_t *_brush_stroke(JsonObject *o)
     dt_masks_point_brush_t *b = calloc(1, sizeof(dt_masks_point_brush_t));
     b->corner[0] = b->ctrl1[0] = b->ctrl2[0] = pts[2 * i] / iw;
     b->corner[1] = b->ctrl1[1] = b->ctrl2[1] = pts[2 * i + 1] / ih;
-    b->border[0] = b->border[1] = radius;
-    b->density = 1.0f;
+    const float p = pa ? CLAMP((float)json_array_get_double_element(pa, MIN(i, n - 1)), 0.0f, 1.0f) : 1.0f;
+    b->border[0] = b->border[1] = by_opacity ? radius : radius * MAX(p, 0.1f);
+    b->density = by_opacity ? MAX(p, 0.05f) : 1.0f;
     b->hardness = hardness;
     b->state = DT_MASKS_POINT_STATE_NORMAL;
     form->points = g_list_append(form->points, b);
@@ -1642,6 +1649,9 @@ static void _cmd_shape(JsonObject *o)
     json_builder_set_member_name(b, "points");
     json_builder_begin_array(b);
     json_builder_end_array(b);
+    // and each stroke's points' sizes, as fractions of its radius, and densities
+    JsonBuilder *pb = json_builder_new();
+    json_builder_begin_array(pb);
     json_builder_set_member_name(b, "outlines");
     json_builder_begin_array(b);
     for(GList *l = grp ? grp->points : NULL; l; l = g_list_next(l))
@@ -1649,6 +1659,15 @@ static void _cmd_shape(JsonObject *o)
       const dt_masks_point_group_t *gp = l->data;
       dt_masks_form_t *f = dt_masks_get_from_id(&H.edit.dev, gp->formid);
       if(!f || !(f->type & DT_MASKS_BRUSH) || !f->points) continue;
+      const dt_masks_point_brush_t *start = f->points->data;
+      json_builder_begin_array(pb);
+      for(GList *p = f->points; p; p = g_list_next(p))
+      {
+        const dt_masks_point_brush_t *pt = p->data;
+        json_builder_add_double_value(pb, start->border[0] > 0 ? pt->border[0] / start->border[0] : 1);
+        json_builder_add_double_value(pb, pt->density);
+      }
+      json_builder_end_array(pb);
       const int n = g_list_length(f->points);
       float *pts = g_new(float, 2 * (n + 1));
       int i = 0;
@@ -1671,6 +1690,10 @@ static void _cmd_shape(JsonObject *o)
       g_free(pts);
     }
     json_builder_end_array(b);
+    json_builder_end_array(pb);
+    json_builder_set_member_name(b, "pointSizes");
+    json_builder_add_value(b, json_builder_get_root(pb));
+    g_object_unref(pb);
     _ok_done(b);
     return;
   }

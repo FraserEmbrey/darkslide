@@ -83,11 +83,13 @@ actor Inpainter {
     /// whose values are already a display encoding and not colour managed (an
     /// export read as darktable wrote it): those go to the model as they are.
     func fill(_ image: CIImage, marks: [PlacedMark], headroom: Double = 1, encoded: Bool = false) throws -> CIImage {
-        var result = image
+        // The work is in encoded values, as the model was trained on and as
+        // grain is even: shrinking in linear light made a noisy photo's fill
+        // lighter than the grain round it, which the eye averages otherwise.
+        let values = encoded ? image
+            : image.applyingFilter("CIColorMatrix", parameters: Self.gain(1 / headroom)).applyingFilter("CILinearToSRGBToneCurve")
+        var filledValues = values
         let extent = image.extent
-        let context = encoded ? Self.rawContext : Self.managedContext
-        let modelSpace: CGColorSpace? = encoded ? nil : CGColorSpace(name: CGColorSpace.sRGB)!
-        let headroom = encoded ? 1 : headroom
         let n = Self.side
         for mark in marks where !mark.points.isEmpty {
             let b = mark.bounds
@@ -98,15 +100,16 @@ actor Inpainter {
             let k = Double(n) / sq.width
             // CI's origin is bottom left
             let ciSquare = CGRect(x: extent.minX + sq.minX, y: extent.maxY - sq.maxY, width: sq.width, height: sq.height)
+            let square = filledValues.cropped(to: ciSquare)
 
-            // the square at 512, encoded into 0...1 sRGB
-            let scaled = result.cropped(to: ciSquare)
-                .transformed(by: CGAffineTransform(translationX: -ciSquare.minX, y: -ciSquare.minY))
-                .transformed(by: CGAffineTransform(scaleX: k, y: k))
-                .applyingFilter("CIColorMatrix", parameters: Self.gain(1 / headroom))
+            // the square at 512, filtered as it shrinks: a plain scale aliased
+            // the grain into a pattern the model then carried on
+            let scaled = square.transformed(by: CGAffineTransform(translationX: -ciSquare.minX, y: -ciSquare.minY))
+                .clampedToExtent()
+                .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: k, kCIInputAspectRatioKey: 1])
             var rgba = [UInt8](repeating: 0, count: n * n * 4)
-            context.render(scaled, toBitmap: &rgba, rowBytes: n * 4, bounds: CGRect(x: 0, y: 0, width: n, height: n),
-                           format: .RGBA8, colorSpace: modelSpace)
+            Self.valuesContext.render(scaled, toBitmap: &rgba, rowBytes: n * 4, bounds: CGRect(x: 0, y: 0, width: n, height: n),
+                                      format: .RGBA8, colorSpace: nil)
 
             // the mark over the square, at 512
             let local = mark.scaled(k, dx: sq.minX * k, dy: sq.minY * k)
@@ -130,30 +133,123 @@ actor Inpainter {
                 rgba[i * 4 + 3] = 255
             }
 
-            // back over the square, decoded, through a soft version of the mark
-            let filled = CIImage(bitmapData: Data(rgba), bytesPerRow: n * 4, size: CGSize(width: n, height: n),
-                                 format: .RGBA8, colorSpace: modelSpace)
-                .applyingFilter("CIColorMatrix", parameters: Self.gain(headroom))
-                .transformed(by: CGAffineTransform(scaleX: 1 / k, y: 1 / k))
-                .transformed(by: CGAffineTransform(translationX: ciSquare.minX, y: ciSquare.minY))
-            let edge = max(2, mark.radius * 0.25)
+            // the mark at full size: hard for measuring the grain round it, soft for laying the fill in
             let maskSize = (Int(sq.width), Int(sq.height))
-            let soft = Self.raster(mark.scaled(1, dx: sq.minX, dy: sq.minY), width: maskSize.0, height: maskSize.1, grow: 1.1)
-            let maskImage = CIImage(bitmapData: Data(soft.flatMap { [$0, $0, $0, 255] }), bytesPerRow: maskSize.0 * 4,
-                                    size: CGSize(width: maskSize.0, height: maskSize.1), format: .RGBA8, colorSpace: nil)
-                .transformed(by: CGAffineTransform(translationX: ciSquare.minX, y: ciSquare.minY))
+            func maskImage(grow: Double) -> CIImage {
+                let px = Self.raster(mark.scaled(1, dx: sq.minX, dy: sq.minY), width: maskSize.0, height: maskSize.1, grow: grow)
+                return CIImage(bitmapData: Data(px.flatMap { [$0, $0, $0, 255] }), bytesPerRow: maskSize.0 * 4,
+                               size: CGSize(width: maskSize.0, height: maskSize.1), format: .RGBA8, colorSpace: nil)
+                    .transformed(by: CGAffineTransform(translationX: ciSquare.minX, y: ciSquare.minY))
+            }
+
+            // back over the square, with the photo's grain, which the model
+            // (seeing it at a fraction of its size) can't make
+            let filled = CIImage(bitmapData: Data(rgba), bytesPerRow: n * 4, size: CGSize(width: n, height: n),
+                                 format: .RGBA8, colorSpace: nil)
                 .clampedToExtent()
-                .applyingGaussianBlur(sigma: edge)
+                .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: 1 / k, kCIInputAspectRatioKey: 1])
+                .transformed(by: CGAffineTransform(translationX: ciSquare.minX, y: ciSquare.minY))
                 .cropped(to: ciSquare)
-            result = filled.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: result, kCIInputMaskImageKey: maskImage,
+            let grainy = Self.grain(like: square, outside: maskImage(grow: 1.3), in: ciSquare).map { Self.add(filled, $0) } ?? filled
+            let soft = maskImage(grow: 1.1)
+                .clampedToExtent()
+                .applyingGaussianBlur(sigma: max(2, mark.radius * 0.25))
+                .cropped(to: ciSquare)
+            filledValues = grainy.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: filledValues, kCIInputMaskImageKey: soft,
             ]).cropped(to: extent)
         }
-        return result
+        return encoded ? filledValues
+            : filledValues.applyingFilter("CISRGBToneCurveToLinear").applyingFilter("CIColorMatrix", parameters: Self.gain(headroom))
     }
 
-    private static let managedContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!])
-    private static let rawContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+    /// Grain for a fill: noise, a little softened as a raw's is by
+    /// demosaicing, at the strength of the detail finer than a couple of
+    /// pixels in `square` outside the mark (white over the mark), channel by
+    /// channel. Most of that detail is the grain, on the flat things a fill
+    /// usually goes over. Zero-mean, to add; nil for a clean photo.
+    private static func grain(like square: CIImage, outside mark: CIImage, in rect: CGRect) -> CIImage? {
+        let around = mark.applyingFilter("CIColorInvert").cropped(to: rect)
+        func fine(_ image: CIImage) -> CIImage {
+            // the image less its blur, by adding the blur negated: blend modes clamp at 0
+            add(image, image.clampedToExtent().applyingGaussianBlur(sigma: 2).cropped(to: rect)
+                .applyingFilter("CIColorMatrix", parameters: gain(-1)))
+        }
+        /// the mean square of each channel's fine detail, where `weight` is white
+        func power(_ image: CIImage, weight: CIImage) -> [Double] {
+            let f = fine(image)
+            let sq = f.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: f])
+                .applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: weight])
+            let total = mean(sq, in: rect), w = mean(weight, in: rect)
+            return w[0] > 0.01 ? total.prefix(3).map { $0 / w[0] } : []
+        }
+        let noise = noise(in: rect)
+        let photo = power(square, weight: around)
+        let made = power(noise, weight: CIImage(color: .white).cropped(to: rect))
+        guard photo.count == 3, made.count == 3, made.allSatisfy({ $0 > 0 }) else { return nil }
+        let k = (0..<3).map { min(sqrt(photo[$0] / made[$0]), 4) }
+        guard k.max()! * sqrt(made.max()!) > 0.002 else { return nil }
+        return noise.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: k[0], y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: k[1], z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: k[2], w: 0),
+        ])
+    }
+
+    /// `a` + `b`, both opaque. Core Image's filters work on colour divided by
+    /// alpha, and adding sums the alphas too, so the sum's colour is doubled
+    /// back and its alpha set to 1.
+    static func add(_ a: CIImage, _ b: CIImage) -> CIImage {
+        a.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: b])
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 2, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 2, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: 2, w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ])
+    }
+
+    /// zero-mean noise over `rect`, a little softened as a raw's is by
+    /// demosaicing: mostly the same in each channel, with some colour
+    private static func noise(in rect: CGRect) -> CIImage {
+        noiseTile.applyingFilter("CIAffineTile", parameters: [kCIInputTransformKey: CGAffineTransform.identity])
+            .applyingGaussianBlur(sigma: 0.6)
+            .cropped(to: rect)
+    }
+
+    /// Gaussian noise, opaque, the same every time so a fill's grain stays put
+    /// between renders. (CIRandomGenerator's alpha is random too, which
+    /// Core Image's filters divide by.)
+    private static let noiseTile: CIImage = {
+        let n = 512
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func uniform() -> Float {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return (Float(state >> 40) + 0.5) / Float(1 << 24)
+        }
+        func gaussian() -> Float { sqrt(-2 * log(uniform())) * cos(2 * .pi * uniform()) }
+        var px = [Float](repeating: 1, count: n * n * 4)
+        for i in 0..<(n * n) {
+            let luma = gaussian() * 0.8
+            for c in 0..<3 { px[i * 4 + c] = luma + gaussian() * 0.5 }
+        }
+        return CIImage(bitmapData: Data(bytes: px, count: px.count * 4), bytesPerRow: n * 16,
+                       size: CGSize(width: n, height: n), format: .RGBAf, colorSpace: nil)
+    }()
+
+    /// each channel's mean over `rect`
+    private static func mean(_ image: CIImage, in rect: CGRect) -> [Double] {
+        var px = [Float](repeating: 0, count: 4)
+        valuesContext.render(image.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: rect)]),
+                             toBitmap: &px, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                             format: .RGBAf, colorSpace: nil)
+        return px.map(Double.init)
+    }
+
+    /// Renders values as they are in the working space (with no colour space
+    /// given), while a photo with a colour space is brought into it; an
+    /// export read as darktable encoded it has none, so it's left as it is.
+    /// Full precision, for the grain's small numbers.
+    private static let valuesContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+                                                          .workingFormat: CIFormat.RGBAf])
 
     /// a colour matrix scaling RGB by `g`, in the linear working space
     private static func gain(_ g: Double) -> [String: Any] {

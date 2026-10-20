@@ -305,7 +305,7 @@ The bandage button in the toolbar turns on Retouch, with its panel in place of t
 
 ### Remove Objects
 
-Retouch's Remove mode paints things out: paint over something, and a little around it, and a machine learning model fills it in from what's around. It's LaMa ("big-lama", Samsung, Apache-2.0), converted to Core ML at 512 × 512 in half precision (`Scripts/models/convert_lama.py`), 99 MB, downloaded the first time it's used like the other models. A fill takes about half a second on an M3 Pro once the model is loaded, which happens when the tool is turned on. Click a painted area to select it, and Delete removes it.
+Retouch's Remove mode paints things out: paint over something, and a little around it, and a machine learning model fills it in from what's around. It's LaMa ("big-lama", Samsung, Apache-2.0), converted to Core ML at 512 × 512 in half precision (`Scripts/models/convert_lama.py`), 99 MB, downloaded the first time it's used like the other models. It runs on the GPU, where a fill takes about half a second on an M3 Pro once the model is loaded, which happens when the tool is turned on. The Neural Engine's half precision wove a lattice into fills. The square round a mark is shrunk to 512 with filtering, in gamma-encoded values (shrinking in linear light made a noisy photo's fill lighter than the grain round it), and the fill gets grain back, measured from the photo round the hole, as the model can't make it at that size. Click a painted area to select it, and Delete removes it.
 
 darktable has no way to hold pixels a model made, so this is Darkslide's own layer over darktable's output (`CleanUp.swift`), as AI denoise's amount is:
 

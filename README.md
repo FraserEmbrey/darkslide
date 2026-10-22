@@ -4,11 +4,11 @@
 
 ![Darkslide editing a sunset over Brighton's West Pier in HDR](docs/screenshot.jpg)
 
-darktable has one of the best raw engines around. On a Mac its interface is GTK, and it feels like it. Apple stopped making Aperture in 2015 and nothing has felt quite as at home on the Mac since. Darkslide is my go at the app I want: darktable doing the processing, in something that works like Aperture 3. That means one window for the library and the editor, nicer to use, faster, and built on the Mac's own technologies. John Gruber's name for that is a Mac-assed Mac app.
+darktable has one of the best raw engines around but the GTK interface really feels out of place on a Mac. This project aims to make a fun and fully mac-assed app on top of darktable’s awesome editing engine. Darkslide is my go at the app I want: darktable doing the processing, in something that works like Aperture 3. Nicer, faster, and built on the Mac's own technologies.
 
 **[Download the latest release](https://github.com/FraserEmbrey/darkslide/releases/latest).** It needs an Apple silicon Mac and macOS 26. It's version 0.1, so expect rough edges.
 
-To be upfront: this is a vibe-coded project. I built it quickly in my spare time, with Claude Code writing most of the code while I steered and tested it. It does what I need, but it hasn't had the review or testing a real app gets, so expect bugs and keep backups of anything you care about.
+To be upfront: this is a vibe-coded project. I built it fairly quickly in my spare time, with Claude Code writing most of the code while I steered and tested it. It does what I need, but it hasn't had the review or testing a real app gets, so expect bugs and keep backups of anything you care about.
 
 ## Contents
 
@@ -17,7 +17,7 @@ To be upfront: this is a vibe-coded project. I built it quickly in my spare time
 - [Getting started](#getting-started)
 - [How darktable fits in](#how-darktable-fits-in)
 - [Architecture](#architecture)
-- [Features in detail](#features-in-detail): [HDR preview](#hdr-preview), [Export](#export), [Library and filmstrip](#library-and-filmstrip), [Crop and straighten](#crop-and-straighten), [Film looks](#film-looks), [Apple Photos](#apple-photos), [Frames and watermarks](#frames-and-watermarks), [Local adjustments](#local-adjustments), [Looks](#looks)
+- [Features in detail](#features-in-detail): [HDR preview](#hdr-preview), [Export](#export), [Using it from other apps](#using-it-from-other-apps), [Library and filmstrip](#library-and-filmstrip), [Crop and straighten](#crop-and-straighten), [Film looks](#film-looks), [Apple Photos](#apple-photos), [Frames and watermarks](#frames-and-watermarks), [Local adjustments](#local-adjustments), [Looks](#looks)
 - [Building](#building)
 - [Releasing](#releasing)
 - [Layout](#layout)
@@ -28,7 +28,7 @@ To be upfront: this is a vibe-coded project. I built it quickly in my spare time
 ## What I want it to be
 
 - **darktable's results.** Every raw goes through darktable 5.6.2, and the edit is saved as darktable's own history, so it opens the same in darktable.
-- **Aperture 3, more or less.** Library, culling, a map and the editor in one app. Apple Photos works as a library too, and Revert to Original still works on anything I save back to it.
+- **Aperture inspired.** Library, culling, a map and the editor in one app. Apple Photos works as a library too, and Revert to Original still works on anything I save back to it.
 - **A Mac-assed Mac app.** The standard toolbar, sidebar and inspector, shortcuts you'd guess, and the save panel you already know. Underneath it's Metal, Core Image, Core ML, PhotoKit and MapKit wherever they fit.
 - **HDR I can see while I edit.** On an XDR display the photo shows in HDR, with how much sits above white. It exports HEIC, HLG, PQ, or JPEGs with a gain map that look right on a phone.
 - **Fast.** darktable's GPU code runs on Metal, and moving a slider only reruns the part of the pipeline it affects.
@@ -132,6 +132,22 @@ Space on a raw in Finder shows it as edited in Darkslide. The app bundles a Quic
 ### Shortcuts
 
 Darkslide's actions in the Shortcuts app: **Export Photos with Preset** (photos and an export preset in; the exported files out, for the next action), **Open in Darkslide** (a photo or a folder) and **Show Smart Album**. The first and last are App Shortcuts too, so Spotlight and Siri have them without setting anything up. They're App Intents (`Shortcuts.swift`) that run in the app, with the editor's model from `AppDependencyManager`. Shortcuts finds them through `Metadata.appintents` in the app's resources, which Xcode would extract at build time: SwiftPM's Swift Build backend already has the compiler write the constant values it's read from, and `build-app.sh` runs `appintentsmetadataprocessor` over them.
+
+### Using it from other apps
+
+Another app or a script can have Darkslide export photos without opening a window. I use it so my home photo library can turn raws into HDR HEICs with the same look I'd get in the app.
+
+```sh
+/Applications/Darkslide.app/Contents/MacOS/Darkslide \
+  -HeadlessExport ~/Exports \
+  -HeadlessFiles photos.txt \
+  -HeadlessPreset "HDR HEIC" \
+  -HeadlessResult result.json
+```
+
+`photos.txt` has one photo per line. The preset is any export preset by name, and HDR HEIC if left out. Each photo is exported with its own edit, or with Auto if it has none, the same as Export with Preset.
+
+Darkslide copies each photo and its sidecar into a temporary folder and works on the copies, so nothing is written beside the originals. It keeps no catalog or session, and uses its own darktable settings, so it runs while Darkslide is open. When it's done it writes `{"written": [...], "error": null}` to the result file and exits with 0, or with 1 and the error if something went wrong (`HeadlessExport.swift`).
 
 ### Library and filmstrip
 
